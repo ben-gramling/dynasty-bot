@@ -78,7 +78,7 @@ This term is what gives bench depth and QB2 insurance a real, positive, closed-f
 
 ### 2.3 Replacement constants `R_P`
 
-`R_P` = KTC value of the **3rd-best non-rookie free agent** at position P (3rd, so a single claim doesn't move the anchor; rookie-flagged FAs excluded while the rookie draft is `pre_draft`). Recomputed per snapshot. Current values:
+`R_P` = KTC value of the **3rd-best non-rookie free agent** at position P (3rd, so a single claim doesn't move the anchor; KTC rookie-flagged FAs are always excluded from the anchors, per the §10 rule "3rd-best non-rookie FA" — a rookie enters them only when KTC drops the flag, not on draft status; erratum 7 — the `pre_draft` clause governs only §6.1 claimability). Recomputed per snapshot. Current values:
 
 | P | R_P | anchor player | ahead of anchor |
 |---|---|---|---|
@@ -235,9 +235,11 @@ Pool = 214 KTC-valued unrostered players, split hard into two sections:
 2. **True waiver targets** (155 veterans), ranked by crunch-aware **NetClaim**, tiebroken by raw NetClaim:
 
 ```
-NetClaim(a)     = max over legal drops d of Score(claim a + drop d, me)     (no drop if a slot is open)
-NetClaim_raw(a) = same, without the −ΔC term                                 (shown as a second column pre-draft)
+NetClaim(a)     = Score(claim a + the standing drop, me)     (standing drop = head of the §6.2 RV queue; no drop if a slot is open)
+NetClaim_raw(a) = same, without the −ΔC term                  (shown as a second column pre-draft)
 ```
+
+Every claim is scored against the one standing drop — the board answers "what does claiming `a` do to the roster I actually intend to run", not "what is the best possible swap for `a`" (a per-claim best-drop search would surface Richardson's swap-for-Flacco at −22.7 instead of the board's −45.8; that swap is the §6.1 *queued* action instead — erratum 1).
 
 **Free-option rule (pre-draft):** while `cuts(me) > 0`, any add whose post-add `RV⁰` sits below the cut line scores `NetClaim ≈ 0` — the crunch charge exactly cancels his contribution, because he (or an equivalent) is cut on Aug 15. The engine still recommends the claim when `NetClaim ≥ −ε`, `NetClaim_raw ≥ N_min = 250`, and bid = $0: it is strictly-better doomed inventory, and the raw gain materializes if a body-shedding trade lands before the draft. This is the correct July behavior: **don't pay for bodies you're about to cut; sell bodies instead** (§7).
 
@@ -305,14 +307,14 @@ Calibration against this league's real 2025 tape (same $200 budget): emergency s
 
 For each opponent `O` (11 teams):
 
-- **My give-list:** my 8 highest assets by gross surplus `σ⁰(a) = v(a) − RV⁰(a, me)` (market price minus gross keep value), plus all my picks. Today: the interchangeable deep-flex block (Walker 2,486, Javonte 2,427, Pierce 2,379, Addison 2,372, Evans 2,331, Hunter 2,327) and the vet bench (Dowdle 2,216, Sutton 2,204, Godwin 2,186, Allgeier 2,006, Diggs 1,585). High-σ⁰ starters are legitimate candidates (I start four RBs); the two-sided filters kill bad star sales.
+- **My give-list:** my 8 highest assets by gross surplus `σ⁰(a) = v(a) − RV⁰(a, me)` (market price minus gross keep value) **after excluding my top-2 assets by raw `v`** (cornerstone protection — a near-zero backup delta makes Jeanty/Hampton's raw σ⁰ rank first, but cornerstones are not shoppable surplus; erratum 2), **plus all scheduled cuts** (doomed inventory is always shoppable, beyond the 8), plus all my picks. Today: the interchangeable deep-flex block (Walker 2,486, Javonte 2,427, Pierce 2,379, Addison 2,372, Evans 2,331, Hunter 2,327) and the vet bench (Dowdle 2,216, Sutton 2,204, Godwin 2,186, Allgeier 2,006, Diggs 1,585). High-σ⁰ starters are legitimate candidates (I start four RBs); the two-sided filters kill bad star sales.
 - **Their give-list:** symmetric, with their `ω`, plus their picks.
 - **Enumerate:** every 1–3 × 1–3 package (players and/or picks; picks occupy no roster slot). Pick-for-pick-only swaps included only when either side's `P26` count changes (crunch-motivated).
 - **Sequencing:** every candidate is scored against the *current* state; after any executed transaction the whole tab recomputes (overlapping crunch relief across separate proposals is resolved by joint evaluation, never by summing singleton σ's).
 
 ### 7.2 Filters (in order, cheap first)
 
-1. **Fairness band on adjusted value (market realism):** package value `AdjV(S) = Σ cᵢ·mv(a₍ᵢ₎)` with assets sorted by `mv` desc, consolidation coefficients `c = (1.00, 0.90, 0.80)` — the market pays a quantity discount (KTC curve: #24 = 6,593 but #96 = 4,479) — and `mv` = **market-visible** value: players at KTC, picks at their generic tranche (what the counterparty sees on KTC). Require `|AdjV(give) − AdjV(get)| ≤ max(500, 0.20·max side)`. 20% reflects observed tolerance (33 trades in 12 months; jaketoppen's DJ-Moore-for-2027-2nd pattern; a 10% band would block the consolidation class this league demonstrably executes).
+1. **Fairness band on adjusted value (market realism):** package value `AdjV(S) = Σ cᵢ·mv(a₍ᵢ₎)` with assets sorted by `mv` desc, consolidation coefficients `c = (1.00, 0.90, 0.80)` — the market pays a quantity discount (KTC curve: #24 = 6,593 but #96 = 4,479) — and `mv` = **market-visible** value: players at KTC, picks at their generic tranche (what the counterparty sees on KTC). Require `|AdjV(give) − AdjV(get)| ≤ max(500, 0.20·max side)`. 20% reflects observed tolerance (33 trades in 12 months; jaketoppen's DJ-Moore-for-2027-2nd pattern; a 10% band would block the consolidation class this league demonstrably executes). **Packages consisting entirely of scheduled cuts (either side) are exempt from the band** — crunch-arbitrage sales of doomed inventory are the point, not a fairness violation (the §11.2 runner-up, Diggs 2,641 → 2027 4th 2,036, has gap 605 > band 528.2 and is still correct; erratum 3).
 2. **Anti-fleece cap:** reject if either side's raw `Σv` exceeds **1.35×** the other's — fleeces don't get accepted, and reputation is a real asset in an 11-opponent repeated game.
 3. **Legality:** both post-trade rosters field a full lineup from actives (≥1 QB, ≥2 RB, ≥3 WR, ≥1 TE, 9 total); active count ≤ 19 after modeled taxi-stash (vets legal pre-week-4 lock) or an attached min-RV drop charged to that side's score; deadline: tab disabled after week 11.
 4. **Two-sided value:** `Score(X, me) ≥ G_min = 150` **and** `Score(X, O) ≥ 0` — each side scored with its own roster, ω, and crunch. Recommend only trades the counterparty should rationally accept.
@@ -323,11 +325,11 @@ For each opponent `O` (11 teams):
 H(X) = Score(X, me) + 0.3 · clip(Score(X, O), 0, Score(X, me))
 ```
 
-Mutual benefit boosts acceptance probability but never dominates my own gain. Dedup near-duplicates (same core asset pair, keep best 2 variants); show top 10 league-wide + top 3 per opponent, with full decompositions (§12).
+Mutual benefit boosts acceptance probability but never dominates my own gain. Display order is **acceptance tier first (§7.4), then `H` within tier** — an A-tier deal the counterparty should take outranks a bigger-`H` deal that needs selling (erratum 4). Dedup near-duplicates (same core asset pair, keep best 2 variants); show top 10 league-wide + top 3 per opponent, with full decompositions (§12).
 
 ### 7.4 Acceptance layer (how it gets said yes to)
 
-- **Posture-fit:** contender (`ω_O ≥ 0.55`) must have `ΔL_O > 0` or receive the single largest-`v` **player** in the deal (the best player wins trades in the group chat); rebuilder (`ω_O ≤ 0.40`) must receive ≥ 50% of package `AdjV` as picks + under-25 players.
+- **Posture-fit:** contender (`ω_O ≥ 0.55`) must have `ΔL_O > 0` or the largest-`mv` asset **in the package they receive** must be a player (the best player wins trades in the group chat); rebuilder (`ω_O ≤ 0.40`) must receive ≥ 50% of the package's **raw `Σ mv`** as picks + under-25 players (erratum 5).
 - **Tiers:** A = `Score_O ≥ 300` and posture-fit · B = `Score_O ≥ 100` (labeled "needs selling" if fit fails) · C = `0 ≤ Score_O < 100`.
 - **Activity prior** (documented deal counts): High = jaketoppen, cmgaither43, millj, trdouglas, vishan, Jukinski, ronakpatel32; Med = NoahMoell, DrewR87; Low = joeydavis299, josbaski. Low-activity partners demote one tier.
 - **Anchoring hint:** open ask ≈ +8% above the recommended package on my side.
@@ -353,7 +355,7 @@ The rebuilder-held elite WRs (Nacua, Nabers, Egbuka) are my true buy lane; the a
 ### 7.6 Market-timing flags
 
 - **DIP flag:** target's `v` down ≥ 6% from its trailing-30-day max (own snapshot archive) with NFL role unchanged → tag `DIP`, boost display rank one notch. Buying the KTC crowd's overreactions is where fair-band trades become wins.
-- **Pick-anchor arbitrage:** counterparties anchor 2026 picks at generic tranches. Sell side: never accept below `SellFloor` — the 1.01 must fetch ≥ **7,762**-equivalent while the market anchors at 6,243. Buy side: others' early 2026 picks offered at tranche-anchored prices are small positive arb (vishan's 1.02: concrete 6,428 vs anchor 6,243).
+- **Pick-anchor arbitrage:** counterparties anchor 2026 picks at generic tranches. Sell side: a return below `SellFloor` is **flagged on the card (`below_sell_floor`), not filtered** — crunch-relief sales of liability picks are legitimately below floor (§9.8's own recommendation sells the 4.01, SellFloor 2,033, for a 2028 M4 1,759; erratum 6). The 1.01 must still fetch ≥ **7,762**-equivalent while the market anchors at 6,243. Buy side: others' early 2026 picks offered at tranche-anchored prices are small positive arb (vishan's 1.02: concrete 6,428 vs anchor 6,243).
 - **Crunch line:** every trade card that changes body count shows the crunch term explicitly ("cuts 3 → 1: +1,400.9") — each 2026 pick or body traded away is one fewer forced Aug-15 drop.
 
 ---
@@ -567,10 +569,21 @@ CLAIM/DROP/PROMOTE use the same schema with a `bid` block (`{mode, D, netclaim, 
 7. **Bid backtests:** Waller 2025-wk4 fixture → $63 (actual $60); Kyler 2025-wk11 → $117 (actual $115); offseason board today → all $0.
 8. **Explanation = computation:** rendered `dL_terms` are generated by diffing the scoring solver's own before/after assignments; component sums must equal the score to 0.1.
 9. **Scrape guards:** assert 480–520 KTC assets with `oneQBValues.value` present; 36-RDP set re-verified; crosswalk re-joined with alerts on unmapped `playerID`; `R_P`, tranche list, rookie board re-derived each snapshot; daily value archive appended (DIP flag depends on it).
-10. **Bounds:** trade enumeration ≤ 3 assets/side from 8-asset give-lists + picks per pair — worst case a few 10⁵ evaluations league-wide; each evaluation is two lineup solves plus one crunch recompute (O(cuts) extra solves). Full recompute of every tab is sub-second; no caching needed beyond the daily snapshot.
+10. **Bounds (erratum 8):** trade enumeration ≤ 3 assets/side from give-lists (8 + scheduled cuts + picks) per pair — a few 10⁶ enumerated packages league-wide, all passed through the cheap §7.2 pre-filters. Full joint evaluation of every pre-filter survivor is minutes, not sub-second (each evaluation is two lineup solves plus one crunch recompute), so joint scoring is **budgeted per (give-size × get-size) bucket, best-first by an additive proxy corrected for the §4 multi-cut interaction** (`trade_eval_cap_per_bucket = 250` ⇒ ~10⁴ joint evaluations; full recompute of every tab in single-digit seconds). The §11.2 pinned candidates must survive the budget (tested); the stratified buckets keep 1×1/2×1 bread-and-butter deals evaluated alongside 3×3 consolidations.
 
 ---
 
-## Design provenance
+## Errata (2026-07-26 implementation review)
+
+The reference implementation exposed places where this spec's formula prose contradicted its own pinned tables (§§2.4–2.5, 4, 6.1, 8, 11). In every case the pinned numbers are the contract; the prose above has been corrected in place and each correction is marked with an erratum number:
+
+1. **§6.1 NetClaim** is scored against the single standing drop (head of the §6.2 RV queue), not a max over legal drops — the original "max over legal drops d" formula contradicted the board's own pinned Richardson −45.8 (best-drop would give −22.7 via Flacco).
+2. **§7.1 give-list** protects the top-2 assets by raw `v` and appends scheduled cuts beyond the 8 — literal "8 highest by σ⁰" would rank Jeanty (2,625.1) and Hampton (2,589.2) first, contradicting the section's own quoted list (Walker 2,486 first).
+3. **§7.2 filter 1** exempts all-scheduled-cut packages from the fairness band — the pinned §11.2 runner-up (Diggs 2,641 → 2027 4th 2,036) violates the band (gap 605 > 528.2) and is intended.
+4. **§7.3 ranking** is acceptance-tier first, then `H` within tier (the original text implied pure `H` order).
+5. **§7.4 posture-fit letter:** contender-fit tests the largest-`mv` asset in the package the contender receives (not the deal-wide largest-`v` player); rebuilder future share is measured against raw `Σ mv` (not `AdjV`).
+6. **§7.6 SellFloor** is a card flag (`below_sell_floor`), not a filter — §9.8's pinned recommendation itself sells the 4.01 below its floor.
+7. **§2.3 replacement anchors** exclude KTC rookie-flagged FAs unconditionally (matching §10's "3rd-best non-rookie FA"), not only while the draft is `pre_draft`.
+8. **§13.10 bounds** under-estimated joint-evaluation cost: full joint scoring of every pre-filter survivor is minutes, not sub-second. Joint evaluation is budgeted per size bucket, proxy best-first (250/bucket); the proxy adds back the §4 multi-cut interaction that a purely additive proxy misses (without it, the budget demonstrably buried candidates that outrank emitted ones — e.g. the same Sutton+Evans body-shed returning 2027 E2 + 2028 M1 = 9,731 raw inside all bands).
 
 This spec is the synthesis of a four-design judged panel (lenses: formal marginal-value, market-shark, minimal-model, mechanism-design). The winning architecture is Design A — the q-weighted insurance lineup model, the ω blend, `R_P` replacement anchors, and the explanation-equals-computation contract — with every judge-identified defect fixed: IR players now count in the offseason lineup pool, 2026 picks price at concrete board value (tranches demoted to the perception layer and sell floors), the 1.01 carries a readiness-discounted now-credit, and the in-season bid refit is fully specified. The highest-value grafts: Design D's roster-crunch shadow cost `C(T)` (implemented correctly — recomputed on every post-transaction roster, which turns July's waiver board into free-option claims and makes the 4.01-as-liability and sell-bodies-to-jaketoppen/ronakpatel32 conclusions fall out of the math) plus its trade-zone diagnostic and the real same-K test pair; Design B's market-realism layer (behavior-seeded opponent ω, AdjV consolidation coefficients, the 1.35 anti-fleece cap, posture-fit acceptance tiers, anchor asks, the DIP flag, and the 1.01 pick-anchor arbitrage); and Design C's calibrated in-season bid formula with its two 2025 backtests, the 0.65 budget clamp, the ω-sensitivity readout, and the before/after lineup tables as the universal audit artifact.

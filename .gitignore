@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Node / Next.js
+node_modules/
+.next/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Environment
+.env*
+!.envrc
+*.pem
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+.terraform.lock.hcl
+
+# OS
+.DS_Store
+
+# Claude Code
+.mcp.json
+.claude/settings.local.json
+.playwright-mcp/
+.worktrees/
+
+# Misc
+*.log
