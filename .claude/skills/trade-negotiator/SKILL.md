@@ -88,5 +88,14 @@ query Mongo with the `load_dotenv()` + `get_db()` pattern above. Collections:
 - Pick values: `market` (tranche) is what the counterparty perceives; `concrete`
   is slot truth. Never advise selling a 2026 pick below its sell floor without
   flagging the pick-anchor note.
-- Taxi assets trade fine but check the card's crunch terms — taxi slots interact.
+- Taxi economics (spec errata 9-12, taxi locks after week 4): departing taxi
+  players debit full value and free their slot pre-lock (post-lock the slot is
+  dead — flag that in late-season taxi sales). Incoming 1st/2nd-year players who
+  wouldn't start may auto-route to a SURPLUS taxi slot — the card then shows no
+  attached drop and no crunch; that's correct, not a glitch. Slots earmarked to
+  absorb incoming rookie picks are never consumed by routing. The waiver board's
+  `taxi_fill` block says whether open slots are surplus (stash something before
+  the lock) or earmarked (leave open). Stashed players currently add NO backup
+  insurance (`taxi_insurance_mult = 0.0` pending a spec-table regen) — mention
+  this when a stash looks undervalued in lineup terms.
 - Darren Waller has no KTC value (v=0, `unvalued`) — never treat his 0 as truth.
