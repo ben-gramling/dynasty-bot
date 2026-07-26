@@ -43,6 +43,15 @@ stack dir offer to create them:
 | `dynasty-bot-collector` | `infra/stacks/collector` |
 | `dynasty-bot-web` | `infra/stacks/web` |
 
+**REQUIRED — set each workspace's Working Directory to its stack dir** (UI:
+Settings → General → Terraform Working Directory, or the API
+`working-directory` attribute; tomato's workspaces are configured the same
+way). Without it, remote runs upload only the stack folder, the
+`../../modules` references aren't in the config slug, and `terraform init`
+fails on TFC with `Unreadable module directory` (collector/web use modules;
+shared happens to work because it uses none — this bit us on first deploy,
+2026-07-26).
+
 Per-workspace variables:
 
 - **Env vars (all three workspaces):** `AWS_ACCESS_KEY_ID`,
