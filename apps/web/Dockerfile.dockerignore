@@ -1,0 +1,21 @@
+# BuildKit per-Dockerfile ignore file: applies when building with
+# `docker build -f apps/web/Dockerfile .` (repo-root context, the CI shape),
+# taking precedence over any <context>/.dockerignore. Patterns are relative
+# to the CONTEXT (repo root). Keeps host node_modules/.next from clobbering
+# the image's `npm ci` output and shrinks the context upload.
+**/node_modules
+**/.next
+**/test-results
+**/playwright-report
+**/__pycache__
+**/.env*
+**/.venv
+.git
+.worktrees
+data
+dist
+docs
+infra
+libs
+scripts
+apps/collector

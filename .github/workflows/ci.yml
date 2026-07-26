@@ -1,0 +1,54 @@
+# PR checks — fast, hermetic, no AWS and no live services.
+#
+# Deliberately NO Playwright here: the web smoke suite (`just web-test`)
+# reads the live seeded dynasty-bot Atlas DB by design (it is a smoke test
+# of real data, not a fixture suite — CLAUDE.md), so in CI it would need
+# MONGODB_URI credentials and a reachable cluster. Run it locally against
+# the seeded DB instead.
+#
+# No secrets required.
+
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  python:
+    name: pytest libs/core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v5
+
+      - run: uv sync --all-packages
+
+      # Fixture-pinned suite (tests never hit live APIs; data/ snapshots are
+      # the ground truth for the scoring invariants).
+      - run: uv run pytest libs/core -q
+
+  web:
+    name: next build apps/web
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20" # matches the node:20-slim runtime image
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+
+      # Build needs no DB: the root layout is force-dynamic, so `next build`
+      # prerenders nothing that opens a Mongo connection.
+      - run: npm run build

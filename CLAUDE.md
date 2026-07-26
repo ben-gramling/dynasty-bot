@@ -36,6 +36,27 @@ are the test suite, pinned to the committed `data/` fixtures.
   reads the live seeded `dynasty-bot` Atlas DB (it is a smoke test of real data).
 - Never commit directly to `main`; work on branches.
 
+## Infra / deploy
+
+- Terraform Cloud org `goldcoasttrading`, CLI-driven workspaces `dynasty-bot-shared`
+  / `dynasty-bot-collector` / `dynasty-bot-web`; AWS provider pinned `5.55.0`,
+  `us-east-1`, `default_tags { project = "dynasty-bot" }`. Cross-stack wiring is
+  name-based data sources — the naming contract is in `infra/stacks/shared/main.tf`.
+- Reuses tomato infra (`tomato-cluster`, `tomato-artifact-bucket`, the three tomato
+  IAM roles — the two runtime roles are Atlas-IAM-mapped, so MONGODB-AWS auth needs
+  zero new secrets). New: ECR repo `dynasty-bot`, ACM cert, ALB+Cognito, Lambda +
+  daily schedule.
+- Deploy order is STRICT — two manual CNAMEs at the external DNS provider gate it
+  (no Route53 zone in the account). Full runbook: `docs/deploy.md`; day-2 notes:
+  `infra/README.md`. Artifacts/images always upload BEFORE `terraform apply`
+  (S3 ETags drive `source_code_hash`).
+- `scripts/build_lambda_artifacts.sh` builds `dist/collector.zip` + `dist/layer.zip`
+  for linux/x86_64 cp312 locally (no Docker needed; pymongo has C extensions, so
+  never build the layer for the wrong platform).
+- Local Terraform checks only: `terraform fmt -check -recursive` from `infra/`,
+  and per stack `terraform init -backend=false && terraform validate`.
+- The collector Lambda has no VPC config on purpose (public egress to Sleeper/KTC).
+
 ## Web local dev (apps/web)
 
 - Needs `apps/web/.env.local` (gitignored): copy `MONGODB_URI` from the root

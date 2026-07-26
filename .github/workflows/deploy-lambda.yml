@@ -1,0 +1,71 @@
+# Reusable collector-Lambda artifact build + upload (adapted from tomato's
+# deploy-lambda.yml).
+#
+# dynasty-bot has exactly ONE zip Lambda (the collector), and both artifacts
+# — the function zip and the deps layer — come out of one script,
+# scripts/build_lambda_artifacts.sh:
+#
+#   dist/collector.zip -> s3://tomato-artifact-bucket/dynasty-bot/functions/collector.zip
+#   dist/layer.zip     -> s3://tomato-artifact-bucket/dynasty-bot/layer/layer.zip
+#
+# (the exact keys infra/stacks/collector reads — see its variables.tf
+# defaults). The script resolves the layer for x86_64-manylinux2014 / cp312
+# via `uv pip install --python-platform ...` (pymongo ships C extensions; a
+# wrong-platform layer crashes at import inside Lambda) and smoke-tests both
+# `import pymongo, httpx, core` and the `app.lambda_handler` handler string.
+# ubuntu-latest is Linux x86_64, so those smoke tests exercise the REAL
+# Lambda target platform before anything is uploaded.
+#
+# Kept from tomato: this workflow deliberately does NOT touch the Lambda
+# function itself. The follow-up `deploy-infra (collector)` apply reads the
+# new S3 ETags via source_code_hash and updates the function + layer — which
+# is why callers MUST order this job before deploy-infra with `needs:`
+# (artifact-before-apply: Terraform reads the ETags at plan time).
+#
+# Required secrets (passed through by callers):
+#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY — needs s3:PutObject on
+#     tomato-artifact-bucket/dynasty-bot/*.
+
+name: Deploy Lambda
+
+on:
+  workflow_call:
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+
+env:
+  AWS_REGION: us-east-1
+  # Existing tomato bucket, reused under a dynasty-bot/ key prefix
+  # (docs/deployment-context.md).
+  S3_BUCKET: tomato-artifact-bucket
+  S3_PREFIX: dynasty-bot
+
+jobs:
+  build-and-upload:
+    name: Build & Upload Artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The build script shells out to the `python3.12` binary by name.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Build collector.zip + layer.zip (with platform smoke tests)
+        run: bash scripts/build_lambda_artifacts.sh
+
+      - name: Upload artifacts to S3
+        run: |
+          aws s3 cp dist/collector.zip \
+            "s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/functions/collector.zip"
+          aws s3 cp dist/layer.zip \
+            "s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/layer/layer.zip"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}

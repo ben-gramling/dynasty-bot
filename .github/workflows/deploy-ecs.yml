@@ -1,0 +1,96 @@
+# Reusable ECS build-and-deploy (ported from tomato's deploy-ecs.yml).
+#
+# Builds the app's Docker image with the REPO ROOT as build context
+# (`docker build -f <app_path>/Dockerfile .`) so the Dockerfile can COPY
+# sibling paths. BuildKit (default on ubuntu-latest runners) honours
+# apps/web/Dockerfile.dockerignore for this build shape — that file, not
+# apps/web/.dockerignore, is what keeps node_modules/.next/etc out of the
+# context. Tags `<app_name>-<sha>` + `<app_name>-latest`, pushes both, then
+# forces a new ECS deployment so the running service pulls `<app_name>-latest`.
+#
+# Docker is NOT available on the dev machine — this workflow is the only
+# place the web image is ever built (CLAUDE.md).
+#
+# Required secrets (passed through by callers):
+#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY — static-key IAM user with ECR
+#     push and ecs:UpdateService (tomato pattern; OIDC role assumption is the
+#     nicer fresh-setup alternative if these keys are ever rotated away).
+
+name: Deploy ECS Service
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: "Image tag prefix (e.g. web -> web-<sha> / web-latest)"
+        required: true
+        type: string
+      app_path:
+        description: "Path to the app source with Dockerfile (e.g. apps/web)"
+        required: true
+        type: string
+      ecr_repo:
+        description: "ECR repository name (e.g. dynasty-bot)"
+        required: true
+        type: string
+      ecs_cluster:
+        description: "ECS cluster name (e.g. tomato-cluster)"
+        required: true
+        type: string
+      ecs_service:
+        description: "ECS service name (e.g. dynasty-bot-web)"
+        required: true
+        type: string
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  build-and-deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region "${{ env.AWS_REGION }}" \
+            | docker login --username AWS --password-stdin \
+              "$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Build, tag, and push image
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ECR_URL="${ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ inputs.ecr_repo }}"
+          IMAGE_TAG="${{ inputs.app_name }}-${{ github.sha }}"
+
+          # Repo-root context; -f points at the app's Dockerfile.
+          docker build -t "${ECR_URL}:${IMAGE_TAG}" \
+                       -t "${ECR_URL}:${{ inputs.app_name }}-latest" \
+                       -f "${{ inputs.app_path }}/Dockerfile" .
+
+          docker push "${ECR_URL}:${IMAGE_TAG}"
+          docker push "${ECR_URL}:${{ inputs.app_name }}-latest"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      # The task definition pins <app_name>-latest, so a force-new-deployment
+      # is what actually rolls the service onto the image pushed above.
+      - name: Force new deployment
+        run: |
+          aws ecs update-service \
+            --cluster "${{ inputs.ecs_cluster }}" \
+            --service "${{ inputs.ecs_service }}" \
+            --force-new-deployment
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}

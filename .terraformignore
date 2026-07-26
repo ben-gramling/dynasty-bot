@@ -1,0 +1,15 @@
+# Excluded from Terraform Cloud configuration uploads (tomato pattern,
+# extended with dynasty-bot's fixture/artifact dirs).
+.git/
+.worktrees/
+node_modules/
+.next/
+__pycache__/
+*.pyc
+.venv/
+.playwright-mcp/
+test-results/
+playwright-report/
+data/
+dist/
+docs/

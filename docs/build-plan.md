@@ -41,9 +41,9 @@ dynasty-bot/
 
 ## Phase status
 
-- **A — core + collector**: scaffold → (data pipeline ∥ scoring engine) → integrate, seed real `dynasty-bot` DB, full test pass
-- **B — web app**: three tabs + local dev + Playwright verification against the seeded DB
-- **C — infra/CI/deploy**: build all Terraform + workflows; `terraform apply` and DNS/cert steps require user go-ahead (manual CNAMEs at external DNS)
+- **A — core + collector**: **DONE** — scaffold, data pipeline + scoring engine integrated, real `dynasty-bot` DB seeded, full test pass
+- **B — web app**: **DONE** — three tabs + local dev + Playwright smoke suite green against the seeded DB
+- **C — infra/CI/deploy**: **code DONE, deploy pending** — 3 TFC stacks + 2 modules written and locally validated (`init -backend=false` + `validate` + `fmt -check`), Lambda artifacts built and smoke-tested locally; `terraform apply` and the two manual DNS CNAMEs await user go-ahead — runbook: `docs/deploy.md`
 
 ## Local dev quirks
 

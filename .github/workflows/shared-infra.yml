@@ -1,0 +1,30 @@
+# Shared stack pipeline (tomato shared-infra.yml): infra-only — ECR repo +
+# ACM cert + the cross-stack data-source contract. Push-to-main only.
+#
+# infra/modules/** is watched here (tomato layout) so module edits always
+# surface in a plan even if nothing app-specific changed; collector.yml
+# watches the modules too, since the collector stack is what actually
+# instantiates them.
+#
+# Note: the ACM cert stays PENDING_VALIDATION until the validation CNAME is
+# created manually at the external DNS provider (no Route53 zone in this
+# account) — apply succeeds anyway; see infra/README.md steps 1-2.
+#
+# Required repo secrets: TF_API_TOKEN.
+
+name: Shared Infrastructure
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infra/stacks/shared/**"
+      - "infra/modules/**"
+
+jobs:
+  deploy-infra:
+    uses: ./.github/workflows/deploy-infra.yml
+    with:
+      stack: shared
+    secrets:
+      TF_API_TOKEN: ${{ secrets.TF_API_TOKEN }}

@@ -1,0 +1,9 @@
+# Used only if someone builds with apps/web as the context
+# (`docker build apps/web`). The CI build uses the repo root as context, where
+# apps/web/Dockerfile.dockerignore applies instead. Patterns here are relative
+# to apps/web.
+node_modules
+.next
+test-results
+playwright-report
+.env*

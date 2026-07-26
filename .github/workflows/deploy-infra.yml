@@ -1,0 +1,79 @@
+# Reusable Terraform plan/apply (ported from tomato's deploy-infra.yml).
+#
+# Runs against Terraform Cloud org "goldcoasttrading", CLI-driven workspaces
+# dynasty-bot-<stack> (declared in each stack's `cloud` block). Auth is the
+# TF_API_TOKEN repo secret wired in via hashicorp/setup-terraform's
+# cli_config_credentials_token; AWS credentials for the actual resources are
+# TFC workspace variables, not GitHub secrets.
+#
+# plan runs on every call; apply -auto-approve runs only on main (or with
+# auto_apply: true) and is bound to the GitHub environment "production" —
+# create that environment in repo Settings -> Environments (add required
+# reviewers there if you want a manual approval gate, tomato runs it open).
+#
+# Ordering invariant kept from tomato: artifacts must land in S3/ECR BEFORE
+# this workflow runs, because Terraform reads S3 ETags (source_code_hash)
+# and image tags at plan time. Callers express this with `needs:` on their
+# artifact jobs (see collector.yml / web.yml).
+#
+# Deviation from tomato: no `terraform plan -out=tfplan`. With the `cloud`
+# backend block and remote execution, Terraform rejects saved plans
+# ("Saving a generated plan is currently not supported"), and tomato never
+# consumed tfplan anyway — its apply job re-plans via `apply -auto-approve`.
+#
+# Required secrets (passed through by callers):
+#   TF_API_TOKEN — Terraform Cloud user/team API token.
+
+name: Deploy Infrastructure
+
+on:
+  workflow_call:
+    inputs:
+      stack:
+        description: "Terraform stack directory name (shared, collector, web)"
+        required: true
+        type: string
+      auto_apply:
+        description: "Auto-apply after plan even off main (default: false)"
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      TF_API_TOKEN:
+        required: true
+
+jobs:
+  plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/stacks/${{ inputs.stack }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - run: terraform init -input=false
+      - run: terraform plan -input=false
+
+  apply:
+    name: Terraform Apply
+    needs: plan
+    runs-on: ubuntu-latest
+    if: inputs.auto_apply || github.ref == 'refs/heads/main'
+    environment: production
+    defaults:
+      run:
+        working-directory: infra/stacks/${{ inputs.stack }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - run: terraform init -input=false
+      - run: terraform apply -auto-approve -input=false

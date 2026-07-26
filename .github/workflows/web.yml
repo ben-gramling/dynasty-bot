@@ -1,0 +1,45 @@
+# Web dashboard pipeline (tomato dashboard.yml shape): build + push the
+# image, force an ECS redeploy, then terraform-apply the web stack.
+# Push-to-main only, path-filtered so unrelated commits don't redeploy.
+#
+# Required repo secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+# TF_API_TOKEN.
+#
+# First-deploy caveat (full order in infra/README.md): until the shared
+# stack has been applied (ECR repo), the ACM cert has been manually
+# validated to ISSUED, and the web stack has been applied once (the ECS
+# service), the `aws ecs update-service` step and/or the web plan will fail
+# — that fail-fast is intentional. Re-run this workflow once the runbook
+# steps are done.
+
+name: Web
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/web/**"
+      - "infra/stacks/web/**"
+
+jobs:
+  deploy-app:
+    uses: ./.github/workflows/deploy-ecs.yml
+    with:
+      app_name: web # -> tags web-<sha> / web-latest
+      app_path: apps/web # Dockerfile location; build context stays repo root
+      ecr_repo: dynasty-bot # created by infra/stacks/shared
+      ecs_cluster: tomato-cluster # reused tomato cluster (deployment-context)
+      ecs_service: dynasty-bot-web # aws_ecs_service.web in infra/stacks/web
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+  # Image-before-apply: the task definition references web-latest, so the
+  # push must complete before Terraform plans/applies the web stack.
+  deploy-infra:
+    needs: [deploy-app]
+    uses: ./.github/workflows/deploy-infra.yml
+    with:
+      stack: web
+    secrets:
+      TF_API_TOKEN: ${{ secrets.TF_API_TOKEN }}
