@@ -1,0 +1,219 @@
+/* Waivers tab styles (wv- prefix; tokens from globals.css / docs/web-design.md). */
+
+/* ---- meta strip under the page heading ---- */
+.wv-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 1rem;
+  font-size: 12.5px;
+  color: var(--color-ink-muted);
+}
+
+/* ---- position filter: radios + :has — client-side, zero JS ---- */
+.wv-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.wv-filter input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.wv-filter span {
+  display: inline-block;
+  border: 1px solid var(--color-line);
+  border-radius: 999px;
+  background: var(--color-surface);
+  padding: 0.18rem 0.7rem;
+  font-size: 12px;
+  color: var(--color-ink-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.wv-filter span:hover {
+  color: var(--color-ink);
+}
+
+.wv-filter input:checked + span {
+  background: var(--color-chip);
+  border-color: var(--color-sky-deep);
+  color: var(--color-ink);
+}
+
+.wv-filter input:focus-visible + span {
+  outline: 2px solid var(--color-sky-deep);
+  outline-offset: 2px;
+}
+
+/* Hide rows not matching the checked position. Filtering only hides rows —
+   identity styling (star markers, ledger colors) never repaints. */
+.wv-board:has(.wv-filter input[value="QB"]:checked) .wv-row:not([data-pos="QB"]),
+.wv-board:has(.wv-filter input[value="RB"]:checked) .wv-row:not([data-pos="RB"]),
+.wv-board:has(.wv-filter input[value="WR"]:checked) .wv-row:not([data-pos="WR"]),
+.wv-board:has(.wv-filter input[value="TE"]:checked) .wv-row:not([data-pos="TE"]) {
+  display: none;
+}
+
+/* ---- row grids (board + drop queue) ---- */
+.wv-scroll {
+  overflow-x: auto;
+}
+
+.wv-grid {
+  display: grid;
+  grid-template-columns:
+    2rem minmax(11rem, 1fr) 2.2rem 2.6rem 2.2rem 3.8rem 4.2rem 4.6rem 5rem
+    1.4rem 4.4rem 0.9rem;
+  gap: 0 0.7rem;
+  align-items: baseline;
+  min-width: 54rem;
+}
+
+.wv-grid--drops {
+  grid-template-columns:
+    2rem minmax(11rem, 1fr) 2.2rem 2.6rem 2.2rem 3.8rem 4.6rem 4.6rem
+    minmax(9rem, 13rem) 0.9rem;
+  min-width: 50rem;
+}
+
+.wv-r {
+  text-align: right;
+}
+
+.wv-head {
+  font-weight: 500;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-ink-muted);
+  border-bottom: 1px solid var(--color-line);
+  padding: 0.3rem 0.25rem;
+}
+
+.wv-row {
+  border-bottom: 1px solid var(--color-field);
+}
+
+.wv-row:last-child {
+  border-bottom: 0;
+}
+
+.wv-row > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.34rem 0.25rem;
+  font-size: 12.5px;
+}
+
+.wv-row > summary::-webkit-details-marker {
+  display: none;
+}
+
+.wv-row > summary:hover {
+  background: var(--color-field);
+}
+
+.wv-caret {
+  align-self: center;
+  color: var(--color-ink-muted);
+  transition: transform 120ms ease;
+}
+
+.wv-row[open] > summary .wv-caret,
+.wv-details[open] > summary .wv-caret {
+  transform: rotate(90deg);
+}
+
+/* expanded row: quiet sky rail, aligned under the player column */
+.wv-row-detail {
+  margin: 0.15rem 0.25rem 0.8rem 2.7rem;
+  padding: 0.1rem 0 0.1rem 0.9rem;
+  border-left: 2px solid var(--color-sky);
+  font-size: 12.5px;
+}
+
+/* ---- tags (free option, Aug-15 cut, unvalued, confirm) ---- */
+.wv-tag {
+  display: inline-block;
+  border-radius: 3px;
+  background: var(--color-chip);
+  padding: 0 0.32rem;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--color-ink-muted);
+  white-space: nowrap;
+  vertical-align: 0.08em;
+}
+
+.wv-tag--em {
+  border: 1px solid var(--color-sky-deep);
+  color: var(--color-ink);
+}
+
+/* ---- claim / promote cards ---- */
+.wv-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.3rem 0.7rem;
+}
+
+.wv-verdict {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.wv-player {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.wv-plan {
+  margin-top: 0.25rem;
+  font-size: 12.5px;
+  color: var(--color-ink-muted);
+}
+
+/* ---- collapsible reference section (rookie inventory) ---- */
+.wv-details > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.3rem 0.7rem;
+}
+
+.wv-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.wv-rookies {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 0 1.4rem;
+  font-size: 12.5px;
+}
+
+.wv-rookie {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--color-field);
+  padding: 0.18rem 0;
+}

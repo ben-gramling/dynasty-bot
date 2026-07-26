@@ -10,6 +10,11 @@ venv/
 # Node / Next.js
 node_modules/
 .next/
+next-env.d.ts
+
+# Playwright
+test-results/
+playwright-report/
 
 # IDE
 .idea/

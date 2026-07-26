@@ -23,6 +23,8 @@ are the test suite, pinned to the committed `data/` fixtures.
 - `just collect` — run the collector locally
 - `just test <pkg>` / `just test-all` — pytest
 - `just web` — Next.js dev server
+- `just web-build` — production build of apps/web
+- `just web-test` — Playwright smoke suite for apps/web
 - `just plan <stack>` / `just deploy <stack>` — Terraform
 
 ## Conventions
@@ -30,5 +32,21 @@ are the test suite, pinned to the committed `data/` fixtures.
 - Python 3.12, uv workspace, hatchling per package, pytest in `[dependency-groups] dev`.
 - Local secrets live in gitignored `.env` at the repo root (`MONGODB_URI`, `MONGODB_DB=dynasty-bot`) — required for anything that touches Mongo.
 - Docker is NOT available locally — images build in CI only; local dev is `uv run` + `npm run dev`.
-- Tests never hit live APIs — fixtures only.
+- Tests never hit live APIs — fixtures only. Exception: the web Playwright suite
+  reads the live seeded `dynasty-bot` Atlas DB (it is a smoke test of real data).
 - Never commit directly to `main`; work on branches.
+
+## Web local dev (apps/web)
+
+- Needs `apps/web/.env.local` (gitignored): copy `MONGODB_URI` from the root
+  `.env` and add `MONGODB_DB=dynasty-bot`. The app selects the DB by name —
+  never via the URI path.
+- `just web` serves on :3000. TypeScript is pinned to v6 (Next 16's compiler
+  API rejects TS 7 unless `experimental.useTypeScriptCli` is enabled).
+- `just web-test` runs the Playwright smoke suite on port 3100
+  (`reuseExistingServer` — a pre-started `npm run dev -- -p 3100` is reused).
+  Prereqs: a seeded DB (run `just collect` once) and a browser via
+  `cd apps/web && npx playwright install chromium`.
+- Known cosmetic build warning: "Failed to find font override values for font
+  `Big Shoulders`" — no size-adjusted fallback metrics; Arial Narrow is the
+  manual fallback in the font token.

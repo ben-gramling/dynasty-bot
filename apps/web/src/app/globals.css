@@ -1,0 +1,272 @@
+@import "tailwindcss";
+
+/* ---- tokens (docs/web-design.md §1) ---- */
+@theme {
+  --color-field: #f2f7fa;
+  --color-surface: #ffffff;
+  --color-ink: #14212e;
+  --color-ink-muted: #5b6e7e;
+  --color-sky: #a8d8f0;
+  --color-sky-deep: #1877b8;
+  --color-star: #c8102e;
+  --color-line: #d8e4ec;
+  --color-chip: #e5f1f8;
+
+  --color-chart-1: #1877b8;
+  --color-chart-2: #d97706;
+  --color-chart-3: #12876f;
+  --color-chart-4: #6f5bc4;
+  --color-chart-5: #b0417f;
+
+  --font-display: var(--font-big-shoulders), "Arial Narrow", sans-serif;
+  --font-body: var(--font-public-sans), system-ui, sans-serif;
+  --font-data: var(--font-plex-mono), ui-monospace, "SF Mono", monospace;
+}
+
+/* ---- base ---- */
+body {
+  background: var(--color-field);
+  color: var(--color-ink);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-sky-deep);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* every numeral wears the data face, tabular */
+.num {
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+}
+
+.display {
+  font-family: var(--font-display);
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+}
+
+/* ---- masthead ---- */
+.flag-band {
+  height: 6px;
+  background: var(--color-sky);
+}
+
+.masthead {
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-line);
+}
+
+.wordmark {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 22px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  line-height: 1;
+  color: var(--color-ink);
+}
+
+.wordmark-sub {
+  display: block;
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-ink-muted);
+  margin-top: 2px;
+}
+
+.tab {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 17px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-ink-muted);
+  padding: 0.9rem 0.15rem calc(0.9rem - 3px);
+  border-bottom: 3px solid transparent;
+  transition: color 120ms ease;
+}
+
+.tab:hover {
+  color: var(--color-ink);
+}
+
+.tab[aria-current="page"] {
+  color: var(--color-ink);
+  border-bottom-color: var(--color-sky);
+}
+
+/* ---- run-status pill ---- */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid var(--color-line);
+  border-radius: 999px;
+  background: var(--color-surface);
+  padding: 0.28rem 0.7rem;
+  font-size: 12px;
+  color: var(--color-ink-muted);
+  white-space: nowrap;
+}
+
+.pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--color-sky-deep);
+  flex: none;
+}
+
+.pill-dot.is-error {
+  background: var(--color-star);
+}
+
+.pill-dot.is-stale {
+  background: var(--color-ink-muted);
+}
+
+/* ---- value chips + the decomposition sentence (docs/web-design.md §4) ---- */
+.chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  background: var(--color-chip);
+  border-radius: 4px;
+  padding: 0.1rem 0.4rem;
+  white-space: nowrap;
+}
+
+.chip-k {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-ink-muted);
+}
+
+.chip-v {
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+  font-size: 12.5px;
+  color: var(--color-ink);
+}
+
+.chip.is-neg .chip-v {
+  color: var(--color-star);
+}
+
+.chip-score {
+  border: 1px solid var(--color-sky-deep);
+}
+
+/* Decompositions sit as grid/flex items (e.g. the trade-card side pair);
+   without this the audit tables' intrinsic width can blow the track past
+   the viewport — min-width:0 keeps overflow inside each .card-scroll. */
+.decomp {
+  min-width: 0;
+}
+
+.decomp > summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.decomp > summary::-webkit-details-marker {
+  display: none;
+}
+
+.decomp-dot,
+.decomp-eq {
+  color: var(--color-ink-muted);
+  font-size: 12px;
+}
+
+.decomp-caret {
+  flex: none;
+  color: var(--color-ink-muted);
+  transition: transform 120ms ease;
+}
+
+.decomp[open] > .decomp-caret,
+.decomp[open] > summary .decomp-caret {
+  transform: rotate(90deg);
+}
+
+.decomp-audit {
+  margin-top: 0.6rem;
+  border-top: 1px solid var(--color-line);
+  padding-top: 0.6rem;
+  font-size: 12.5px;
+}
+
+/* ---- data tables ---- */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.data-table th {
+  text-align: left;
+  font-weight: 500;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-ink-muted);
+  padding: 0.3rem 0.6rem 0.3rem 0;
+  border-bottom: 1px solid var(--color-line);
+}
+
+.data-table td {
+  padding: 0.3rem 0.6rem 0.3rem 0;
+  border-bottom: 1px solid var(--color-field);
+}
+
+.data-table td.num,
+.data-table th.num {
+  text-align: right;
+}
+
+/* compact variant: shrink-wraps its columns (e.g. the ΔL terms table) */
+.data-table--auto {
+  width: auto;
+}
+
+.data-table--auto th,
+.data-table--auto td {
+  padding-right: 1.4rem;
+}
+
+/* ---- cards ---- */
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  padding: 1rem 1.1rem;
+}
+
+.card-scroll {
+  overflow-x: auto;
+}
