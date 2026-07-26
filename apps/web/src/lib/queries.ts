@@ -145,6 +145,11 @@ export interface WaiverBoard {
   drops: DropRow[];
   queued: QueuedClaim[];
   taxi_promotions: TaxiPromotion[];
+  taxi_fill?: {
+    free_slots: number;
+    surplus_slots: number;
+    candidates: { player: string; pos: string; v: number; note: string }[];
+  };
   rookie_inventory: RookieInventoryRow[];
 }
 

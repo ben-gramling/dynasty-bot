@@ -586,4 +586,35 @@ The reference implementation exposed places where this spec's formula prose cont
 7. **§2.3 replacement anchors** exclude KTC rookie-flagged FAs unconditionally (matching §10's "3rd-best non-rookie FA"), not only while the draft is `pre_draft`.
 8. **§13.10 bounds** under-estimated joint-evaluation cost: full joint scoring of every pre-filter survivor is minutes, not sub-second. Joint evaluation is budgeted per size bucket, proxy best-first (250/bucket); the proxy adds back the §4 multi-cut interaction that a purely additive proxy misses (without it, the budget demonstrably buried candidates that outrank emitted ones — e.g. the same Sutton+Evans body-shed returning 2027 E2 + 2028 M1 = 9,731 raw inside all bands).
 
+### Taxi economics (2026-07-26 reviewer finding + house-rule clarification)
+
+House rules confirmed by the league owner: taxi is stashable only by 1st/2nd-year
+players, fillable only until the lock **after week 4** (`taxi_deadline = 4`),
+promote-out any time; a vacated slot cannot be refilled post-lock.
+
+9. **§3.1/§5 wealth debit (BUG FIX):** `apply_tx` debited departures from the
+   lineup pool only, so a traded-away TAXI player's value was never removed from
+   `W` (both sides of a taxi-for-taxi swap showed positive `ΔW`, violating the
+   zero-sum invariant), his value stayed in `F`, and his slot never freed.
+   Departures now debit full `v` wherever the player lives; the freed slot
+   increments `free_taxi` pre-lock only (post-lock it is dead capacity, matching
+   the §9.3 lock economics). The nightly board never tripped this (give-lists
+   exclude taxi); only explicit proposals (`scripts/score_trade.py`) did.
+10. **Incoming stash routing:** pre-lock, an acquired taxi-eligible player
+    (`seasonsExperience ≤ 1`) who would not crack the starting lineup routes to a
+    **surplus** free taxi slot — no active spot, no attached drop, no crunch.
+    Slots already earmarked as crunch absorption (`taxi_slot_demand` = active
+    overflow incl. incoming current-year picks) are never consumed: stashing into
+    them would trade a ~free drop for a forced cut (measured −114.5 vs ≈0 on
+    today's board). Post-lock every arrival is active.
+11. **Taxi insurance (`taxi_insurance_mult`, default 0.0 = OFF):** stashed players
+    can count as discounted backup insurance in §2.2 via shadow entries
+    (`sid + ":taxi"`, `v × mult`) in the lineup pool — a shadow outranking a
+    starter models "would promote him". OFF by default because enabling it moves
+    every pinned `L` in this document; flipping the default must ship together
+    with a regeneration of the §2.4/§8/§11 tables.
+12. **Empty-slot nudge:** pre-lock, the waiver board reports `taxi_fill` — the
+    top stashable FAs for any SURPLUS free taxi slot. An empty slot at the lock
+    is worth exactly zero; a locked stash is a free option.
+
 This spec is the synthesis of a four-design judged panel (lenses: formal marginal-value, market-shark, minimal-model, mechanism-design). The winning architecture is Design A — the q-weighted insurance lineup model, the ω blend, `R_P` replacement anchors, and the explanation-equals-computation contract — with every judge-identified defect fixed: IR players now count in the offseason lineup pool, 2026 picks price at concrete board value (tranches demoted to the perception layer and sell floors), the 1.01 carries a readiness-discounted now-credit, and the in-season bid refit is fully specified. The highest-value grafts: Design D's roster-crunch shadow cost `C(T)` (implemented correctly — recomputed on every post-transaction roster, which turns July's waiver board into free-option claims and makes the 4.01-as-liability and sell-bodies-to-jaketoppen/ronakpatel32 conclusions fall out of the math) plus its trade-zone diagnostic and the real same-K test pair; Design B's market-realism layer (behavior-seeded opponent ω, AdjV consolidation coefficients, the 1.35 anti-fleece cap, posture-fit acceptance tiers, anchor asks, the DIP flag, and the 1.01 pick-anchor arbitrage); and Design C's calibrated in-season bid formula with its two 2025 backtests, the 0.65 budget clamp, the ω-sensitivity readout, and the before/after lineup tables as the universal audit artifact.

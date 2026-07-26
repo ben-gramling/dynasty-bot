@@ -125,6 +125,14 @@ class Params:
     tau_lock: float = 400.0
     taxi_lock_week: int = 4
 
+    # Taxi economics (errata 9-12)
+    taxi_eligible_max_exp: int = 1  # house rule: only 1st/2nd-year players stashable
+    # §2.2 extension (erratum 11): stashed players count as discounted backup
+    # insurance. OFF by default — enabling moves every pinned L in the spec, so the
+    # flip must ship together with a spec-table regeneration.
+    taxi_insurance_mult: float = 0.0
+    taxi_fill_top_n: int = 5  # erratum 12: waiver-tab "fill your taxi slot" nudge
+
     # §2.4 trade deadline (league setting mirrored here for the tab-disable rule)
     trade_deadline_week: int = 11
 

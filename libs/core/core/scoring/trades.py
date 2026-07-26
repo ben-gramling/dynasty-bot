@@ -152,7 +152,9 @@ def _score_side(
 ) -> tx.ScoreResult:
     in_players = [a.player for a in get.assets if a.kind == "player"]
     out_ids = {a.key for a in give.assets if a.kind == "player"}
-    attached = _attach_drops(league, t, len(in_players), out_ids)
+    # erratum 10: incoming players the team would stash need no active spot
+    to_active, _ = md.routed_split(league, t, in_players)
+    attached = _attach_drops(league, t, len(to_active), out_ids)
     return tx.score_transaction(
         league,
         t,

@@ -61,9 +61,12 @@ def score_transaction(
     omega: float | None = None,
     include_nc: bool = True,
     include_crunch: bool = True,
+    route_taxi: bool = True,
 ) -> ScoreResult:
     w = t.omega if omega is None else omega
-    t2 = md.apply_tx(league, t, add_players, remove_ids, add_picks, remove_pick_keys)
+    t2 = md.apply_tx(
+        league, t, add_players, remove_ids, add_picks, remove_pick_keys, route_taxi=route_taxi
+    )
     dl = t2.L - t.L
     dnc = (t2.nc - t.nc) if include_nc else 0.0
     da = t2.a - t.a
@@ -157,7 +160,8 @@ def promote_score(
     t_base.a = t.a - player.v  # apply_tx re-adds v: net ΔA = 0 for the promotion itself
     t_base.cuts, t_base.c, t_base.cut_players = t.cuts, t.c, t.cut_players
     res = score_transaction(
-        league, t_base, add_players=[player], remove_ids=[drop.sid] if drop else []
+        league, t_base, add_players=[player], remove_ids=[drop.sid] if drop else [],
+        route_taxi=False,  # a promotion must never be routed straight back to taxi
     )
     res.da -= player.v  # promotion moves no wealth — cancel the re-add bookkeeping
     res.score = res.omega * (res.dl + res.dnc) + (1 - res.omega) * res.da - res.dc

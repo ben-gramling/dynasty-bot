@@ -168,9 +168,13 @@ def waiver_board(league: md.LeagueState, t: md.TeamCtx) -> dict:
     targets = []
     queued = []
     for p in league.fa_vets:
-        full = tx.score_transaction(league, claim_ctx, add_players=[p], remove_ids=drop_ids)
+        # erratum 10: a claim the roster would stash on taxi consumes no active
+        # spot — score it without the standing drop
+        stash = bool(md.routed_split(league, claim_ctx, [p])[1])
+        ids = [] if stash else drop_ids
+        full = tx.score_transaction(league, claim_ctx, add_players=[p], remove_ids=ids)
         raw = tx.score_transaction(
-            league, claim_ctx, add_players=[p], remove_ids=drop_ids, include_crunch=False
+            league, claim_ctx, add_players=[p], remove_ids=ids, include_crunch=False
         )
         netclaim, netclaim_raw = full.score, raw.score
         d = rival_demand(league, p, planned_bid=1)
@@ -203,7 +207,8 @@ def waiver_board(league: md.LeagueState, t: md.TeamCtx) -> dict:
             "dL": round(full.dl, 1),
             "netclaim": round(netclaim, 1),
             "netclaim_raw": round(netclaim_raw, 1),
-            "drop": drop.name if drop else None,
+            "taxi_stash": stash,
+            "drop": None if stash else (drop.name if drop else None),
             "ir_move": ir_cand.name if ir_cand else None,
             "recommended": recommended,
             "free_option": free_option,
@@ -238,12 +243,35 @@ def waiver_board(league: md.LeagueState, t: md.TeamCtx) -> dict:
     for i, row in enumerate(targets):
         row["rank"] = i + 1
     week = league.snapshot.week
+    # erratum 12: an empty taxi slot at the week-4 lock is worth zero — nudge to
+    # fill, but only SURPLUS slots (not the ones earmarked as crunch absorption)
+    taxi_fill: list[dict] = []
+    surplus_slots = max(0, t.free_taxi - md.taxi_slot_demand(league, t))
+    if md.taxi_pre_lock(league) and surplus_slots > 0:
+        elig = sorted(
+            (p for p in league.fa_vets if md.taxi_eligible(league, p)),
+            key=lambda p: (-p.v, p.sid),
+        )
+        taxi_fill = [
+            {
+                "player": p.name,
+                "pos": p.pos,
+                "v": p.v,
+                "note": "stash before the week-4 taxi lock — a locked empty slot is worth zero",
+            }
+            for p in elig[: params.taxi_fill_top_n]
+        ]
     return {
         "rookie_inventory": rookie_rows,
         "targets": targets,
         "drops": drop_queue(league, t),
         "queued": queued,
         "taxi_promotions": [tx.promote_score(league, t, p, week=week) for p in t.taxi],
+        "taxi_fill": {
+            "free_slots": t.free_taxi,
+            "surplus_slots": max(0, t.free_taxi - md.taxi_slot_demand(league, t)),
+            "candidates": taxi_fill,
+        },
         "mode": "offseason" if offseason else "in-season",
         "faab_remaining": budget,
     }

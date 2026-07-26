@@ -200,6 +200,7 @@ def build_league(snapshot: Snapshot, params: Params) -> LeagueState:
         else:
             pool = [p for p in roster_players if p.sid not in taxi_ids and p.sid not in reserve_ids]
         act = [p for p in roster_players if p.sid not in taxi_ids and p.sid not in reserve_ids]
+        pool = pool + taxi_shadows(params, taxi)  # erratum 11 (no-op at mult 0)
         omega = params.omega_for(name, me if me else "?")
         teams[name] = TeamCtx(
             name=name,
@@ -362,6 +363,76 @@ def finalize_team(league: LeagueState, t: TeamCtx) -> None:
     )
 
 
+def taxi_pre_lock(league: LeagueState) -> bool:
+    """Taxi adds are legal until the league's lock (offseason + weeks 1..taxi_lock_week)."""
+    return league.offseason or league.snapshot.week <= league.params.taxi_lock_week
+
+
+def taxi_eligible(league: LeagueState, p: PlayerV) -> bool:
+    """House rule: only 1st/2nd-year players can be placed on taxi."""
+    rec = league.ktc_by_id.get(str(p.ktc_id))
+    if rec is not None:
+        return int(rec.get("seasonsExperience") or 0) <= league.params.taxi_eligible_max_exp
+    return bool(p.rookie)
+
+
+def taxi_shadows(params: Params, taxi: Sequence[PlayerV]) -> list[PlayerV]:
+    """Erratum 11: discounted copies of stashed players, backup-insurance only in
+    effect (a shadow outranking a starter models 'would promote him'). sid gets a
+    ':taxi' suffix so shadows never collide with real removals or starter ids."""
+    m = params.taxi_insurance_mult
+    if m <= 0:
+        return []
+    return [
+        replace(p, sid=f"{p.sid}:taxi", v=m * p.v) for p in taxi if p.v > 0
+    ]
+
+
+def _min_starter_v(lineup) -> float:
+    """Would-he-start threshold: the weakest current starter. 0 if any slot is
+    unfilled (a thin roster starts any warm body — never stash him)."""
+    starters = [p for grp in lineup.starters.values() for p in grp]
+    if len(starters) < 9:
+        return 0.0
+    return min(p.v for p in starters)
+
+
+def taxi_slot_demand(league: LeagueState, t: TeamCtx) -> int:
+    """Roster-spot shortfall the team already faces (incoming current-year picks
+    included pre-draft) — free taxi slots up to this count are spoken for as
+    crunch absorption and must not be consumed by stash routing."""
+    p26 = sum(1 for p in t.picks if p.year == league.current_year) if league.draft_pre else 0
+    return max(0, len(t.act) + p26 - league.roster_cap)
+
+
+def routed_split(
+    league: LeagueState,
+    t: TeamCtx,
+    add_players: Sequence[PlayerV],
+    route_taxi: bool = True,
+    slots: int | None = None,
+) -> tuple[list[PlayerV], list[PlayerV]]:
+    """Erratum 10: pre-lock, incoming taxi-eligible players who would not crack the
+    starting lineup are stashed on SURPLUS free taxi slots (no active spot consumed,
+    no crunch); everyone else joins the active roster. Slots already needed to
+    absorb the team's own crunch (taxi_slot_demand) are never consumed — stashing
+    into them would trade a ~free drop for a forced cut. Post-lock: everyone is
+    active."""
+    if not route_taxi or not taxi_pre_lock(league):
+        return list(add_players), []
+    left = (t.free_taxi if slots is None else slots) - taxi_slot_demand(league, t)
+    thresh = _min_starter_v(t.lineup) if t.lineup is not None else 0.0
+    to_active: list[PlayerV] = []
+    to_taxi: list[PlayerV] = []
+    for p in sorted(add_players, key=lambda x: (-x.v, x.sid)):
+        if left > 0 and p.v < thresh and taxi_eligible(league, p):
+            to_taxi.append(p)
+            left -= 1
+        else:
+            to_active.append(p)
+    return to_active, to_taxi
+
+
 def apply_tx(
     league: LeagueState,
     t: TeamCtx,
@@ -369,13 +440,31 @@ def apply_tx(
     remove_ids: Iterable[str] = (),
     add_picks: Sequence[pk.Pick] = (),
     remove_pick_keys: Iterable[str] = (),
+    route_taxi: bool = True,
 ) -> TeamCtx:
-    """Post-transaction team state. Added players join the active roster."""
+    """Post-transaction team state. Added players join the active roster unless
+    erratum-10 routing stashes them on taxi."""
     rm = set(remove_ids)
     rm_pk = set(remove_pick_keys)
+    # Erratum 9: departures debit full value wherever the player lives — pool OR
+    # taxi (shadows carry a ':taxi' sid suffix and discounted v; never sum them).
     removed_v = sum(p.v for p in t.pool if p.sid in rm)
-    pool = [p for p in t.pool if p.sid not in rm] + list(add_players)
-    act = [p for p in t.act if p.sid not in rm] + list(add_players)
+    removed_v += sum(p.v for p in t.taxi if p.sid in rm)
+    taxi_kept = [p for p in t.taxi if p.sid not in rm]
+    n_taxi_out = len(t.taxi) - len(taxi_kept)
+    free_taxi = t.free_taxi
+    if n_taxi_out and taxi_pre_lock(league):
+        # pre-lock the freed slot is refillable; post-lock it is dead capacity
+        free_taxi += n_taxi_out
+    to_active, to_taxi = routed_split(league, t, add_players, route_taxi, slots=free_taxi)
+    taxi = taxi_kept + to_taxi
+    free_taxi -= len(to_taxi)
+    pool = [
+        p
+        for p in t.pool
+        if p.sid not in rm and not (p.sid.endswith(":taxi") and p.sid[:-5] in rm)
+    ] + to_active + taxi_shadows(league.params, to_taxi)
+    act = [p for p in t.act if p.sid not in rm] + to_active
     picks = [p for p in t.picks if p.key not in rm_pk] + [
         replace(
             p,
@@ -386,10 +475,10 @@ def apply_tx(
         for p in add_picks
     ]
     t2 = TeamCtx(
-        name=t.name, rid=t.rid, omega=t.omega, pool=pool, act=act, taxi=t.taxi,
+        name=t.name, rid=t.rid, omega=t.omega, pool=pool, act=act, taxi=taxi,
         reserve_ids=t.reserve_ids,
         players_v_sum=t.players_v_sum - removed_v + sum(p.v for p in add_players),
-        picks=picks, faab=t.faab, free_taxi=t.free_taxi,
+        picks=picks, faab=t.faab, free_taxi=free_taxi,
     )
     t2.lineup = solve(pool, league.replacement, league.params)
     t2.nc = now_credit(league, pool, t2.lineup, picks)

@@ -180,6 +180,38 @@ export default async function WaiversPage() {
         </section>
       ) : null}
 
+      {board.taxi_fill && board.taxi_fill.free_slots > 0 ? (
+        <section className="card">
+          <h2 className="display text-[17px]">Open taxi slots</h2>
+          {board.taxi_fill.surplus_slots > 0 ? (
+            <>
+              <p className="mb-3 mt-1 text-[12.5px] text-ink-muted">
+                <span className="num">{board.taxi_fill.surplus_slots}</span> surplus
+                slot{board.taxi_fill.surplus_slots > 1 ? "s" : ""} open. A slot left
+                empty at the week-4 lock is worth zero — stash one of these free
+                options before then.
+              </p>
+              <ul className="space-y-1 text-[13px]">
+                {board.taxi_fill.candidates.map((c) => (
+                  <li key={c.player}>
+                    <span className="font-medium">{c.player}</span>{" "}
+                    <span className="text-ink-muted">{c.pos}</span>{" "}
+                    <span className="num">{c.v.toLocaleString("en-US")}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <p className="mb-1 mt-1 text-[12.5px] text-ink-muted">
+              <span className="num">{board.taxi_fill.free_slots}</span> open slot
+              {board.taxi_fill.free_slots > 1 ? "s are" : " is"} earmarked to absorb
+              incoming rookie-draft picks — leave it open; stashing here would force
+              an extra cut on draft day.
+            </p>
+          )}
+        </section>
+      ) : null}
+
       {board.rookie_inventory.length ? (
         <details className="card wv-details">
           <summary>
