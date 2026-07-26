@@ -57,6 +57,11 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _db(db):
+    """pymongo Database forbids truth-testing; explicit None check."""
+    return db if db is not None else get_db()
+
+
 def trim_player(rec: dict) -> dict:
     return {f: rec[f] for f in PLAYER_FIELDS if f in rec}
 
@@ -105,13 +110,13 @@ def _replace_all(coll, docs: list[dict]) -> int:
 
 
 def upsert_league(league: dict, db=None) -> None:
-    coll = (db or get_db())["league"]
+    coll = _db(db)["league"]
     doc = {**league, "_id": league["league_id"], "kind": "league", "fetched_at": _now()}
     coll.replace_one({"_id": doc["_id"]}, doc, upsert=True)
 
 
 def upsert_state(state: dict, db=None) -> None:
-    coll = (db or get_db())["league"]
+    coll = _db(db)["league"]
     coll.replace_one(
         {"_id": "state:nfl"},
         {**state, "_id": "state:nfl", "kind": "state", "fetched_at": _now()},
@@ -120,7 +125,7 @@ def upsert_state(state: dict, db=None) -> None:
 
 
 def upsert_draft(draft: dict, picks: list[dict], traded_picks: list[dict], db=None) -> None:
-    coll = (db or get_db())["league"]
+    coll = _db(db)["league"]
     doc = {
         **draft,
         "_id": f"draft:{draft['draft_id']}",
@@ -133,7 +138,7 @@ def upsert_draft(draft: dict, picks: list[dict], traded_picks: list[dict], db=No
 
 
 def upsert_trending(add: list[dict], drop: list[dict], db=None) -> None:
-    coll = (db or get_db())["league"]
+    coll = _db(db)["league"]
     coll.replace_one(
         {"_id": "trending"},
         {"_id": "trending", "kind": "trending", "add": add, "drop": drop, "fetched_at": _now()},
@@ -143,23 +148,23 @@ def upsert_trending(add: list[dict], drop: list[dict], db=None) -> None:
 
 def replace_rosters(rosters: list[dict], db=None) -> int:
     docs = [{**r, "_id": r["roster_id"], "fetched_at": _now()} for r in rosters]
-    return _replace_all((db or get_db())["rosters"], docs)
+    return _replace_all(_db(db)["rosters"], docs)
 
 
 def replace_users(users: list[dict], db=None) -> int:
     docs = [{**u, "_id": u["user_id"], "fetched_at": _now()} for u in users]
-    return _replace_all((db or get_db())["users"], docs)
+    return _replace_all(_db(db)["users"], docs)
 
 
 def replace_picks(traded_picks: list[dict], db=None) -> int:
     docs = [{**p, "_id": pick_id(p), "fetched_at": _now()} for p in traded_picks]
-    return _replace_all((db or get_db())["picks"], docs)
+    return _replace_all(_db(db)["picks"], docs)
 
 
 def upsert_transactions(week: int, txs: list[dict], db=None) -> int:
     if not txs:
         return 0
-    coll = (db or get_db())["transactions"]
+    coll = _db(db)["transactions"]
     coll.bulk_write(
         [
             ReplaceOne(
@@ -175,12 +180,12 @@ def upsert_transactions(week: int, txs: list[dict], db=None) -> int:
 
 def refresh_players(dump: dict[str, dict], db=None) -> int:
     docs = [{**rec, "_id": pid} for pid, rec in player_subset(dump).items()]
-    return _replace_all((db or get_db())["players"], docs)
+    return _replace_all(_db(db)["players"], docs)
 
 
 def load_players(db=None) -> dict[str, dict]:
     """Stored dump subset keyed by player_id (crosswalk input on dump-skip days)."""
-    return {doc["_id"]: doc for doc in (db or get_db())["players"].find()}
+    return {doc["_id"]: doc for doc in _db(db)["players"].find()}
 
 
 # ---- ktc ----
@@ -189,7 +194,7 @@ def load_players(db=None) -> dict[str, dict]:
 def replace_ktc_latest(assets: list[dict], db=None) -> int:
     now = _now()
     docs = [{**a, "_id": str(a["playerID"]), "fetched_at": now} for a in assets]
-    return _replace_all((db or get_db())["ktc-latest"], docs)
+    return _replace_all(_db(db)["ktc-latest"], docs)
 
 
 def append_ktc_history(assets: list[dict], date: str | None = None, db=None) -> int:
@@ -198,7 +203,7 @@ def append_ktc_history(assets: list[dict], date: str | None = None, db=None) -> 
     rows = ktc_history_rows(assets, date)
     if not rows:
         return 0
-    coll = (db or get_db())["ktc-history"]
+    coll = _db(db)["ktc-history"]
     coll.bulk_write([ReplaceOne({"_id": r["_id"]}, r, upsert=True) for r in rows])
     return len(rows)
 
@@ -207,7 +212,7 @@ def ktc_value_history_max(days: int = 30, db=None) -> dict[str, float]:
     """§7.6 DIP input: ktc playerID (str) -> max value_1qb over the trailing days."""
     since = (_now() - timedelta(days=days)).date().isoformat()
     out: dict[str, float] = {}
-    for row in (db or get_db())["ktc-history"].find({"date": {"$gte": since}}):
+    for row in _db(db)["ktc-history"].find({"date": {"$gte": since}}):
         pid = str(row["playerID"])
         if row["value_1qb"] > out.get(pid, -1):
             out[pid] = row["value_1qb"]
@@ -220,7 +225,7 @@ def ktc_value_history_max(days: int = 30, db=None) -> dict[str, float]:
 def replace_crosswalk(entries: dict[str, dict], meta: dict | None = None, db=None) -> int:
     docs = [{**e, "_id": ktc_id} for ktc_id, e in entries.items()]
     docs.append({"_id": "meta", **(meta or {}), "built_at": _now()})
-    return _replace_all((db or get_db())["crosswalk"], docs) - 1
+    return _replace_all(_db(db)["crosswalk"], docs) - 1
 
 
 # ---- scoring outputs ----
@@ -247,17 +252,17 @@ def save_scoring(outputs: dict, computed_at: datetime | None = None, db=None) ->
 
 
 def log_run(run: dict, db=None) -> None:
-    (db or get_db())["runs"].insert_one(run)
+    _db(db)["runs"].insert_one(run)
 
 
 def get_players_last_fetched(db=None) -> datetime | None:
-    meta = (db or get_db())["runs"].find_one({"_id": "meta"}) or {}
+    meta = _db(db)["runs"].find_one({"_id": "meta"}) or {}
     ts = meta.get("players_last_fetched")
     return ts.replace(tzinfo=timezone.utc) if ts and ts.tzinfo is None else ts
 
 
 def set_players_last_fetched(when: datetime | None = None, db=None) -> None:
-    (db or get_db())["runs"].update_one(
+    _db(db)["runs"].update_one(
         {"_id": "meta"},
         {"$set": {"players_last_fetched": when or _now()}},
         upsert=True,

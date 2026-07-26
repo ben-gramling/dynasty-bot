@@ -27,6 +27,12 @@ are the test suite, pinned to the committed `data/` fixtures.
 - `just web-test` — Playwright smoke suite for apps/web
 - `just plan <stack>` / `just deploy <stack>` — Terraform
 
+## Skills
+
+- `/trade-negotiator` — interactive trade advisor backed by the scoring engine;
+  scores arbitrary proposals two-sided via `scripts/score_trade.py` (which also
+  works standalone: `teams`, `list-assets`, `score --alternatives`).
+
 ## Conventions
 
 - Python 3.12, uv workspace, hatchling per package, pytest in `[dependency-groups] dev`.
