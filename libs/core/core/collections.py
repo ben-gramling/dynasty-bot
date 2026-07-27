@@ -26,6 +26,12 @@ def transactions():
     return get_db()["transactions"]
 
 
+def posture_overrides():
+    """The posture-overrides collection (§4 user overrides:
+    one doc per team, {_id: display_name, label: BUYER|SELLER|NEUTRAL})."""
+    return get_db()["posture-overrides"]
+
+
 def players():
     """The players collection (Sleeper dump subset, one doc per player_id)."""
     return get_db()["players"]

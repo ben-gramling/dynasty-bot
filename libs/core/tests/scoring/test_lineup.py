@@ -1,17 +1,18 @@
-"""§2 lineup model + §13.1/§13.3/§13.4 invariants, pinned to committed fixtures."""
+"""§7 lineup-strength model (kept machinery: solver + replacement anchors),
+pinned to committed fixtures. Lineup numbers feed the league tab and the
+in-season FAAB formula only — never the trade path (§11.2)."""
 
 from __future__ import annotations
 
 import pytest
 
 from core.scoring import model as md
-from core.scoring import transactions as tx
-from core.scoring.lineup import PlayerV, solve
+from core.scoring.lineup import PlayerV, diff_terms, solve
 from core.scoring.params import Params
 
 from .conftest import by_name
 
-# §8 / §13.3: the full 12-row expected-lineup-strength table (2026-07-26 snapshot).
+# The full 12-row expected-lineup-strength table (2026-07-26 snapshot).
 EXPECTED_L = {
     "DrewR87": 52418.8,
     "NoahMoell": 51546.0,
@@ -29,7 +30,7 @@ EXPECTED_L = {
 
 
 def test_solver_reproduces_sleeper_ppts_2025(ppts_fixture, params):
-    """§13.1: greedy solver == Sleeper `ppts` for all 12 rosters, weeks 1–14."""
+    """Greedy solver == Sleeper `ppts` for all 12 rosters, weeks 1–14."""
     pos = ppts_fixture["positions"]
     totals: dict[int, float] = {}
     repl = {g: 0.0 for g in ("QB", "RB", "WR", "TE", "FLEX")}
@@ -48,7 +49,7 @@ def test_solver_reproduces_sleeper_ppts_2025(ppts_fixture, params):
 
 
 def test_replacement_constants(league):
-    """§2.3: 3rd-best non-rookie FA per position."""
+    """3rd-best non-rookie FA per position."""
     assert league.replacement == {
         "QB": 1562,
         "RB": 2207,
@@ -59,7 +60,7 @@ def test_replacement_constants(league):
 
 
 def test_my_lineup_and_backups(league, me):
-    """§2.4: exact optimal lineup, backups, and L(me) = 49,598.8."""
+    """Exact optimal lineup, backups, and L(me) = 49,598.8."""
     lu = me.lineup
     assert [p.name for p in lu.starters["QB"]] == ["Joe Burrow"]
     assert {p.name for p in lu.starters["RB"]} == {"Ashton Jeanty", "Omarion Hampton"}
@@ -77,7 +78,7 @@ def test_my_lineup_and_backups(league, me):
 
 
 def test_full_league_l_table(league):
-    """§13.3: all 12 L values; offseason pool includes IR (Kittle/Jones counted)."""
+    """All 12 L values; offseason pool includes IR (Kittle/Jones counted)."""
     for name, want in EXPECTED_L.items():
         assert round(league.teams[name].L, 1) == want, name
 
@@ -90,8 +91,15 @@ def test_offseason_pool_includes_ir(league):
     assert "George Kittle" not in act_names  # IR is active-cap-exempt
 
 
+def test_taxi_not_lineup_eligible(league, me):
+    """Taxi players are lineup-ineligible — Cam Ward is future stash, not QB insurance."""
+    assert "Cam Ward" in {p.name for p in me.taxi}
+    assert "Cam Ward" not in {p.name for p in me.pool}
+    assert me.lineup.backups["QB"][0] == 919  # Flacco, not Ward
+
+
 def test_l_monotone_in_additions(league, me):
-    """§13.4: L(T ∪ a) ≥ L(T) for any added player."""
+    """L(T ∪ a) ≥ L(T) for any added player."""
     for v in (1, 500, 2000, 4300, 6000, 9999):
         for pos in ("QB", "RB", "WR", "TE"):
             p = PlayerV(sid=f"syn:{pos}:{v}", name="syn", pos=pos, v=v)
@@ -99,61 +107,72 @@ def test_l_monotone_in_additions(league, me):
             assert aug.L >= me.L - 1e-9, (pos, v)
 
 
-def test_vtt_rv_monotone_in_v(league, me):
-    """§13.4: VTT and RV weakly monotone in v, roster held fixed."""
-    prev_vtt = None
-    for v in (500, 1500, 2500, 3500, 4500, 5500, 7000, 9000):
-        p = PlayerV(sid="syn:wr", name="syn", pos="WR", v=v)
-        val = tx.vtt(league, me, p)
-        if prev_vtt is not None:
-            assert val >= prev_vtt - 1e-6, v
-        prev_vtt = val
-    prev_rv = None
-    for target_v in (0, 919, 2641, 2673, 3122, 4061, 4125):
-        # synthetic clone of increasing value inserted then removed
-        p = PlayerV(sid="syn:rv", name="syn", pos="WR", v=target_v)
-        t2 = md.apply_tx(league, me, add_players=[p])
-        val = -tx.score_transaction(league, t2, remove_ids=[p.sid]).score
-        if prev_rv is not None:
-            assert val >= prev_rv - 1e-6, target_v
-        prev_rv = val
+def test_flacco_worse_than_free_insurance(league, me):
+    """Removing Flacco RAISES L (FA line 1,562 > his 919); streaming Richardson
+    adds +75.5 — lineup facts for the league tab, not trade inputs."""
+    flacco = by_name(league, "Joe Flacco")
+    without = solve([p for p in me.pool if p.sid != flacco.sid], league.replacement, league.params)
+    assert round(without.L - me.L, 1) == 38.6
+    richardson = by_name(league, "Anthony Richardson")
+    aug = solve(me.pool + [richardson], league.replacement, league.params)
+    assert round(aug.L - me.L, 1) == 75.5
 
 
-def test_synthetic_5555_pair(league, me):
-    """§2.5: identical 5,555 market price — WR beats QB on this roster."""
-    wr = PlayerV(sid="syn:wr5555", name="syn WR", pos="WR", v=5555)
-    qb = PlayerV(sid="syn:qb5555", name="syn QB", pos="QB", v=5555)
-    res_wr = tx.score_transaction(league, me, add_players=[wr], include_nc=False, include_crunch=False)
-    res_qb = tx.score_transaction(league, me, add_players=[qb], include_nc=False, include_crunch=False)
-    assert round(res_wr.dl, 1) == 1309.2
-    assert round(res_qb.dl, 1) == 278.2
-    assert round(res_wr.score, 1) == 3007.5
-    assert round(res_qb.score, 1) == 2388.9
+def test_positional_bars_differ(league, me):
+    """A new WR enters over Evans 4,125; a new RB must clear Javonte to start —
+    and the synthetic 5,555 pair quantifies it (WR +1,309.2 vs QB +278.2)."""
+    wr = PlayerV(sid="s1", name="s", pos="WR", v=4500)
+    rb = PlayerV(sid="s2", name="s", pos="RB", v=4500)
+    aug_wr = solve(me.pool + [wr], league.replacement, league.params)
+    aug_rb = solve(me.pool + [rb], league.replacement, league.params)
+    assert "s1" in {p.sid for g in ("WR", "FLEX") for p in aug_wr.starters[g]}
+    assert "s2" not in {p.sid for g in ("RB", "FLEX") for p in aug_rb.starters[g]}
+    wr5 = PlayerV(sid="syn:wr5555", name="syn WR", pos="WR", v=5555)
+    qb5 = PlayerV(sid="syn:qb5555", name="syn QB", pos="QB", v=5555)
+    assert round(solve(me.pool + [wr5], league.replacement, league.params).L - me.L, 1) == 1309.2
+    assert round(solve(me.pool + [qb5], league.replacement, league.params).L - me.L, 1) == 278.2
 
 
 def test_real_same_k_pair(league, me):
-    """§2.5 regression fixture: Jameson Williams vs Jaxson Dart, both 5,408."""
+    """Regression fixture: Jameson Williams vs Jaxson Dart, both 5,408 — the
+    lineup lens separates them (league-tab context only)."""
     jw = by_name(league, "Jameson Williams")
     dart = by_name(league, "Jaxson Dart")
     assert jw.v == 5408 and dart.v == 5408
-    res_jw = tx.score_transaction(league, me, add_players=[jw], include_nc=False, include_crunch=False)
-    res_dart = tx.score_transaction(league, me, add_players=[dart], include_nc=False, include_crunch=False)
-    assert round(res_jw.dl, 1) == 1178.3
-    assert round(res_jw.score, 1) == 2870.2
-    assert round(res_dart.dl, 1) == 269.3
-    assert round(res_dart.score, 1) == 2324.8
-    assert res_jw.score > res_dart.score
+    dl_jw = solve(me.pool + [jw], league.replacement, league.params).L - me.L
+    dl_dart = solve(me.pool + [dart], league.replacement, league.params).L - me.L
+    assert round(dl_jw, 1) == 1178.3
+    assert round(dl_dart, 1) == 269.3
 
 
 def test_dl_terms_match_solver_diff(league, me):
-    """§12/§13.8: dL_terms sum to ΔL exactly (same computation, not re-derived)."""
-    for p in (by_name(league, "Puka Nacua"), by_name(league, "DK Metcalf"), by_name(league, "Anthony Richardson")):
-        res = tx.score_transaction(league, me, add_players=[p])
-        assert sum(t["delta"] for t in res.terms) == pytest.approx(res.dl, abs=1e-6)
+    """diff_terms sums to ΔL exactly (same computation, not re-derived)."""
+    for p in (by_name(league, "Puka Nacua"), by_name(league, "DK Metcalf")):
+        aug = solve(me.pool + [p], league.replacement, league.params)
+        terms = diff_terms(me.lineup, aug, league.params, league.replacement)
+        assert sum(t["delta"] for t in terms) == pytest.approx(aug.L - me.L, abs=1e-6)
+
+
+def test_availability_scales_lineup_never_wealth(league, me):
+    """u scales the lineup solver only — the wealth ledger banks full v."""
+    hurt = PlayerV(sid="syn:hurt", name="hurt", pos="WR", v=6000, u=0.25)
+    t2 = md.apply_tx(league, me, add_players=[hurt])
+    assert t2.players_v_sum - me.players_v_sum == 6000  # full v banked
+    assert t2.L - me.L < 1000  # but the lineup sees 1,500 effective
+
+
+def test_unvalued_player(league, me):
+    """Waller v = 0, flagged, never imputed; exactly one such player."""
+    waller = by_name(league, "Darren Waller")
+    assert waller.v == 0 and waller.unvalued
+    all_unvalued = [
+        p for t in league.teams.values() for p in t.pool + t.taxi if p.unvalued
+    ]
+    assert len(all_unvalued) == 1
 
 
 def test_solver_tiebreak_ktc_playerid_asc(params):
-    """§2.1: equal-ṽ ties break by KTC playerID ascending — deterministic and
+    """Equal-ṽ ties break by KTC playerID ascending — deterministic and
     load-bearing (mutating the tie-break must fail this test)."""
     repl = {g: 0.0 for g in ("QB", "RB", "WR", "TE", "FLEX")}
     hi = PlayerV(sid="s9", name="high id", pos="QB", v=5000, ktc_id=900)

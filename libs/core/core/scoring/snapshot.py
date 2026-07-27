@@ -21,10 +21,14 @@ class Snapshot:
     my_roster_id: int = 4
     # Optional: names/positions for rostered players absent from KTC (e.g. Darren Waller).
     player_names: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
-    # Optional: ktc playerID -> trailing-30-day max value from our own archive (§7.6 DIP).
+    # Optional: ktc playerID -> trailing-30-day max value from our own archive
+    # (display-only dip note — factual, from our archive; never a score input).
     value_history_max: Mapping[str, float] = field(default_factory=dict)
-    # Optional: display_name -> pickflow ∈ {−1, 0, +1} for the ω auto-refresh suggestion.
-    pickflow: Mapping[str, int] = field(default_factory=dict)
+    # Sleeper transaction docs, both league seasons (trade-type at minimum) —
+    # sole input to §4 posture classification. The 12-month window lives in posture.py.
+    transactions: Sequence[Mapping[str, Any]] = ()
+    # Optional: display_name -> "BUYER"|"SELLER"|"NEUTRAL" user override (§4; override wins).
+    posture_overrides: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def offseason(self) -> bool:
@@ -40,7 +44,7 @@ class Snapshot:
 
 
 def validate_snapshot(snapshot: Snapshot) -> list[str]:
-    """§13.9 scrape guards. Returns a list of alert strings (empty = clean)."""
+    """Scrape guards on the raw feeds. Returns a list of alert strings (empty = clean)."""
     alerts: list[str] = []
     valued = [
         a

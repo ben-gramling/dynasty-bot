@@ -1,4 +1,4 @@
-"""Scoring engine for dynasty-bot — implements docs/scoring-system.md.
+"""Scoring engine for dynasty-bot — implements docs/scoring-system.md (v3).
 
 Pure functions over a Snapshot; no network, no Mongo. Entry point:
 
@@ -6,12 +6,10 @@ Pure functions over a Snapshot; no network, no Mongo. Entry point:
 """
 
 from core.scoring.engine import compute_all
-from core.scoring.params import ACTIVITY_PRIOR, OMEGA_SEEDS, Params
+from core.scoring.params import Params
 from core.scoring.snapshot import Snapshot, validate_snapshot
 
 __all__ = [
-    "ACTIVITY_PRIOR",
-    "OMEGA_SEEDS",
     "Params",
     "Snapshot",
     "compute_all",

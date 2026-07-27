@@ -16,18 +16,7 @@ def compute_all(snapshot: Snapshot, params: Params | None = None) -> dict:
     me = league.teams[league.me]
 
     board = wv.waiver_board(league, me)
-    cards = tr.trade_candidates(league)
-    per_opponent: dict[str, list] = {}
-    for card in cards:
-        per_opponent.setdefault(card["counterparty"], [])
-        if len(per_opponent[card["counterparty"]]) < params.top_per_opponent:
-            per_opponent[card["counterparty"]].append(card)
-    trade_recs = {
-        "disabled": (not league.offseason) and snapshot.week > params.trade_deadline_week,
-        "recommendations": cards[: params.top_league_wide],
-        "per_opponent": per_opponent,
-        "trade_zone": tr.trade_zone(league),
-    }
+    trade_recs = tr.trade_board(league)
     table = lg.league_table(league)
 
     unvalued = sorted(
@@ -39,7 +28,7 @@ def compute_all(snapshot: Snapshot, params: Params | None = None) -> dict:
             "week": snapshot.week,
             "draft_status": "pre_draft" if league.draft_pre else "complete",
             "current_year": league.current_year,
-            "omega_me": params.omega_me,
+            "w_min": params.w_min,
             "replacement": {k: round(v) for k, v in league.replacement.items()},
             "unvalued_rostered": unvalued,
             "alerts": list(league.alerts),

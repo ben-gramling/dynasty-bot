@@ -1,4 +1,4 @@
-"""Taxi economics — errata 9-12 (reviewer bug fix + house-rule model).
+"""Taxi mechanics — errata 9-12 (§8: legality and sequencing only, never ΔW).
 
 House rules: taxi stashable by 1st/2nd-year players only, adds legal until the
 lock after week 4, promote-out any time, vacated slots not refillable post-lock.
@@ -8,7 +8,7 @@ from dataclasses import replace
 
 import pytest
 
-from core.scoring import Params, model as md, transactions as tx, waivers as wv
+from core.scoring import Params, model as md, waivers as wv
 
 
 def _by_name(players, name):
@@ -36,16 +36,14 @@ class TestErratum9WealthDebit:
 
     def test_taxi_swap_wealth_is_zero_sum(self, league, me, ward, shedeur):
         vishan = league.teams["vishan"]
-        res_me = tx.score_transaction(
-            league, me, add_players=[shedeur], remove_ids=[ward.sid]
-        )
-        res_them = tx.score_transaction(
-            league, vishan, add_players=[ward], remove_ids=[shedeur.sid]
-        )
+        me2 = md.apply_tx(league, me, add_players=[shedeur], remove_ids=[ward.sid])
+        vi2 = md.apply_tx(league, vishan, add_players=[ward], remove_ids=[shedeur.sid])
         # pre-fix both sides came out positive (+2368 / +4426)
-        assert res_me.da == pytest.approx(shedeur.v - ward.v)
-        assert res_them.da == pytest.approx(ward.v - shedeur.v)
-        assert res_me.da + res_them.da == pytest.approx(0.0)
+        da_me = me2.a - me.a
+        da_them = vi2.a - vishan.a
+        assert da_me == pytest.approx(shedeur.v - ward.v)
+        assert da_them == pytest.approx(ward.v - shedeur.v)
+        assert da_me + da_them == pytest.approx(0.0)
 
     def test_post_lock_departure_slot_is_dead(self, snapshot, params, me, ward):
         wk6 = replace(
@@ -61,7 +59,7 @@ class TestErratum9WealthDebit:
 
 class TestErratum10Routing:
     def test_eligible_arrival_routes_to_surplus_slot(self, league):
-        """jaketoppen: zero crunch, surplus taxi slots — a young non-starter stashes."""
+        """jaketoppen: surplus taxi slots — a young non-starter stashes."""
         jake = league.teams["jaketoppen"]
         arroyo = _by_name(league.teams[league.me].taxi, "Elijah Arroyo")
         assert md.taxi_eligible(league, arroyo)
@@ -69,13 +67,12 @@ class TestErratum10Routing:
         t2 = md.apply_tx(league, jake, add_players=[arroyo])
         assert arroyo.sid in {p.sid for p in t2.taxi}
         assert len(t2.act) == len(jake.act)  # no active spot consumed
-        assert t2.cuts == jake.cuts  # no crunch charged
         assert t2.free_taxi == jake.free_taxi - 1
         assert t2.a == pytest.approx(jake.a + arroyo.v)  # still full wealth credit
 
     def test_earmarked_slots_are_never_consumed(self, league, me, shedeur):
-        """My one free slot is crunch absorption for the incoming picks — an
-        arriving stash candidate must go active + drop, not eat the slot."""
+        """My one free slot is overflow absorption for the incoming picks — an
+        arriving stash candidate must go active, not eat the slot."""
         assert md.taxi_slot_demand(league, me) >= me.free_taxi
         to_active, to_taxi = md.routed_split(league, me, [shedeur])
         assert to_taxi == [] and to_active == [shedeur]
@@ -99,22 +96,31 @@ class TestErratum10Routing:
         assert len(t2.taxi) == len(jake6.taxi)
 
     def test_route_taxi_false_forces_active(self, league):
-        """The promote path passes route_taxi=False — an add must land active even
-        when a surplus slot and eligibility would otherwise stash it."""
+        """route_taxi=False lands an add active even when a surplus slot and
+        eligibility would otherwise stash it."""
         jake = league.teams["jaketoppen"]
         arroyo = _by_name(league.teams[league.me].taxi, "Elijah Arroyo")
         t2 = md.apply_tx(league, jake, add_players=[arroyo], route_taxi=False)
         assert arroyo.sid in {p.sid for p in t2.act}
         assert len(t2.taxi) == len(jake.taxi)
 
-    def test_promotion_is_wealth_neutral(self, league, me, ward):
-        card = tx.promote_score(league, me, ward)
-        assert card["action"] == "PROMOTE"
-        assert card["sides"]["me"]["wealth_weighted"] == pytest.approx(0.0, abs=0.05)
+    def test_routing_shows_up_on_trade_cards(self, league):
+        """§5 card: an incoming stash-routed player is reported, not silently
+        absorbed (the card's net_roster excludes stashed arrivals)."""
+        from core.scoring import trades as tr
+
+        jake_assets = tr.team_assets(league, league.teams["jaketoppen"])
+        my_assets = tr.team_assets(league, league.teams[league.me])
+        # send Arroyo (taxi-eligible young TE) to jaketoppen for a 2028 4th
+        card = tr.propose(
+            league, "jaketoppen", [my_assets["Elijah Arroyo"]], [jake_assets["2028 R4 (own)"]]
+        )
+        assert card["taxi_stashed"]["them"] == ["Elijah Arroyo"]
+        assert card["net_roster"]["them"] == 0  # stashed, no active spot consumed
 
 
 class TestErratum11InsuranceShadows:
-    def test_default_off_matches_pinned_model(self, snapshot, params, league):
+    def test_default_off_matches_pinned_model(self, params, league):
         assert params.taxi_insurance_mult == 0.0
         assert not any(p.sid.endswith(":taxi") for t in league.teams.values() for p in t.pool)
 

@@ -1,15 +1,17 @@
 """League/team state built from a Snapshot: crosswalk join, replacement lines,
-pick pricing, lineups, wealth, rookie now-credit and roster-crunch (§§0–4)."""
+pick pricing, lineups (strength map + waiver ΔL only), posture, and the taxi/roster
+mechanics (§8) that gate trade legality. Nothing here feeds ΔW except face values."""
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from typing import Iterable, Mapping, Sequence
 
 from core.scoring import picks as pk
-from core.scoring.lineup import BIG, Lineup, PlayerV, removal_dl, solve
+from core.scoring import posture as ps
+from core.scoring.lineup import BIG, GROUPS, Lineup, PlayerV, solve
 from core.scoring.params import Params
 from core.scoring.snapshot import Snapshot
 
@@ -18,7 +20,6 @@ from core.scoring.snapshot import Snapshot
 class TeamCtx:
     name: str
     rid: int
-    omega: float
     pool: list[PlayerV]
     act: list[PlayerV]
     taxi: list[PlayerV]
@@ -28,21 +29,25 @@ class TeamCtx:
     faab: int
     free_taxi: int
     lineup: Lineup = None  # type: ignore[assignment]
-    nc: float = 0.0
-    a: float = 0.0
-    f: float = 0.0
-    cuts: int = 0
-    c: float = 0.0
-    cut_players: list[PlayerV] = field(default_factory=list)
-    rv0: dict[str, float] = field(default_factory=dict)
 
     @property
     def L(self) -> float:
         return self.lineup.L
 
     @property
-    def lam(self) -> float:
-        return self.lineup.L + self.nc
+    def picks_mv(self) -> float:
+        """Pick wealth at face KTC tranche value (§1 — the number everyone sees)."""
+        return sum(p.mv for p in self.picks)
+
+    @property
+    def a(self) -> float:
+        """Total face wealth: players at v + picks at tranche."""
+        return self.players_v_sum + self.picks_mv
+
+    @property
+    def f(self) -> float:
+        """Future assets: picks at tranche + taxi stash values (league tab)."""
+        return self.picks_mv + sum(p.v for p in self.taxi)
 
 
 @dataclass(slots=True)
@@ -57,6 +62,8 @@ class LeagueState:
     board: dict[int, pk.BoardEntry]
     tranches: dict[tuple[int, str, int], float]
     rank_l: dict[str, int]
+    group_rank: dict[str, dict[str, int]]  # group -> team -> league rank of lineup sum
+    postures: dict[str, dict]  # §4: team -> posture dict (label, evidence, source)
     fa_rookies: list[PlayerV]
     fa_vets: list[PlayerV]
     rookie_rank: dict[str, int]
@@ -92,7 +99,7 @@ def _parse_return(s: str | None) -> date | None:
 
 
 def _in_season_date(snapshot: Snapshot) -> date:
-    """Deterministic 'today' for the §9.5 return-window test: season start
+    """Deterministic 'today' for the injury return-window test: season start
     (Sleeper state; Sept 1 fallback) plus the elapsed weeks."""
     start = snapshot.state.get("season_start_date")
     season = int(snapshot.state.get("season") or snapshot.draft["season"])
@@ -101,7 +108,7 @@ def _in_season_date(snapshot: Snapshot) -> date:
 
 
 def _availability_u(params: Params, asset: Mapping | None, offseason: bool, ref: date) -> float:
-    """§9.5: u = 1 offseason; in-season OUT players are discounted, never revalued.
+    """u = 1 offseason; in-season OUT players are lineup-discounted, never revalued.
     0.6 only when `injuryReturn` is within u_out_short_weeks of `ref`, else 0.25."""
     if offseason or not asset:
         return params.u_healthy
@@ -160,7 +167,7 @@ def build_league(snapshot: Snapshot, params: Params) -> LeagueState:
         names = [players[s].name for s in unvalued_rostered]
         alerts.append(f"unvalued rostered players grew to {len(unvalued_rostered)}: {names}")
 
-    # free-agent pool + replacement lines (§2.3)
+    # free-agent pool + replacement lines (league-tab / waiver anchors)
     fa = sorted(
         (p for sid, p in players.items() if sid not in rostered and not p.unvalued),
         key=PlayerV.sort_key,
@@ -201,11 +208,9 @@ def build_league(snapshot: Snapshot, params: Params) -> LeagueState:
             pool = [p for p in roster_players if p.sid not in taxi_ids and p.sid not in reserve_ids]
         act = [p for p in roster_players if p.sid not in taxi_ids and p.sid not in reserve_ids]
         pool = pool + taxi_shadows(params, taxi)  # erratum 11 (no-op at mult 0)
-        omega = params.omega_for(name, me if me else "?")
         teams[name] = TeamCtx(
             name=name,
             rid=int(r["roster_id"]),
-            omega=omega,
             pool=pool,
             act=act,
             taxi=taxi,
@@ -215,24 +220,21 @@ def build_league(snapshot: Snapshot, params: Params) -> LeagueState:
             faab=budget - int((r.get("settings") or {}).get("waiver_budget_used") or 0),
             free_taxi=max(0, taxi_cap - len(taxi)),
         )
-    # my omega may have been resolved before `me` was known — fix all omegas now
-    seeds, games_back = _standings(snapshot)
-    for name, t in teams.items():
-        t.omega = params.omega_for(name, me)
-        if not offseason and snapshot.week >= 1:
-            from core.scoring.params import omega_in_season
-
-            t.omega = omega_in_season(
-                params, t.omega, snapshot.week, seeds.get(t.rid), games_back.get(t.rid, 0.0)
-            )
+    for t in teams.values():
         t.lineup = solve(t.pool, replacement, params)
 
     rank_l = {
         name: i + 1
         for i, name in enumerate(sorted(teams, key=lambda n: (-teams[n].lineup.L, n)))
     }
+    group_rank: dict[str, dict[str, int]] = {}
+    for grp in GROUPS:
+        ordered = sorted(
+            teams, key=lambda n: (-teams[n].lineup.group_sums[grp], n)
+        )
+        group_rank[grp] = {name: i + 1 for i, name in enumerate(ordered)}
 
-    # pick ownership + pricing (2026 picks cease to exist once the draft completes)
+    # pick ownership + pricing (current-year picks cease to exist once the draft completes)
     rid2name = {t.rid: n for n, t in teams.items()}
     slot_of_roster = {int(rid): int(slot) for slot, rid in snapshot.draft["slot_to_roster_id"].items()}
     years = [y for y in (current_year, current_year + 1, current_year + 2) if draft_pre or y != current_year]
@@ -245,122 +247,36 @@ def build_league(snapshot: Snapshot, params: Params) -> LeagueState:
         )
         teams[rid2name[owner_rid]].picks.append(p)
 
-    league = LeagueState(
+    # §4 posture (observed trades only; override wins)
+    def name_of(sid: str) -> str:
+        p = players.get(sid)
+        if p is not None:
+            return p.name
+        sup = snapshot.player_names.get(sid)
+        return sup.get("name", f"#{sid}") if sup else f"#{sid}"
+
+    postures = ps.classify_postures(
+        snapshot.transactions,
+        rid2name,
+        name_of,
+        window_days=params.posture_window_days,
+        min_trades=params.posture_min_trades,
+        overrides=snapshot.posture_overrides,
+    )
+    if not snapshot.transactions:
+        alerts.append("no transaction history in snapshot — every posture defaults NEUTRAL")
+
+    return LeagueState(
         snapshot=snapshot, params=params, players=players, ktc_by_id=ktc_by_id,
         teams=teams, me=me, replacement=replacement, board=board, tranches=tranches,
-        rank_l=rank_l, fa_rookies=fa_rookies, fa_vets=fa_vets, rookie_rank=rookie_rank,
+        rank_l=rank_l, group_rank=group_rank, postures=postures,
+        fa_rookies=fa_rookies, fa_vets=fa_vets, rookie_rank=rookie_rank,
         roster_cap=roster_cap, taxi_cap=taxi_cap, current_year=current_year,
         draft_pre=draft_pre, offseason=offseason, rostered=frozenset(rostered), alerts=alerts,
     )
-    for t in teams.values():
-        finalize_team(league, t)
-    return league
 
 
-def _standings(snapshot: Snapshot) -> tuple[dict[int, int], dict[int, float]]:
-    """Playoff seed (by record, points tiebreak — §2.5 of the league doc) and
-    games back, for the in-season ω ramp."""
-    rows = []
-    for r in snapshot.rosters:
-        s = r.get("settings") or {}
-        wins = int(s.get("wins") or 0)
-        fpts = float(s.get("fpts") or 0) + float(s.get("fpts_decimal") or 0) / 100
-        rows.append((int(r["roster_id"]), wins, fpts))
-    rows.sort(key=lambda x: (-x[1], -x[2], x[0]))
-    seeds = {rid: i + 1 for i, (rid, _, _) in enumerate(rows)}
-    top_wins = rows[0][1] if rows else 0
-    games_back = {rid: float(top_wins - wins) for rid, wins, _ in rows}
-    return seeds, games_back
-
-
-# ------------------------------------------------------- derived team quantities
-
-
-def e26_virtuals(league: LeagueState, picks: Iterable[pk.Pick]) -> list[PlayerV]:
-    """§3.3 E26(T): expected selections of current-year picks as virtual players."""
-    out = []
-    for p in picks:
-        if p.year == league.current_year and p.n is not None:
-            b = pk.board_value(league.board, p.n)
-            out.append(PlayerV(sid=f"virt:{p.n}", name=f"[{b.name}]", pos=b.pos, v=b.value, ktc_id=0))
-    return out
-
-
-def now_credit(league: LeagueState, pool: list[PlayerV], lineup: Lineup, picks: list[pk.Pick]) -> float:
-    if not league.draft_pre:
-        return 0.0
-    virt = e26_virtuals(league, picks)
-    if not virt:
-        return 0.0
-    aug = solve(pool + virt, league.replacement, league.params)
-    return league.params.rho_rook * (aug.L - lineup.L)
-
-
-def rv0_map(
-    league: LeagueState,
-    pool: list[PlayerV],
-    act: list[PlayerV],
-    lineup: Lineup,
-    omega: float,
-) -> dict[str, float]:
-    """Gross retention value RV⁰ (§4) for every active, exact."""
-    return {
-        p.sid: omega * removal_dl(lineup, pool, p, league.replacement, league.params)
-        + (1 - omega) * p.v
-        for p in act
-    }
-
-
-def crunch(
-    league: LeagueState,
-    pool: list[PlayerV],
-    act: list[PlayerV],
-    lineup: Lineup,
-    picks: Iterable[pk.Pick],
-    free_taxi: int,
-    omega: float,
-) -> tuple[int, float, list[PlayerV]]:
-    """§4: forced-cut count and Score-consistent value of the cuts at the next
-    compression event. Lazy-exact for starters: their RV⁰ lower bound (1−ω)v
-    almost always clears the cut line."""
-    p26 = sum(1 for p in picks if p.year == league.current_year)
-    if not league.draft_pre:
-        p26 = 0
-    cuts = max(0, len(act) + p26 - league.roster_cap - free_taxi)
-    if cuts == 0:
-        return 0, 0.0, []
-    params, repl = league.params, league.replacement
-    entries: list[tuple[float, bool, PlayerV]] = []  # (rv0_or_lb, is_exact, player)
-    for p in act:
-        if p.sid in lineup.starter_ids:
-            entries.append(((1 - omega) * p.v, False, p))
-        else:
-            exact = omega * removal_dl(lineup, pool, p, repl, params) + (1 - omega) * p.v
-            entries.append((exact, True, p))
-    entries.sort(key=lambda e: (e[0], e[2].sid))
-    while True:
-        head = entries[:cuts]
-        lazy = [i for i, e in enumerate(head) if not e[1]]
-        if not lazy:
-            break
-        for i in lazy:
-            val, _, p = entries[i]
-            exact = omega * removal_dl(lineup, pool, p, repl, params) + (1 - omega) * p.v
-            entries[i] = (exact, True, p)
-        entries.sort(key=lambda e: (e[0], e[2].sid))
-    head = entries[:cuts]
-    return cuts, sum(e[0] for e in head), [e[2] for e in head]
-
-
-def finalize_team(league: LeagueState, t: TeamCtx) -> None:
-    t.nc = now_credit(league, t.pool, t.lineup, t.picks)
-    picks_sum = sum(p.p for p in t.picks)
-    t.a = t.players_v_sum + picks_sum
-    t.f = picks_sum + sum(p.v for p in t.taxi)
-    t.rv0 = rv0_map(league, t.pool, t.act, t.lineup, t.omega)
-    t.cuts, t.c, t.cut_players = crunch(
-        league, t.pool, t.act, t.lineup, t.picks, t.free_taxi, t.omega
-    )
+# ------------------------------------------------- taxi/roster mechanics (§8)
 
 
 def taxi_pre_lock(league: LeagueState) -> bool:
@@ -400,9 +316,9 @@ def _min_starter_v(lineup) -> float:
 def taxi_slot_demand(league: LeagueState, t: TeamCtx) -> int:
     """Roster-spot shortfall the team already faces (incoming current-year picks
     included pre-draft) — free taxi slots up to this count are spoken for as
-    crunch absorption and must not be consumed by stash routing."""
-    p26 = sum(1 for p in t.picks if p.year == league.current_year) if league.draft_pre else 0
-    return max(0, len(t.act) + p26 - league.roster_cap)
+    overflow absorption and must not be consumed by stash routing."""
+    p_cy = sum(1 for p in t.picks if p.year == league.current_year) if league.draft_pre else 0
+    return max(0, len(t.act) + p_cy - league.roster_cap)
 
 
 def routed_split(
@@ -413,11 +329,9 @@ def routed_split(
     slots: int | None = None,
 ) -> tuple[list[PlayerV], list[PlayerV]]:
     """Erratum 10: pre-lock, incoming taxi-eligible players who would not crack the
-    starting lineup are stashed on SURPLUS free taxi slots (no active spot consumed,
-    no crunch); everyone else joins the active roster. Slots already needed to
-    absorb the team's own crunch (taxi_slot_demand) are never consumed — stashing
-    into them would trade a ~free drop for a forced cut. Post-lock: everyone is
-    active."""
+    starting lineup are stashed on SURPLUS free taxi slots (no active spot consumed);
+    everyone else joins the active roster. Slots already needed to absorb the team's
+    own overflow (taxi_slot_demand) are never consumed. Post-lock: everyone is active."""
     if not route_taxi or not taxi_pre_lock(league):
         return list(add_players), []
     left = (t.free_taxi if slots is None else slots) - taxi_slot_demand(league, t)
@@ -442,8 +356,8 @@ def apply_tx(
     remove_pick_keys: Iterable[str] = (),
     route_taxi: bool = True,
 ) -> TeamCtx:
-    """Post-transaction team state. Added players join the active roster unless
-    erratum-10 routing stashes them on taxi."""
+    """Post-transaction team state (legality/sequencing only — never a score input).
+    Added players join the active roster unless erratum-10 routing stashes them."""
     rm = set(remove_ids)
     rm_pk = set(remove_pick_keys)
     # Erratum 9: departures debit full value wherever the player lives — pool OR
@@ -475,17 +389,10 @@ def apply_tx(
         for p in add_picks
     ]
     t2 = TeamCtx(
-        name=t.name, rid=t.rid, omega=t.omega, pool=pool, act=act, taxi=taxi,
+        name=t.name, rid=t.rid, pool=pool, act=act, taxi=taxi,
         reserve_ids=t.reserve_ids,
         players_v_sum=t.players_v_sum - removed_v + sum(p.v for p in add_players),
         picks=picks, faab=t.faab, free_taxi=free_taxi,
     )
     t2.lineup = solve(pool, league.replacement, league.params)
-    t2.nc = now_credit(league, pool, t2.lineup, picks)
-    picks_sum = sum(p.p for p in picks)
-    t2.a = t2.players_v_sum + picks_sum
-    t2.f = picks_sum + sum(p.v for p in t2.taxi)
-    t2.cuts, t2.c, t2.cut_players = crunch(
-        league, pool, act, t2.lineup, picks, t2.free_taxi, t.omega
-    )
     return t2

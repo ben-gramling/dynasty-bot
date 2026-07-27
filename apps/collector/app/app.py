@@ -17,7 +17,7 @@ load_dotenv(find_dotenv(usecwd=True))
 from core import ktc, store
 from core.crosswalk import build_crosswalk
 from core.scoring import Snapshot, compute_all
-from core.sleeper import LEAGUE_ID_2026, MY_ROSTER_ID, SleeperClient
+from core.sleeper import LEAGUE_ID_2025, LEAGUE_ID_2026, MY_ROSTER_ID, SleeperClient
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("collector")
@@ -46,6 +46,27 @@ def collect(dry_run: bool = False) -> dict:
             trending_add = client.trending("add")
             trending_drop = client.trending("drop")
 
+            # §4 posture input: completed trades from BOTH league seasons.
+            # The trailing-12-month window itself lives in scoring/posture.py.
+            trade_history: list[dict] = []
+            for league_id, season in ((LEAGUE_ID_2025, "2025"), (LEAGUE_ID_2026, "2026")):
+                seen: set[str] = set()
+                for rnd in range(1, 19):
+                    for t in client.transactions(league_id, rnd) or []:
+                        if (
+                            t.get("type") == "trade"
+                            and t.get("status") == "complete"
+                            and t["transaction_id"] not in seen
+                        ):
+                            seen.add(t["transaction_id"])
+                            trade_history.append(
+                                {**t, "league_id": league_id, "season": season}
+                            )
+            trade_history.sort(
+                key=lambda t: (t.get("status_updated") or t.get("created") or 0,
+                               t["transaction_id"])
+            )
+
             last_fetched = None if dry_run else store.get_players_last_fetched()
             players_stale = (
                 last_fetched is None or started - last_fetched > PLAYERS_MAX_AGE
@@ -67,6 +88,7 @@ def collect(dry_run: bool = False) -> dict:
             "picks": len(traded_picks),
             "drafts": len(drafts),
             "transactions": len(transactions),
+            "trade_history": len(trade_history),
             "trending_add": len(trending_add),
             "trending_drop": len(trending_drop),
             "players": len(sleeper_players) if players_dump else 0,
@@ -83,9 +105,16 @@ def collect(dry_run: bool = False) -> dict:
         )
         mapped = {e["sleeper_id"] for e in crosswalk.values()}
         rostered = {pid for r in rosters for pid in (r.get("players") or [])}
+        # names for posture evidence too: players in the trade history may be
+        # long gone from rosters and KTC
+        traded_sids = {
+            str(sid)
+            for t in trade_history
+            for sid in {**(t.get("adds") or {}), **(t.get("drops") or {})}
+        }
         player_names = {
             sid: {"name": rec.get("full_name") or f"#{sid}", "pos": rec.get("position") or "UNK"}
-            for sid in rostered - mapped
+            for sid in (rostered | traded_sids) - mapped
             if (rec := sleeper_players.get(sid))
         }
         snapshot = Snapshot(
@@ -99,9 +128,11 @@ def collect(dry_run: bool = False) -> dict:
             crosswalk=crosswalk,
             my_roster_id=MY_ROSTER_ID,
             player_names=player_names,
-            # read before today's append: the DIP flag is invariant to whether a
+            # read before today's append: the dip note is invariant to whether a
             # player's own same-day value is in its trailing max
             value_history_max={} if dry_run else store.ktc_value_history_max(),
+            transactions=trade_history,
+            posture_overrides={} if dry_run else store.posture_overrides(),
         )
         computed_at = datetime.now(timezone.utc)
         outputs = compute_all(snapshot)
@@ -109,6 +140,7 @@ def collect(dry_run: bool = False) -> dict:
             logger.warning("scoring alert: %s", alert)
         counts["waiver_targets"] = len(outputs["waiver_board"]["targets"])
         counts["trade_recs"] = len(outputs["trade_recs"]["recommendations"])
+        counts["trade_pairs"] = len(outputs["trade_recs"]["pairs"])
         counts["league_rows"] = len(outputs["league_table"]["rows"])
 
         if not dry_run:
@@ -121,6 +153,7 @@ def collect(dry_run: bool = False) -> dict:
             store.replace_users(users)
             store.replace_picks(traded_picks)
             store.upsert_transactions(week, transactions)
+            store.upsert_trades(trade_history)
             if players_dump:
                 store.refresh_players(players_dump)
                 store.set_players_last_fetched(started)

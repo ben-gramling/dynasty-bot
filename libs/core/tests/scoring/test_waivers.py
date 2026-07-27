@@ -1,4 +1,5 @@
-"""§6 waiver tab + §11.1 worked example + §13.7 bid backtests."""
+"""§6 waiver tab: claim score = v(add) − v(drop), drop list ascending v, and the
+v1 §6.4 bid mechanics verbatim (Waller/Kyler backtests must never move)."""
 
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ def board(league, me):
 
 
 def test_rookie_inventory_split(board, league):
-    """§6.1: 59 rookies read-only; 155 true waiver targets."""
+    """59 rookies read-only; 155 true waiver targets."""
     assert len(board["rookie_inventory"]) == 59
     assert len(board["targets"]) == 155
     top = board["rookie_inventory"][0]
@@ -24,90 +25,59 @@ def test_rookie_inventory_split(board, league):
 
 
 def test_board_top_rows(board):
-    """§6.1 current top of the board: free-option TE/WR/RB rows at NetClaim 0."""
+    """§6: claim = v(add) − v(drop); my standing drop is Darren Waller (v = 0),
+    so the head of the board is simply the best-valued FAs."""
     rows = {r["player"]: r for r in board["targets"]}
-    for name, v, raw in [
-        ("Greg Dulcich", 2662, 1064.8),
-        ("Ja'Tavion Sanders", 2496, 998.4),
-        ("Jaylin Lane", 2432, 972.8),
-        ("Emanuel Wilson", 2410, 964.0),
+    for name, v in [
+        ("Greg Dulcich", 2662),
+        ("Ja'Tavion Sanders", 2496),
+        ("Jaylin Lane", 2432),
+        ("Emanuel Wilson", 2410),
     ]:
         r = rows[name]
         assert r["v"] == v
-        assert abs(r["netclaim"]) < 0.05
-        assert r["netclaim_raw"] == raw
+        assert r["claim"] == v  # drop v = 0
         assert r["drop"] == "Darren Waller"
-        assert r["free_option"] and r["recommended"]
-        assert r["bid"]["bid"] == 0 and r["bid"]["D"] == 0
+        assert r["recommended"] is True
+        assert r["bid"]["bid"] == 0 and r["bid"]["D"] == 0  # uncontested daily waivers
     assert [r["player"] for r in board["targets"][:4]] == [
         "Greg Dulcich", "Ja'Tavion Sanders", "Jaylin Lane", "Emanuel Wilson",
     ]
 
 
-def test_richardson_row_and_queue(board):
-    """§6.1: Richardson is the ΔL > 0 QB2 row — NetClaim −45.8 today, queued
-    post-draft at ≈ +549 (swap for Flacco once the crunch clears)."""
-    r = next(x for x in board["targets"] if x["player"] == "Anthony Richardson")
-    assert r["dL"] == 75.5
-    assert r["netclaim"] == -45.8
-    assert r["netclaim_raw"] == 893.9
-    assert not r["recommended"]
-    q = next(x for x in board["queued"] if x["player"] == "Anthony Richardson")
-    assert q["drop"] == "Joe Flacco"
-    assert q["score_post_draft"] == 548.9
-
-
-def test_dulcich_claim_decomposition(board):
-    """§11.1: the three labeled components of the free-option claim."""
-    r = next(x for x in board["targets"] if x["player"] == "Greg Dulcich")
-    side = r["sides"]["me"]
-    assert side["lineup_weighted"] == 0.0
-    assert side["wealth_weighted"] == 1064.8
-    assert side["crunch_term"] == -1064.8
-    assert side["crunch"]["cuts_before"] == 3 and side["crunch"]["cuts_after"] == 3
-    assert r["bid"] == {
-        "mode": "offseason", "D": 0, "netclaim": 0.0, "netclaim_raw": 1064.8,
-        "ceiling": 42.6, "clamp": None, "bid": 0,
-    }
-    # audit trail: the two 9-row lineup tables ship with the card
-    tables = r["audit"]["lineup_tables"]
-    assert len(tables["before"]) == 9 and len(tables["after"]) == 9
+def test_claims_sorted_and_positive_recommended(board):
+    claims = [r["claim"] for r in board["targets"]]
+    assert claims == sorted(claims, reverse=True)
+    for r in board["targets"]:
+        assert r["recommended"] == (r["claim"] > 0)
+        assert r["rank"] >= 1
 
 
 def test_offseason_board_all_zero_bids(board):
-    """§13.7: today's board — uncontested daily waivers, every bid $0."""
+    """Today's board — uncontested daily waivers, every bid $0."""
     assert all(r["bid"]["bid"] == 0 for r in board["targets"])
     assert all(r["bid"]["D"] == 0 for r in board["targets"][:20])
 
 
 def test_drop_queue(board):
-    """§6.2: actives ascending by crunch-aware RV with gross RV⁰ alongside."""
+    """§6: actives ascending by v — informational housekeeping."""
     rows = board["drops"]
-    head = [(r["player"], r["rv"], r["rv0"]) for r in rows[:5]]
+    head = [(r["player"], r["v"]) for r in rows[:5]]
     assert head == [
-        ("Darren Waller", 0.0, 0.0),
-        ("Stefon Diggs", 0.0, 1056.4),
-        ("Joe Flacco", 11.6, 344.5),
-        ("Theo Johnson", 30.9, 1087.3),
-        ("Tank Dell", 192.4, 1248.8),
+        ("Darren Waller", 0.0),
+        ("Joe Flacco", 919.0),
+        ("Stefon Diggs", 2641.0),
+        ("Theo Johnson", 2673.0),
+        ("Tank Dell", 3122.0),
     ]
-    waller = rows[0]
-    assert waller["scheduled_cut"] and waller["unvalued"]
-    diggs = rows[1]
-    assert diggs["scheduled_cut"]
-    # DROP_FLOOR: anything with RV⁰ > 2,500 requires explicit confirm
-    assert all(r["require_confirm"] == (r["rv0"] > 2500) for r in rows)
-    # §12: DROP rows share the decomposition schema (sides/dL_terms/audit)
-    for r in rows:
-        side = r["sides"]["me"]
-        assert {"omega", "dL", "dNC", "dA", "dC", "score", "dL_terms", "crunch"} <= set(side)
-        assert r["rv"] == -side["score"]
-        tables = r["audit"]["lineup_tables"]
-        assert len(tables["before"]) == 9 and len(tables["after"]) == 9
+    assert rows[0]["unvalued"] is True
+    vs = [r["v"] for r in rows]
+    assert vs == sorted(vs)
 
 
 def test_bid_backtests():
-    """§13.7 in-season calibration: Waller wk4 → $63 ($60 actual); Kyler wk11 → $117 ($115)."""
+    """§6.4 in-season calibration (verbatim from v1 §13.7):
+    Waller wk4 → $63 ($60 actual); Kyler wk11 → $117 ($115)."""
     p = Params()
     assert wv.bid_in_season(p, b_rem=190, dl=2000, d=1, netclaim_raw=99999) == 63
     assert wv.bid_in_season(p, b_rem=200, dl=3500, d=1, netclaim_raw=99999) == 117
@@ -141,7 +111,7 @@ def test_offseason_bid_ladder():
 
 
 def test_rival_demand_uses_live_budgets(league):
-    """§6.3: three rivals are at $0 until the reset; josbaski $44, ronakpatel32 $45."""
+    """§6.4 D(a): three rivals are at $0 until the reset; josbaski $44, ronakpatel32 $45."""
     faab = {n: t.faab for n, t in league.teams.items()}
     assert faab["cmgaither43"] == 0 and faab["jaketoppen"] == 0 and faab["millj"] == 0
     assert faab["josbaski"] == 44 and faab["ronakpatel32"] == 45

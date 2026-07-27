@@ -7,7 +7,8 @@ Document keys:
   rosters       _id = roster_id (int)
   users         _id = user_id
   picks         _id = "<season>-<round>-<original roster_id>"
-  transactions  _id = transaction_id, + week
+  transactions  _id = transaction_id, + week (trade docs also carry league_id/season)
+  posture-overrides  _id = display_name, {label: BUYER|SELLER|NEUTRAL} (§4 user override)
   players       _id = player_id (Sleeper dump subset, skill positions only)
   ktc-latest    _id = str(playerID), raw KTC asset
   ktc-history   _id = "<playerID>:<date>", {playerID, date, value_1qb, value_sf, rank_1qb}
@@ -176,6 +177,34 @@ def upsert_transactions(week: int, txs: list[dict], db=None) -> int:
         ]
     )
     return len(txs)
+
+
+def upsert_trades(trades: list[dict], db=None) -> int:
+    """Trade-history docs (both league seasons) into the transactions collection.
+    Docs keep their Sleeper shape; `week` mirrors `leg` for the collection contract."""
+    if not trades:
+        return 0
+    coll = _db(db)["transactions"]
+    coll.bulk_write(
+        [
+            ReplaceOne(
+                {"_id": t["transaction_id"]},
+                {**t, "_id": t["transaction_id"], "week": int(t.get("leg") or 1)},
+                upsert=True,
+            )
+            for t in trades
+        ]
+    )
+    return len(trades)
+
+
+def posture_overrides(db=None) -> dict[str, str]:
+    """§4 user overrides: display_name -> BUYER|SELLER|NEUTRAL."""
+    return {
+        doc["_id"]: doc["label"]
+        for doc in _db(db)["posture-overrides"].find({})
+        if doc.get("label") in ("BUYER", "SELLER", "NEUTRAL")
+    }
 
 
 def refresh_players(dump: dict[str, dict], db=None) -> int:

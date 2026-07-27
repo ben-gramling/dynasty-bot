@@ -1,15 +1,12 @@
-"""compute_all end-to-end: schema, §12 explanation-equals-computation, §13.9 guards,
-§13.2 crosswalk fixtures."""
+"""compute_all end-to-end: v3 output shape, scrape guards, crosswalk fixtures,
+mode switching. Pins from the committed fixtures."""
 
 from __future__ import annotations
 
 import json
 from dataclasses import replace as dc_replace
 
-import pytest
-
 from core.scoring import Snapshot, validate_snapshot
-from core.scoring.params import ACTIVITY_PRIOR, OMEGA_SEEDS
 
 
 def test_output_is_json_serializable(result):
@@ -19,82 +16,62 @@ def test_output_is_json_serializable(result):
 
 def test_top_level_shape(result):
     assert set(result) == {"meta", "waiver_board", "trade_recs", "league_table", "my_team_detail"}
-    assert result["meta"]["mode"] == "offseason"
-    assert result["meta"]["draft_status"] == "pre_draft"
-    assert result["meta"]["my_team"] == "bengramling"
-    assert result["meta"]["unvalued_rostered"] == ["Darren Waller"]
-    assert result["meta"]["alerts"] == []
+    meta = result["meta"]
+    assert meta["mode"] == "offseason"
+    assert meta["draft_status"] == "pre_draft"
+    assert meta["my_team"] == "bengramling"
+    assert meta["unvalued_rostered"] == ["Darren Waller"]
+    assert meta["alerts"] == []
+    assert meta["w_min"] == 150.0
     tr = result["trade_recs"]
+    assert set(tr) == {"disabled", "recommendations", "pairs", "notes"}
     assert tr["disabled"] is False
-    assert 1 <= len(tr["recommendations"]) <= 10
-    for opp, cards in tr["per_opponent"].items():
-        assert len(cards) <= 3
-        assert all(c["counterparty"] == opp for c in cards)
-
-
-def test_components_sum_to_score(result):
-    """§13.8/§12: displayed components sum to the score (0.1) and dL_terms sum to
-    dL, for EVERY emitted card — claims and trades alike."""
-    cards = list(result["trade_recs"]["recommendations"])
-    for cs in result["trade_recs"]["per_opponent"].values():
-        cards.extend(cs)
-    claim_rows = result["waiver_board"]["targets"]
-    drop_rows = result["waiver_board"]["drops"]
-    assert cards and claim_rows and drop_rows
-    for card in cards:
-        for side in card["sides"].values():
-            _check_side(side)
-    for row in claim_rows[:25]:
-        _check_side(row["sides"]["me"])
-    for row in drop_rows:  # §12: DROP rows share the decomposition schema
-        _check_side(row["sides"]["me"])
-        assert -row["sides"]["me"]["score"] == row["rv"]
-
-
-def _check_side(side):
-    total = side["lineup_weighted"] + side["wealth_weighted"] + side["crunch_term"]
-    assert abs(total - side["score"]) <= 0.16, side  # three 0.1-rounded components
-    recomputed = side["omega"] * (side["dL"] + side["dNC"]) + (1 - side["omega"]) * side["dA"] - side["dC"]
-    assert abs(recomputed - side["score"]) <= 0.2, side
-    terms_sum = sum(t["delta"] for t in side["dL_terms"])
-    assert abs(terms_sum - side["dL"]) <= 0.1 + 0.05 * len(side["dL_terms"]), side
-
-
-def test_audit_tables_on_every_card(result):
-    for card in result["trade_recs"]["recommendations"]:
-        tables = card["audit"]["lineup_tables"]
-        for who in ("me", "them"):
-            assert len(tables[who]["before"]) == 9
-            assert len(tables[who]["after"]) == 9
-            slots = [r["slot"] for r in tables[who]["before"]]
-            assert slots == ["QB", "RB1", "RB2", "WR1", "WR2", "WR3", "TE", "FLEX1", "FLEX2"]
+    assert 1 <= len(tr["recommendations"]) <= 30
+    assert isinstance(tr["pairs"], list) and isinstance(tr["notes"], list)
 
 
 def test_card_schema_matches_contract(result):
-    """§12 field census on a real emitted trade card."""
-    card = result["trade_recs"]["recommendations"][0]
-    for key in (
-        "action", "counterparty", "give", "get", "sides", "fairness", "tier",
-        "posture_fit", "activity", "anchor_ask_pct", "omega_sensitivity", "audit",
-        "rank_score_H",
-    ):
-        assert key in card, key
-    assert card["action"] == "TRADE"
-    for side in ("me", "them"):
-        s = card["sides"][side]
-        for key in ("omega", "dL", "dNC", "dA", "dC", "score", "dL_terms", "crunch"):
-            assert key in s, key
-    for entry in card["give"] + card["get"]:
-        assert entry["type"] in ("player", "pick")
-        if entry["type"] == "pick":
-            assert "pricing" in entry and "mv" in entry
-    assert set(card["fairness"]) >= {"adj", "raw_ratio", "cap"}
-    assert len(card["omega_sensitivity"]) == 3
-    assert ACTIVITY_PRIOR[card["counterparty"]] == card["activity"]
+    """§5/§10 field census on every emitted trade card."""
+    for card in result["trade_recs"]["recommendations"]:
+        for key in (
+            "id", "rank", "action", "counterparty", "give", "get", "dW", "gate",
+            "posture", "holes", "net_roster", "leg_type", "sequencing",
+            "taxi_stashed", "anchor_ask", "dip_notes", "unvalued", "exclusive_with",
+        ):
+            assert key in card, key
+        assert card["action"] == "TRADE"
+        assert card["leg_type"] in ("buy", "sell", "neutral")
+        assert set(card["dW"]) == {"me", "them"}
+        g = card["gate"]
+        for key in (
+            "adj_give", "adj_get", "gap", "gap_pct", "band", "band_pct",
+            "band_ok", "raw_ratio", "cap", "ratio_ok", "legal", "verdict",
+        ):
+            assert key in g, key
+        p = card["posture"]
+        assert p["label"] in ("BUYER", "SELLER", "NEUTRAL")
+        assert p["shape"] in ("players", "picks", "mixed")
+        assert p["source"] in ("trades", "override")
+        for entry in card["give"] + card["get"]:
+            assert entry["type"] in ("player", "pick")
+            assert {"key", "name", "v"} <= set(entry)
+
+
+def test_notes_mention_execution_protocol(result):
+    notes = result["trade_recs"]["notes"]
+    assert any("recomputes" in n for n in notes)
+    assert any("fire-sale" in n for n in notes)
+    # multiple offers to one counterparty are flagged (§4 appetite note)
+    per_opp: dict[str, int] = {}
+    for c in result["trade_recs"]["recommendations"]:
+        per_opp[c["counterparty"]] = per_opp.get(c["counterparty"], 0) + 1
+    for opp, n in per_opp.items():
+        if n > 1:
+            assert any(opp in note and "appetite" in note for note in notes), opp
 
 
 def test_scrape_guards(snapshot):
-    """§13.9: clean snapshot passes; synthetic violations alert."""
+    """Clean snapshot passes; synthetic violations alert."""
     assert validate_snapshot(snapshot) == []
     few = dc_replace(snapshot, ktc_assets=list(snapshot.ktc_assets)[:100])
     alerts = validate_snapshot(few)
@@ -110,7 +87,7 @@ def test_scrape_guards(snapshot):
 
 
 def test_crosswalk_fixtures(snapshot, league):
-    """§13.2: roster-4 position sums match the published table; taxi/reserve subsets."""
+    """Roster-4 position sums match the published table; taxi/reserve subsets."""
     r4 = next(r for r in snapshot.rosters if r["roster_id"] == 4)
     sums = {"QB": 0.0, "RB": 0.0, "WR": 0.0, "TE": 0.0}
     for sid in r4["players"]:
@@ -124,80 +101,31 @@ def test_crosswalk_fixtures(snapshot, league):
         assert set(r.get("reserve") or []) <= players
     rostered = {sid for r in snapshot.rosters for sid in r["players"]}
     unvalued = [sid for sid in rostered if league.players[sid].unvalued]
-    assert unvalued == ["2505"]  # Darren Waller — alert fires if this grows (§9.6)
-
-
-def test_omega_seed_table_complete():
-    assert len(OMEGA_SEEDS) == 11
-    assert set(ACTIVITY_PRIOR) == set(OMEGA_SEEDS) | {"joeydavis299"}
-
-
-def test_taxi_promotion_rows(result):
-    """§9.3: the board evaluates taxi promotions (Cam Ward: ω·ΔL = +126.5)."""
-    promos = {p["player"]: p for p in result["waiver_board"]["taxi_promotions"]}
-    assert set(promos) == {"Cam Ward", "Elijah Arroyo"}
-    assert promos["Cam Ward"]["omega_dl"] == 126.5
-    assert promos["Cam Ward"]["lock_penalty"] == 0.0  # pre-lock in July
+    assert unvalued == ["2505"]  # Darren Waller — alert fires if this grows
 
 
 def test_in_season_mode(snapshot, params):
-    """§9.5 one formula, one mode flag: in-season IR leaves the pool, ω ramps by
-    standings, the trade tab stays live through week 11."""
+    """One formula, one mode flag: in-season IR leaves the pool; the board stays
+    live through week 11."""
     from core.scoring import model as md
     from core.scoring import waivers as wv
 
-    rosters = []
-    for r in snapshot.rosters:
-        r = dict(r)
-        s = dict(r["settings"])
-        s["wins"] = 3 if r["roster_id"] == 2 else 1
-        r["settings"] = s
-        rosters.append(r)
     live = dc_replace(
-        snapshot,
-        state={**dict(snapshot.state), "season_type": "regular", "week": 3},
-        rosters=rosters,
+        snapshot, state={**dict(snapshot.state), "season_type": "regular", "week": 3}
     )
     league2 = md.build_league(live, params)
     jt = league2.teams["jaketoppen"]
     assert "George Kittle" not in {p.name for p in jt.pool}  # IR out of the pool
     assert jt.L < 47214.1  # July L counted Kittle/Jones; September must not
-    assert jt.omega == pytest.approx(0.70 + 0.15 * 3 / 11)  # seed-1 ramp
     board = wv.waiver_board(league2, league2.teams[league2.me])
     assert board["mode"] == "in-season"
+    from core.scoring import trades as tr
 
-
-def test_ir_recommended_before_drop(snapshot, params, league):
-    """§9.4: claim needing a spot + an OUT active + a free IR slot → IR move, no drop.
-    Offseason: game statuses don't exist, never suggest IR."""
-    from core.scoring import model as md
-    from core.scoring import waivers as wv
-
-    # synthetically knock out Tank Dell (my bench WR) in the KTC feed, in-season
-    assets = []
-    for a in snapshot.ktc_assets:
-        if a.get("playerName") == "Tank Dell":
-            a = {**a, "injury": {"injuryCode": 4, "injuryName": "Out", "injuryReturn": "Oct 1, 2026"}}
-        assets.append(a)
-    live = dc_replace(
-        snapshot,
-        state={**dict(snapshot.state), "season_type": "regular", "week": 3},
-        ktc_assets=assets,
-    )
-    league2 = md.build_league(live, params)
-    me2 = league2.teams[league2.me]
-    cand = wv.ir_move_candidate(league2, me2)
-    assert cand is not None and cand.name == "Tank Dell"
-    board = wv.waiver_board(league2, me2)
-    top = board["targets"][0]
-    assert top["ir_move"] == "Tank Dell"
-    assert top["drop"] is None
-    # never in the offseason (§9.4), even with the same injury feed
-    assert wv.ir_move_candidate(league, league.teams["bengramling"]) is None
+    assert tr.trade_board(league2)["disabled"] is False
 
 
 def test_unvalued_growth_alert(snapshot, params):
-    """§13.2: a second rostered player falling out of KTC coverage fires the alert."""
+    """A second rostered player falling out of KTC coverage fires the alert."""
     from core.scoring import model as md
 
     kid = next(
@@ -209,8 +137,8 @@ def test_unvalued_growth_alert(snapshot, params):
 
 
 def test_availability_long_out(snapshot, params):
-    """§9.5: OUT with expected return > u_out_short_weeks (or unknown) gets 0.25;
-    ≤ 3 weeks gets 0.6; offseason always 1.0."""
+    """OUT with expected return > u_out_short_weeks (or unknown) gets 0.25;
+    ≤ 3 weeks gets 0.6; offseason always 1.0. Lineup display only — never ΔW."""
     from core.scoring import model as md
 
     def knocked(ret: str | None) -> list[dict]:
@@ -228,7 +156,6 @@ def test_availability_long_out(snapshot, params):
         return next(p.u for p in league2.players.values() if p.name == "Tank Dell")
 
     live = {**dict(snapshot.state), "season_type": "regular", "week": 3}
-    # week 3 of 2026 (no season_start_date) → reference date Sept 15
     for ret, want in [
         ("Oct 1, 2026", params.u_out_short),  # 16 days out
         ("Dec 20, 2026", params.u_out_long),  # months out
@@ -245,8 +172,8 @@ def test_availability_long_out(snapshot, params):
     assert u_of(offseason) == params.u_healthy
 
 
-def test_dip_flag(snapshot, params):
-    """§7.6: −6% vs our trailing-30-day archive tags DIP."""
+def test_dip_note_from_archive(snapshot, params):
+    """Display note: −6% vs our trailing-30-day archive tags the waiver row."""
     from core.scoring import model as md
     from core.scoring import waivers as wv
 
@@ -258,11 +185,3 @@ def test_dip_flag(snapshot, params):
     assert row["dip"] is True
     others = [r for r in board["targets"] if r["player"] != "Greg Dulcich"]
     assert all(r["dip"] is False for r in others)  # no archive → never flagged
-
-
-def test_recommendation_ordering(result):
-    """Display order: acceptance tier first, then H (documented deviation: the
-    reference doc implies H-ranking; tier-first keeps takeable deals on top)."""
-    recs = result["trade_recs"]["recommendations"]
-    tiers = [r["tier"] for r in recs]
-    assert tiers == sorted(tiers)

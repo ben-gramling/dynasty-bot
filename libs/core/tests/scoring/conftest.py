@@ -1,5 +1,5 @@
 """Fixtures: the committed 2026-07-26 snapshot (data/) is the ground truth every
-quoted number in docs/scoring-system.md is pinned against."""
+pinned number in the v3 test suite is asserted against. Tests never hit live APIs."""
 
 from __future__ import annotations
 
@@ -23,9 +23,28 @@ def _load(path: Path):
 
 
 @pytest.fixture(scope="session")
-def snapshot() -> Snapshot:
+def transactions_fixture() -> list[dict]:
+    """Both league seasons' completed trades (recorded 2026-07-27, 33 trades)."""
+    return _load(SLEEPER / "transactions_trades.json")
+
+
+@pytest.fixture(scope="session")
+def snapshot(transactions_fixture) -> Snapshot:
     ktc = _load(DATA / "ktc_raw.json")
     xw = _load(DATA / "ktc_sleeper_map.json")
+    # names for posture evidence: traded players may be long gone from rosters/KTC
+    player_names = dict(_load(LOCAL / "player_names_supplement.json"))
+    dump = _load(SLEEPER / "players_trimmed.json")
+    mapped = {str(e["sleeper_id"]) for e in xw["crosswalk"].values()}
+    for t in transactions_fixture:
+        for sid in {**(t.get("adds") or {}), **(t.get("drops") or {})}:
+            sid = str(sid)
+            if sid not in mapped and sid not in player_names and sid in dump:
+                rec = dump[sid]
+                player_names[sid] = {
+                    "name": rec.get("full_name") or f"#{sid}",
+                    "pos": rec.get("position") or "UNK",
+                }
     return Snapshot(
         league=_load(SLEEPER / "league26.json"),
         rosters=_load(SLEEPER / "rosters26.json"),
@@ -36,7 +55,8 @@ def snapshot() -> Snapshot:
         ktc_assets=ktc["players"],
         crosswalk=xw["crosswalk"],
         my_roster_id=4,
-        player_names=_load(LOCAL / "player_names_supplement.json"),
+        player_names=player_names,
+        transactions=transactions_fixture,
     )
 
 

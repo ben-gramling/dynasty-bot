@@ -1,6 +1,9 @@
 # Fixtures
 
 Snapshots of the Sleeper API (2026 league) and derived boards captured 2026-07-26.
+`sleeper/transactions_trades.json` — both league seasons' completed trades (33
+docs, trimmed to posture-relevant fields), recorded 2026-07-27 from the Sleeper
+API; sole input to the §4 posture tests.
 Together with `data/ktc_raw.json` and `data/ktc_sleeper_map.json` they are the
 ground truth for the scoring tests, which assert EXACT expected numbers against
 these files. Tests never hit live APIs. Regenerating any fixture changes those
