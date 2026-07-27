@@ -11,7 +11,13 @@ Usage (from the repo root, .env required):
   uv run python scripts/score_trade.py list-assets [TEAM]
   uv run python scripts/score_trade.py score --opponent NAME \
       --give "Mike Evans, Courtland Sutton" --get "2027 R1 (own)" \
-      [--alternatives] [--json]
+      [--alternatives] [--hedge] [--json]
+  uv run python scripts/score_trade.py pairs --target 5 [--json]
+
+`pairs` computes the full §5 v3.3 pair space (same engine code path as the
+nightly board: enumerate-then-filter, posture as a hard constraint, count-
+neutral pairs ranked by return on inventory deployed) and prints everything
+clearing your target return.
 """
 
 from __future__ import annotations
@@ -164,30 +170,30 @@ def find_hedges(
     proposal's count deltas EXACTLY — the pair nets 0 players / 0 picks for me
     (§5 v3.2 strict count-neutrality, not just freed roster spots). Assets in
     the proposal are excluded; the proposal's counterparty is excluded (unrelated
-    hedge parties leak less)."""
-    me_t = league.teams[league.me]
+    hedge parties leak less). v3.3: candidates come from the engine's pair pool
+    WITHOUT the posture constraint (the desk treats posture qualitatively);
+    every candidate clears the leg return floor. Ranked by ΔW, top 3."""
+    pool = tr.build_pair_pool(league, enforce_posture=False)
     used = {a.key for a in give} | {a.key for a in get}
-    my_assets = [a for a in tr.give_list(league, me_t) if a.key not in used]
-    # a hedge is a clean exit, not a blockbuster: at most 2 assets out
-    my_pkgs = [p for p in tr._packages(league, my_assets) if len(p.assets) <= 2]
+    want = (-net_players, -net_picks)
     cands: list[tuple] = []
-    for opp in league.opponents:
+    for leg in pool.legs:
+        if (leg[tr.L_NP], leg[tr.L_NK]) != want:
+            continue
+        opp = pool.opp_names[leg[tr.L_OPP]]
         if opp == opp_name:
             continue
-        for cand in tr._enumerate_opponent(league, my_pkgs, opp):
-            g, t = cand[3], cand[4]
-            # exact complement on both currencies BEFORE ranking, so the ΔW
-            # ordering never starves a count-matching hedge out of the window
-            if t.n_players - g.n_players != -net_players:
-                continue
-            if t.n_picks - g.n_picks != -net_picks:
-                continue
-            cands.append(cand)
-    cands.sort(key=lambda c: (-c[0], c[1]))
+        g, t = leg[tr.L_GIVE], leg[tr.L_GET]
+        if len(g.assets) > 2:
+            continue  # a hedge is a clean exit, not a blockbuster
+        if used & set(g.keys) or used & set(t.keys):
+            continue
+        cands.append((leg[tr.L_DW], opp, g, t))
+    cands.sort(key=lambda c: (-c[0], c[1], c[2].keys, c[3].keys))
     out: list[dict] = []
     seen_core: set[tuple] = set()
-    for _dw, _shape, opp, g, t, *_ in cands[:80]:
-        core = (opp, max(g.assets, key=lambda a: a.v).key)
+    for _dw, opp, g, t in cands[:80]:
+        core = (opp, max(g.assets, key=lambda a: (a.v, a.key)).key)
         if core in seen_core:
             continue
         card = tr.propose(league, opp, list(g.assets), list(t.assets))
@@ -198,6 +204,16 @@ def find_hedges(
         if len(out) >= 3:
             break
     return out
+
+
+def fmt_legline(card: dict) -> str:
+    give = " + ".join(a["name"] for a in card["give"])
+    get = " + ".join(a["name"] for a in card["get"])
+    ret = card.get("return_pct")
+    return (
+        f"send {give} -> get {get}  "
+        f"(ΔW {card['dW']['me']:+.0f}, leg return {ret:g}%)"
+    )
 
 
 def fmt_asset(a: dict) -> str:
@@ -266,6 +282,15 @@ def main() -> None:
         "player AND pick count deltas (the pair nets 0 players / 0 picks for you)",
     )
     sc.add_argument("--json", action="store_true")
+    pr = sub.add_parser(
+        "pairs",
+        help="the §5 v3.3 pair board at your target return (same code path as the nightly board)",
+    )
+    pr.add_argument(
+        "--target", type=float, default=5.0,
+        help="minimum pair return, percent (dial presets: 1 / 2.5 / 5 / 10 / 20)",
+    )
+    pr.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
     db = get_db()
@@ -274,6 +299,75 @@ def main() -> None:
     if fresh["last_collect"]:
         age_h = (datetime.now(timezone.utc) - fresh["last_collect"].replace(tzinfo=timezone.utc)).total_seconds() / 3600
         print(f"[data age: {age_h:.1f}h since last successful collect]\n", file=sys.stderr)
+
+    if args.cmd == "pairs":
+        board = tr.trade_board(league)
+        if board.get("disabled"):
+            sys.exit("trade deadline has passed — the pair board is disabled")
+        hits = [p for p in board["pairs"] if p["return_pct"] >= args.target]
+        if args.json:
+            print(json.dumps(
+                {
+                    "target": args.target,
+                    "presets": board["presets"],
+                    "counts_by_threshold": board["counts_by_threshold"],
+                    "truncated": board["truncated"],
+                    "pairs": hits[:15],
+                    "notes": board["notes"],
+                },
+                indent=1, default=str,
+            ))
+            return
+        print("Pair counts by return threshold (saturated = verified floor; the space is deeper):")
+        target_count = None
+        for e in board["counts_by_threshold"]:
+            mark = ">= " if e["saturated"] else ""
+            print(f"  >= {e['threshold']:g}%: {mark}{e['count']}")
+            if e["threshold"] <= args.target:
+                target_count = e
+        trunc = board["truncated"]
+        if trunc:
+            mark = ">= " if trunc.get("total_saturated") else ""
+            print(
+                f"  stored: top {trunc['stored']} by return, of {mark}{trunc['total']} clearing the floor"
+            )
+        if not hits:
+            lower = [
+                e for e in board["counts_by_threshold"]
+                if e["count"] > 0 and e["threshold"] < args.target
+            ]
+            if lower:
+                best = max(lower, key=lambda e: e["threshold"])
+                mark = ">= " if best["saturated"] else ""
+                print(
+                    f"\nNo pairs clear {args.target:g}% today — {mark}{best['count']} "
+                    f"clear {best['threshold']:g}%."
+                )
+            else:
+                print(f"\nNo pairs clear {args.target:g}% today, and none clear any lower preset.")
+            return
+        print(
+            f"\nTop {min(15, len(hits))} of {len(hits)} stored pairs at return >= {args.target:g}%"
+            + (
+                f" (the full space at this target runs deeper — see the counts above)"
+                if target_count and target_count["count"] > len(hits)
+                else ""
+            )
+            + ":"
+        )
+        for p in hits[:15]:
+            b, s = p["buy"], p["sell"]
+            print(
+                f"\n{p['id']}  return {p['return_pct']:g}%  pair ΔW {p['dW_combined']:+g}  "
+                f"[0 players / 0 picks net · {p['fit_summary']}]"
+            )
+            print(f"  BUY  {b['counterparty']:<15} {fmt_legline(b)}")
+            print(f"  SELL {s['counterparty']:<15} {fmt_legline(s)}")
+        print(
+            "\nSequencing: agreement-first — verbal yes on the buy, execute the sell, "
+            "then the buy. The board recomputes after any executed trade."
+        )
+        return
 
     if args.cmd == "teams":
         for name, t in sorted(league.teams.items(), key=lambda kv: kv[1].lineup.L, reverse=True):
@@ -350,6 +444,7 @@ def main() -> None:
                   "exactly; pair nets 0 players / 0 picks):")
             for h in hedges:
                 pair_dw = card["dW"]["me"] + h["dW"]["me"]
+                pair_ret = tr.pair_return_pct(card, h)
                 order = (
                     "execute this sell FIRST"
                     if h["net_players"]["me"] < 0
@@ -358,7 +453,8 @@ def main() -> None:
                 print()
                 print(fmt_card(
                     h,
-                    header=f"Hedge — with {h['counterparty']}: pair ΔW {pair_dw:+.0f} "
+                    header=f"Hedge — with {h['counterparty']}: pair ΔW {pair_dw:+.0f} · "
+                    f"pair return {pair_ret:g}% on Σv you send "
                     f"(this leg {h['dW']['me']:+.0f}) · {order}",
                 ))
     if alts:

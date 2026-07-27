@@ -139,6 +139,8 @@ export interface TradeRec {
   get: TradeAsset[];
   /** ΔW both ways — exact zero-sum by construction (§11.1). */
   dW: { me: number; them: number };
+  /** §5 v3.3 leg return on inventory deployed: ΔW(me) ÷ Σv sent, percent. */
+  return_pct: number | null;
   gate: TradeGate;
   posture: TradePosture;
   /** Their league rank at each position I send — "aim at visible holes". */
@@ -179,6 +181,11 @@ export interface TradePair {
   id: string;
   buy: TradeRec;
   sell: TradeRec;
+  /**
+   * §5 v3.3 return on inventory deployed, percent: combined ΔW(me) ÷ Σv of
+   * every asset I send across both legs — the dial's ranking metric.
+   */
+  return_pct: number;
   dW_combined: number;
   /** Combined Δ(active roster) — sequencing context only. */
   net_roster: number;
@@ -188,6 +195,25 @@ export interface TradePair {
   net_picks: number;
   fit_summary: string;
   sequencing: string;
+  /** How many OTHER stored pairs share an asset with this one (§5 conflicts). */
+  overlaps: number;
+}
+
+/** §5 v3.3 dial counter: exact, or a verified floor when `saturated` ("≥ N"). */
+export interface ThresholdCount {
+  /** Percent, matches an entry of `presets`. */
+  threshold: number;
+  count: number;
+  /** True when the counting budget truncated the walk — count is a floor. */
+  saturated: boolean;
+}
+
+/** §5 v3.3 storage-cap honesty: top `stored` by return kept of `total`. */
+export interface TruncationInfo {
+  stored: number;
+  total: number;
+  /** True when `total` itself is a saturated floor ("of ≥ N"). */
+  total_saturated: boolean;
 }
 
 /** Unpaired buy — never a recommendation (§5 v3.2); one-line blocker only. */
@@ -203,11 +229,22 @@ export interface TradeRecsDoc {
   computed_at: string;
   meta: ScoringMeta;
   disabled: boolean;
-  /** Primary: count-neutral hedged pairs, ranked posture-fit first then combined ΔW. */
+  /**
+   * Primary (§5 v3.3): the stored pair space behind the target-return dial —
+   * count-neutral pairs ranked by return_pct descending, capped at the
+   * engine's max_stored_pairs (see `truncated`).
+   */
   pairs: TradePair[];
+  /** Dial presets, percent: [1, 2.5, 5, 10, 20]. */
+  presets: number[];
+  /** Honest pair counts per preset (ascending thresholds). */
+  counts_by_threshold: ThresholdCount[];
+  /** Set when more pairs cleared the floor than were stored; null otherwise. */
+  truncated: TruncationInfo | null;
   /**
    * Secondary: unpaired sell/neutral legs — building blocks with their count
    * deltas, never executable recommendations alone (§5 v3.2); never buys.
+   * Data for the trade-negotiator desk — the web does not render them.
    */
   recommendations: TradeRec[];
   watch: WatchEntry[];

@@ -142,6 +142,18 @@ def collect(dry_run: bool = False) -> dict:
         counts["trade_recs"] = len(outputs["trade_recs"]["recommendations"])
         counts["trade_pairs"] = len(outputs["trade_recs"]["pairs"])
         counts["league_rows"] = len(outputs["league_table"]["rows"])
+        # §5 v3.3 dial visibility: pair counts per return preset (saturated
+        # counters are verified floors, marked with a trailing +)
+        for e in outputs["trade_recs"]["counts_by_threshold"]:
+            key = f"pairs_ge_{e['threshold']:g}pct".replace(".", "_")
+            counts[key] = e["count"]
+        logger.info(
+            "trade pairs by threshold: %s%s",
+            {f"{e['threshold']:g}%": f"{e['count']}{'+' if e['saturated'] else ''}"
+             for e in outputs["trade_recs"]["counts_by_threshold"]},
+            " (truncated: %s)" % outputs["trade_recs"]["truncated"]
+            if outputs["trade_recs"]["truncated"] else "",
+        )
 
         if not dry_run:
             store.upsert_league(league)

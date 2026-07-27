@@ -121,41 +121,17 @@ def test_trade_and_posture_import_no_lineup():
 # ------------------------------------------------------- 5. bundles + exclusivity
 
 
-def test_pairs_v32_contract(result, params, league):
-    """§11.5 / §5 v3.2 strict: every pair embeds a gate-PASS buy and sell sharing
-    no assets, netting for my side EXACTLY 0 players AND 0 picks (plus the carried
-    Δ(active roster) ≤ 0), with honest combined ΔW; each buy/sell core appears at
-    most once. The committed fixture yields zero pairs under strict count
-    neutrality (pinned in test_trades) — the per-pair contract is exercised on a
-    fixture-built pair through the same selection code."""
+def test_pairs_v33_contract(result, params):
+    """§11.5 / §5 v3.3: every stored pair embeds a gate-PASS buy and sell with
+    DISTINCT counterparties sharing no assets, netting for my side EXACTLY
+    0 players AND 0 picks (plus the carried Δ(active roster) ≤ 0), with honest
+    combined ΔW and a return_pct that recomputes exactly from the embedded
+    cards; pairs are unique by their asset multisets. The fixture board is
+    dense (500 stored pairs) — the v3.2 zero-pair starvation is retired."""
     pairs = result["trade_recs"]["pairs"]
-    assert 0 <= len(pairs) <= params.max_pairs
+    assert 0 < len(pairs) <= params.max_stored_pairs
     keys = lambda c: {a["key"] for a in c["give"] + c["get"]}
-    # exercise the contract even when the board is honestly empty: run a real
-    # gate-PASS complementary buy/sell through _select_pairs and wrap like the board
-    from .test_trades import _v32_buy, _with_build_fields
-
-    if not pairs:
-        buy = _v32_buy(league)
-        sell = _with_build_fields(
-            tr.propose_by_names(league, "cmgaither43", ["Sam LaPorta"], ["2026 1.04"]),
-            "sell",
-        )
-        kept, _ = tr._select_pairs([buy], [sell], params.max_pairs)
-        assert kept
-        pairs = [
-            {
-                "buy": b,
-                "sell": s,
-                "dW_combined": round(b["dW"]["me"] + s["dW"]["me"], 1),
-                "net_roster": b["net_roster"]["me"] + s["net_roster"]["me"],
-                "net_players": tr.pair_count_deltas(b, s)[0],
-                "net_picks": tr.pair_count_deltas(b, s)[1],
-                "fit_summary": "buy leg fits posture",
-                "sequencing": "roster space available: the buy may execute first",
-            }
-            for b, s in kept
-        ]
+    seen_multisets = set()
     for pair in pairs:
         buy, sell = pair["buy"], pair["sell"]
         assert buy["leg_type"] == "buy" and sell["leg_type"] == "sell"
@@ -168,8 +144,17 @@ def test_pairs_v32_contract(result, params, league):
         assert pair["net_roster"] <= 0
         assert pair["net_roster"] == buy["net_roster"]["me"] + sell["net_roster"]["me"]
         assert pair["dW_combined"] == round(buy["dW"]["me"] + sell["dW"]["me"], 1)
-        # different counterparties (required unless a buy has no other exit)
-        assert buy["counterparty"] != sell["counterparty"]
+        assert pair["return_pct"] == tr.pair_return_pct(buy, sell)
+        assert buy["counterparty"] != sell["counterparty"]  # v3.3: strict
+        # §5 v3.3 posture constraint holds on both legs
+        assert tr.posture_allows(buy["posture"]["label"], buy["posture"]["shape"])
+        assert tr.posture_allows(sell["posture"]["label"], sell["posture"]["shape"])
+        ms = (
+            tuple(sorted(a["key"] for a in buy["give"] + buy["get"])),
+            tuple(sorted(a["key"] for a in sell["give"] + sell["get"])),
+        )
+        assert ms not in seen_multisets  # deduped by exact asset-multiset pair
+        seen_multisets.add(ms)
         assert pair["fit_summary"] in (
             "both legs fit posture",
             "buy leg fits posture",
@@ -203,18 +188,31 @@ def test_no_standalone_buy_anywhere(result):
         assert "no clean exit" in w["blocker"]
 
 
-def test_exclusive_with_fires_on_shared_assets(result):
-    """§11.5: any two DISPLAYED legs sharing a concrete asset name each other."""
-    legs = board_legs(result["trade_recs"])
-    keys = {c["id"]: {a["key"] for a in c["give"] + c["get"]} for c in legs}
-    for a in legs:
-        for b in legs:
+def test_exclusive_with_and_pair_overlaps(result):
+    """§11.5 (v3.3 scope): the secondary list carries exact leg-level
+    exclusive_with among itself; the 500-pair board carries the honest
+    pair-level `overlaps` tally instead (leg-level id lists across a full
+    stored board would be O(pairs²) payload) — verified by reconstruction on
+    a sample. Pair legs carry an empty exclusive_with by design."""
+    doc = result["trade_recs"]
+    recs = doc["recommendations"]
+    keys = {c["id"]: {a["key"] for a in c["give"] + c["get"]} for c in recs}
+    for a in recs:
+        for b in recs:
             if a["id"] == b["id"]:
                 continue
             if keys[a["id"]] & keys[b["id"]]:
                 assert b["id"] in a["exclusive_with"], (a["id"], b["id"])
             else:
                 assert b["id"] not in a["exclusive_with"], (a["id"], b["id"])
+    pair_keys = [
+        {a["key"] for leg in (p["buy"], p["sell"]) for a in leg["give"] + leg["get"]}
+        for p in doc["pairs"]
+    ]
+    for i, p in enumerate(doc["pairs"][:20]):  # reconstruction sample
+        expect = sum(1 for j, k in enumerate(pair_keys) if j != i and pair_keys[i] & k)
+        assert p["overlaps"] == expect, p["id"]
+        assert p["buy"]["exclusive_with"] == [] and p["sell"]["exclusive_with"] == []
 
 
 # ------------------------------------------------------------------- 8. legality
@@ -249,8 +247,11 @@ def test_determinism_byte_for_byte(snapshot, params, result):
 
 
 def test_runtime_within_budget(snapshot, params):
-    """§11.10: v3 has no solver in the trade path — strictly cheaper than v1
-    (v1 measured 8.2s on the dev box; v3 ≈ 1.2s). Generous absolute bound."""
+    """§11.10: v3.3 enumerates ~370k candidate legs and walks the pair space
+    behind budgets (measured ≈ 7s on the dev box vs v3.1's ≈ 1.2s — the
+    enumerate-then-filter inversion buys completeness with bounded time).
+    The 30s bound holds slack for slower CI runners, not for regressions of
+    kind: any unbounded walk blows straight past it."""
     t0 = time.perf_counter()
     compute_all(snapshot, params)
     assert time.perf_counter() - t0 < 30.0

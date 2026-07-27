@@ -26,17 +26,22 @@ def test_top_level_shape(result):
     assert meta["alerts"] == []
     assert meta["w_min"] == 150.0
     tr = result["trade_recs"]
-    assert set(tr) == {"disabled", "pairs", "recommendations", "watch", "notes"}
+    assert set(tr) == {
+        "disabled", "pairs", "presets", "counts_by_threshold", "truncated",
+        "recommendations", "watch", "notes",
+    }
     assert tr["disabled"] is False
-    # the PRIMARY list (§5 v3.2): strict count-neutrality leaves this fixture
-    # with zero pairs — honest scarcity, pinned in test_trades
-    assert 0 <= len(tr["pairs"]) <= 8
+    # the PRIMARY list (§5 v3.3): the stored pair space behind the return dial —
+    # dense on this fixture (500 stored, truncation reported honestly)
+    assert 0 < len(tr["pairs"]) <= 500
+    assert tr["presets"] == [1.0, 2.5, 5.0, 10.0, 20.0]
+    assert {e["threshold"] for e in tr["counts_by_threshold"]} == set(tr["presets"])
     assert 0 <= len(tr["recommendations"]) <= 10  # secondary: building blocks
     assert isinstance(tr["watch"], list) and isinstance(tr["notes"], list)
     for pair in tr["pairs"]:
         assert set(pair) == {
-            "id", "buy", "sell", "dW_combined", "net_roster", "net_players",
-            "net_picks", "fit_summary", "sequencing",
+            "id", "buy", "sell", "return_pct", "dW_combined", "net_roster",
+            "net_players", "net_picks", "fit_summary", "sequencing", "overlaps",
         }
         assert pair["net_players"] == 0 and pair["net_picks"] == 0  # §5 v3.2
 
@@ -79,14 +84,13 @@ def test_notes_mention_execution_protocol(result):
     notes = result["trade_recs"]["notes"]
     assert any("recomputes" in n for n in notes)
     assert any("fire-sale" in n for n in notes)
-    assert any("hedged pair" in n for n in notes)  # §5 v3.1 board unit
-    # multiple offers to one counterparty are flagged (§4 appetite note)
-    per_opp: dict[str, int] = {}
-    for c in board_legs(result["trade_recs"]):
-        per_opp[c["counterparty"]] = per_opp.get(c["counterparty"], 0) + 1
-    for opp, n in per_opp.items():
-        if n > 1:
-            assert any(opp in note and "appetite" in note for note in notes), opp
+    assert any("0 players / 0 picks" in n for n in notes)  # §5 pair unit
+    assert any("target-return dial" in n for n in notes)  # §5 v3.3 selectivity
+    assert any("posture is a hard engine constraint" in n for n in notes)
+    assert any("saturated" in n for n in notes)  # honest-counter semantics
+    # truncation is reported in the notes whenever the doc carries the flag
+    if result["trade_recs"]["truncated"]:
+        assert any("storage cap" in n for n in notes)
 
 
 def test_scrape_guards(snapshot):

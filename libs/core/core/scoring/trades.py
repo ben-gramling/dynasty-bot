@@ -1,6 +1,25 @@
 """§2/§3/§5 trades: ΔW = Σv(in) − Σv(out) at face KTC, the fairness gate,
-posture-shaped ranking, fully count-neutral pairing (§5 v3.2: a recommended
-pair nets exactly 0 players AND 0 picks for my side).
+enumerate-then-filter pairing behind the user's target-return dial (§3/§5 v3.3),
+posture as a hard pair-pool constraint, fully count-neutral pairs (§5 v3.2:
+a recommended pair nets exactly 0 players AND 0 picks for my side).
+
+v3.3 replaces v3.1's prune-then-pair (minimal-gap selection starved the
+count-neutral matcher to zero pairs): enumeration now keeps in-band,
+fleece-clean, cheap-legality-clean package variants for EVERY (counterparty,
+give-package, count-signature) combination, and selectivity moves to the
+pair-level return dial. Two engine-bound honesty notes (the raw space is
+combinatorial — billions of pair permutations clear the band on real data):
+
+- Each leg must clear `return_floor` on its own Σv sent. The pair return is
+  the sent-weighted mediant of its leg returns, so every pair built from
+  floor-clean legs clears the dial floor by construction; pairs that would
+  subsidize a sub-floor leg with the other leg's excess are not proposed.
+- Per (counterparty, give-package, count-signature) only the top
+  `variants_per_signature` in-band gets by ΔW are pooled. With distinct
+  counterparties enforced, a partner leg can never collide with the get side,
+  so a higher-ΔW same-signature variant strictly dominates its siblings for
+  every pairing — the count-signature diversity the v3.2 matcher starved on
+  is preserved in full. Counters saturate honestly at `pair_scan_budget`.
 
 The scoring path is pure face-value arithmetic — this module imports NOTHING
 from the lineup solver (§11.2; enforced by an import-graph test). Roster
@@ -174,26 +193,38 @@ def gate_info(league: md.LeagueState, give: Package, get: Package) -> dict:
     }
 
 
-def band_ceiling(league: md.LeagueState, opp_name: str, give: Package) -> float | None:
-    """§3 v3.1 negotiating-room annotation: the maximum in-band, fleece-clean get
-    Σv the opponent's give-list can form against this give package (what v3.0
-    would have proposed). Information only — never the proposal. None when the
-    opponent has no in-band package clearing W_min for this give."""
-    params = league.params
-    their_pkgs = sorted(
+def _sorted_opp_pkgs(league: md.LeagueState, opp_name: str) -> tuple[list[float], list[Package]]:
+    """The opponent's give-list packages sorted by (Σv, keys), plus the parallel
+    Σv list for bisecting — shared by band_ceiling and the board's ceiling cache."""
+    pkgs = sorted(
         _packages(league, give_list(league, league.teams[opp_name])),
         key=lambda p: (p.v_sum, p.keys),
     )
-    vsums = [p.v_sum for p in their_pkgs]
-    i0 = bisect_left(vsums, give.v_sum + params.w_min)
+    return [p.v_sum for p in pkgs], pkgs
+
+
+def _ceiling_from(
+    params, give: Package, vsums: list[float], pkgs: list[Package]
+) -> float | None:
+    i0 = bisect_left(vsums, give.v_sum / params.fleece_ratio)
     i1 = bisect_right(vsums, params.fleece_ratio * give.v_sum)
     for i in range(i1 - 1, i0 - 1, -1):  # descending Σv: first in-band is the max
-        t = their_pkgs[i]
+        t = pkgs[i]
         hi = t.adjv if t.adjv > give.adjv else give.adjv
         band = max(params.fairness_abs, params.fairness_rel * hi)
         if abs(t.adjv - give.adjv) <= band:
             return t.v_sum
     return None
+
+
+def band_ceiling(league: md.LeagueState, opp_name: str, give: Package) -> float | None:
+    """§3 negotiating-room annotation: the maximum in-band, fleece-clean get Σv
+    the opponent's give-list can form against this give package (what v3.0 would
+    have proposed). Information only — never the proposal. None when the opponent
+    has no in-band, fleece-clean package for this give (v3.3: no W_min edge —
+    W_min retired as a gate)."""
+    vsums, pkgs = _sorted_opp_pkgs(league, opp_name)
+    return _ceiling_from(league.params, give, vsums, pkgs)
 
 
 def _apply(league: md.LeagueState, t: md.TeamCtx, get: Package, give: Package) -> md.TeamCtx:
@@ -236,24 +267,35 @@ def legality(
 
 
 def offer_shape(give: Package) -> str:
-    """What the counterparty receives: mostly players, mostly picks, or mixed."""
-    pv = sum(a.v for a in give.assets if a.kind == "player")
-    kv = sum(a.v for a in give.assets if a.kind == "pick")
-    if pv > kv:
+    """What the counterparty receives, majority by COUNT of assets received
+    (§5 v3.3): "players", "picks", or "mixed" on ties."""
+    if give.n_players > give.n_picks:
         return "players"
-    if kv > pv:
+    if give.n_picks > give.n_players:
         return "picks"
     return "mixed"
 
 
 def _shape_rank(shape: str, label: str) -> int:
     """0 = shape fits posture, 1 = NEUTRAL counterparty, 2 = mismatched shape.
-    Orders within equal ΔW only — never gates, never scores (§4)."""
+    Orders/annotates only; the PAIR-POOL constraint is posture_allows (§5 v3.3)."""
     if (shape == "players" and label == ps.BUYER) or (shape == "picks" and label == ps.SELLER):
         return 0
     if label == ps.NEUTRAL:
         return 1
     return 2
+
+
+def posture_allows(label: str, shape: str) -> bool:
+    """§5 v3.3 hard engine constraint: a BUYER counterparty must RECEIVE a
+    players-majority package, a SELLER a picks-majority one; NEUTRAL accepts
+    anything (mixed shapes clear only NEUTRAL). Overrides apply upstream
+    (league.postures already folds `posture-overrides` in)."""
+    if label == ps.BUYER:
+        return shape == "players"
+    if label == ps.SELLER:
+        return shape == "picks"
+    return True
 
 
 def _holes(league: md.LeagueState, opp_name: str, give: Package) -> list[dict]:
@@ -342,6 +384,8 @@ def build_card(
         "give": [_asset_dict(a) for a in give.assets],
         "get": [_asset_dict(a) for a in get.assets],
         "dW": {"me": round(dw_me, 1), "them": round(-dw_me, 1)},
+        # §5 v3.3 leg return on inventory deployed: ΔW(me) ÷ Σv sent, percent
+        "return_pct": round(100 * dw_me / give.v_sum, 2) if give.v_sum > 0 else None,
         "gate": gate,
         "posture": {
             "label": posture["label"],
@@ -406,7 +450,8 @@ def propose(
     card["gate"]["verdict"] = "PASS" if not reasons else "FAIL: " + "; ".join(reasons)
     if 0 < card["dW"]["me"] < league.params.w_min:
         card.setdefault("notes", []).append(
-            f"ΔW +{card['dW']['me']:g} is below the W_min {league.params.w_min:g} noise floor"
+            f"ΔW +{card['dW']['me']:g} sits inside KTC's ±{league.params.w_min:g} noise "
+            "band — display note only; W_min is not a gate (v3.3)"
         )
     return card
 
@@ -421,100 +466,301 @@ def propose_by_names(
     )
 
 
-# ------------------------------------------------------------------ the board §5
+# ------------------------------------------- the pair pool + the board (§5 v3.3)
 
 
-def _enumerate_opponent(
-    league: md.LeagueState,
-    my_pkgs: list[Package],
-    opp_name: str,
-) -> list[tuple[float, int, str, Package, Package, float, int]]:
-    """In-band, fleece-clean, minima-clean candidate legs against one opponent,
-    (dW, shape_rank, opp, give, get, ceiling, variant). §3 v3.1 proposal policy —
-    the band is a tolerance, not a target: per give-package the per_give_keep
-    SMALLEST-gap gets that still clear W_min survive, ascending (variant 0 is THE
-    proposal; later variants exist only as fallbacks for full-legality rejects,
-    never to widen the gap). `ceiling` is the band-edge maximum in-band,
-    fleece-clean get Σv for the give package — the package v3.0 would have
-    proposed, carried as negotiating-room information only."""
+_POS4 = ("QB", "RB", "WR", "TE")
+_MIN4 = tuple(MIN_POS[p] for p in _POS4)
+
+# leg tuple layout inside PairPool.legs
+L_RET, L_DW, L_SENT, L_NP, L_NK, L_OPP, L_MASK, L_GIVE, L_GET = range(9)
+
+
+@dataclass(slots=True)
+class PairPool:
+    """§5 v3.3 candidate-leg pool: for EVERY (counterparty, give-package,
+    count-signature) combination, the top `variants_per_signature` in-band,
+    fleece-clean, cheap-legality-clean gets by ΔW — each leg clearing
+    `return_floor` on its own Σv sent, each posture-clean when
+    `enforce_posture` (the pair-pool default; the CLI hedge finder disables it
+    because the desk treats posture qualitatively)."""
+
+    opp_names: list[str]
+    legs: list[tuple]  # (ret, dw, sent, np, nk, opp_i, my_give_mask, give, get)
+    buckets: dict[tuple[int, int], list[int]]  # (np, nk) signature -> leg indices
+    opp_pkgs: dict[str, tuple[list[float], list[Package]]]  # Σv-sorted; ceilings
+    enforce_posture: bool
+
+
+def _team_pos_vec(t: md.TeamCtx) -> tuple[int, int, int, int]:
+    c = _pos_counts(t.act)
+    return (c.get("QB", 0), c.get("RB", 0), c.get("WR", 0), c.get("TE", 0))
+
+
+def _pos_vec(pkg: Package) -> tuple[int, int, int, int]:
+    d = dict(pkg.pos_out)
+    return (d.get("QB", 0), d.get("RB", 0), d.get("WR", 0), d.get("TE", 0))
+
+
+def build_pair_pool(league: md.LeagueState, enforce_posture: bool = True) -> PairPool:
+    """§5 v3.3 enumeration — no minimal-gap pruning, no W_min gate. Per opponent,
+    per give-package, per get count-signature: walk the Σv window
+    [gv·(1+return_floor), gv·fleece_ratio] descending (that order IS ΔW
+    descending) and keep the first `variants_per_signature` candidates passing
+    the EXACT §3.1 band and cheap positional legality on both sides. The band
+    window on adjv is exact: below g_adj the tolerance is max(abs, rel·g_adj);
+    above it, t_adj ≤ max(g_adj+abs, g_adj/(1−rel))."""
     params = league.params
     me_t = league.teams[league.me]
-    opp_t = league.teams[opp_name]
-    label = league.postures.get(opp_name, {}).get("label", ps.NEUTRAL)
-    their_pkgs = sorted(
-        _packages(league, give_list(league, opp_t)), key=lambda p: (p.v_sum, p.keys)
-    )
-    vsums = [p.v_sum for p in their_pkgs]
-    adjvs = [p.adjv for p in their_pkgs]
-    # adjv-ordered view: the minimal-gap search walks outward from g.adjv, which
-    # IS ascending-gap order — no full-range scan, no sort per give-package
-    by_adj = sorted(range(len(their_pkgs)), key=lambda i: (adjvs[i], their_pkgs[i].keys))
-    adjs = [adjvs[i] for i in by_adj]
-    n = len(adjs)
-    out: list[tuple[float, int, str, Package, Package, float, int]] = []
-    w_min, fleece, keep = params.w_min, params.fleece_ratio, params.per_give_keep
-    fairness_abs, fairness_rel = params.fairness_abs, params.fairness_rel
+    my_pkgs = _packages(league, give_list(league, me_t))
+    my_counts = _team_pos_vec(me_t)
+    my_act = len(me_t.act)
+    # partner-leg collisions can only involve MY give assets (distinct
+    # counterparties own disjoint pools) — bitmask exactly those
+    asset_bit: dict[str, int] = {}
     for g in my_pkgs:
-        gv, g_adj = g.v_sum, g.adjv
-        lo, hi_v = gv + w_min, fleece * gv
-        i0 = bisect_left(vsums, lo)
-        i1 = bisect_right(vsums, hi_v)
-        if i0 >= i1:
+        for k in g.keys:
+            if k not in asset_bit:
+                asset_bit[k] = 1 << len(asset_bit)
+    K = params.variants_per_signature
+    floor = params.return_floor
+    fa, fr, fl = params.fairness_abs, params.fairness_rel, params.fleece_ratio
+    g_info = []
+    for g in my_pkgs:
+        gp = _pos_vec(g)
+        deficit = (
+            max(0, _MIN4[0] - (my_counts[0] - gp[0])),
+            max(0, _MIN4[1] - (my_counts[1] - gp[1])),
+            max(0, _MIN4[2] - (my_counts[2] - gp[2])),
+            max(0, _MIN4[3] - (my_counts[3] - gp[3])),
+        )
+        mask = 0
+        for k in g.keys:
+            mask |= asset_bit[k]
+        g_info.append((g, gp, offer_shape(g), deficit, mask))
+    legs: list[tuple] = []
+    buckets: dict[tuple[int, int], list[int]] = {}
+    opp_pkgs: dict[str, tuple[list[float], list[Package]]] = {}
+    for oi, opp_name in enumerate(league.opponents):
+        opp_t = league.teams[opp_name]
+        label = league.postures.get(opp_name, {}).get("label", ps.NEUTRAL)
+        vsums_all, pkgs_all = _sorted_opp_pkgs(league, opp_name)
+        opp_pkgs[opp_name] = (vsums_all, pkgs_all)
+        opp_counts = _team_pos_vec(opp_t)
+        opp_act = len(opp_t.act)
+        # partition their packages by class (n_players, n_picks); Σv-ascending
+        # order carries over from the shared sort
+        classes: dict[tuple[int, int], tuple[list, list, list, list]] = {}
+        for p in pkgs_all:
+            c = classes.setdefault((p.n_players, p.n_picks), ([], [], [], []))
+            c[0].append(p.v_sum)
+            c[1].append(p.adjv)
+            c[2].append(_pos_vec(p))
+            c[3].append(p)
+        for g, gp, shape, deficit, mask in g_info:
+            if enforce_posture and not posture_allows(label, shape):
+                continue
+            gv, g_adj = g.v_sum, g.adjv
+            lo_v, hi_v = gv * (1.0 + floor), gv * fl
+            band_g = fa if fa > fr * g_adj else fr * g_adj
+            left_lim = g_adj - band_g
+            right_lim = g_adj / (1.0 - fr)
+            if g_adj + fa > right_lim:
+                right_lim = g_adj + fa
+            for (tp_, tk), (vs, adjs, pvs, lst) in classes.items():
+                if my_act + tp_ - g.n_players < 9 or opp_act + g.n_players - tp_ < 9:
+                    continue
+                i0 = bisect_left(vs, lo_v)
+                i1 = bisect_right(vs, hi_v)
+                if i0 >= i1:
+                    continue
+                np_, nk = tp_ - g.n_players, tk - g.n_picks
+                kept = 0
+                for i in range(i1 - 1, i0 - 1, -1):  # descending Σv == ΔW desc
+                    t_adj = adjs[i]
+                    if t_adj < left_lim or t_adj > right_lim:
+                        continue
+                    hi = t_adj if t_adj > g_adj else g_adj
+                    gap = t_adj - g_adj
+                    if gap < 0:
+                        gap = -gap
+                    if gap > (fa if fa > fr * hi else fr * hi):
+                        continue  # exact §3.1 band recheck (same arithmetic as gate_info)
+                    tv_pos = pvs[i]
+                    if (
+                        tv_pos[0] < deficit[0]
+                        or tv_pos[1] < deficit[1]
+                        or tv_pos[2] < deficit[2]
+                        or tv_pos[3] < deficit[3]
+                    ):
+                        continue  # my minima, pre-routing (cheap)
+                    if (
+                        opp_counts[0] - tv_pos[0] + gp[0] < _MIN4[0]
+                        or opp_counts[1] - tv_pos[1] + gp[1] < _MIN4[1]
+                        or opp_counts[2] - tv_pos[2] + gp[2] < _MIN4[2]
+                        or opp_counts[3] - tv_pos[3] + gp[3] < _MIN4[3]
+                    ):
+                        continue  # their minima, pre-routing (cheap)
+                    dw = vs[i] - gv
+                    buckets.setdefault((np_, nk), []).append(len(legs))
+                    legs.append((dw / gv, dw, gv, np_, nk, oi, mask, g, lst[i]))
+                    kept += 1
+                    if kept >= K:
+                        break
+    return PairPool(
+        opp_names=list(league.opponents),
+        legs=legs,
+        buckets=buckets,
+        opp_pkgs=opp_pkgs,
+        enforce_posture=enforce_posture,
+    )
+
+
+def _tp_estimate(pool: PairPool, r: float) -> int:
+    """Uncorrected two-pointer size of the ≥r pair space: σ_r(leg) = ΔW − r·Σv
+    sent, and σ_r(buy) + σ_r(sell) ≥ 0 ⟺ pair return ≥ r (return is the
+    sent-weighted mediant). Upper bound on the valid count — no counterparty /
+    overlap / legality corrections; used to place the collection cutoff and to
+    detect sparse markets."""
+    legs = pool.legs
+    total = 0
+    for sig, idxs in pool.buckets.items():
+        if sig[0] <= 0:
             continue
-        # ceiling: max in-band, fleece-clean Σv — first band-pass descending from
-        # the fleece edge (the package v3.0 would have proposed; info only)
-        ceiling = None
-        for i in range(i1 - 1, i0 - 1, -1):
-            t_adj = adjvs[i]
-            hi = t_adj if t_adj > g_adj else g_adj
-            gap = t_adj - g_adj
-            if gap < 0:
-                gap = -gap
-            if gap <= (fairness_abs if fairness_abs > fairness_rel * hi else fairness_rel * hi):
-                ceiling = vsums[i]
+        comp = pool.buckets.get((-sig[0], -sig[1]))
+        if not comp:
+            continue
+        bs = sorted(legs[i][L_DW] - r * legs[i][L_SENT] for i in idxs)
+        ss = sorted(legs[i][L_DW] - r * legs[i][L_SENT] for i in comp)
+        n = len(ss)
+        for sb in reversed(bs):
+            lo = bisect_left(ss, -sb)
+            if lo >= n:
                 break
-        if ceiling is None:
-            continue  # nothing in-band for this give package
-        # walk limits: beyond these no candidate can be in-band (left side band is
-        # exactly max(abs, rel·g_adj); right side bound is the superset
-        # max(g_adj+abs, g_adj/(1-rel)) — the exact band re-checks per candidate)
-        band_g = fairness_abs if fairness_abs > fairness_rel * g_adj else fairness_rel * g_adj
-        left_lim = g_adj - band_g
-        right_lim = g_adj / (1.0 - fairness_rel)
-        if g_adj + fairness_abs > right_lim:
-            right_lim = g_adj + fairness_abs
-        shape = _shape_rank(offer_shape(g), label)
-        r = bisect_left(adjs, g_adj)
-        l = r - 1
-        kept = 0
-        while kept < keep:
-            lv = l >= 0 and adjs[l] >= left_lim
-            rv = r < n and adjs[r] <= right_lim
-            if not lv and not rv:
-                break
-            if lv and (not rv or g_adj - adjs[l] <= adjs[r] - g_adj):
-                idx, t_adj = by_adj[l], adjs[l]
-                l -= 1
-            else:
-                idx, t_adj = by_adj[r], adjs[r]
-                r += 1
-            tv = vsums[idx]
-            if tv < lo or tv > hi_v:
-                continue
-            hi = t_adj if t_adj > g_adj else g_adj
-            gap = t_adj - g_adj
-            if gap < 0:
-                gap = -gap
-            if gap > (fairness_abs if fairness_abs > fairness_rel * hi else fairness_rel * hi):
-                continue
-            t = their_pkgs[idx]
-            if not _pos_legal_cheap(me_t, g.pos_out, t.pos_out, t.n_players - g.n_players):
-                continue
-            if not _pos_legal_cheap(opp_t, t.pos_out, g.pos_out, g.n_players - t.n_players):
-                continue
-            out.append((tv - gv, shape, opp_name, g, t, ceiling, kept))
-            kept += 1
-    return out
+            total += n - lo
+    return total
+
+
+def _leg_legal(league: md.LeagueState, me_t: md.TeamCtx, pool: PairPool, i: int, cache: dict):
+    """Full §3.3 legality for pool leg i, memoized: verdicts dict when legal,
+    False when not (an illegal leg can never appear in any pair or card)."""
+    v = cache.get(i)
+    if v is None:
+        leg = pool.legs[i]
+        verdicts = legality(
+            league, me_t, league.teams[pool.opp_names[leg[L_OPP]]],
+            give=leg[L_GIVE], get=leg[L_GET],
+        )
+        v = verdicts if verdicts["legal"] else False
+        cache[i] = v
+    return v
+
+
+def _walk_pairs(
+    league: md.LeagueState,
+    pool: PairPool,
+    r: float,
+    budget: int,
+    legal: dict,
+    out: list[tuple[float, int, int]],
+) -> tuple[int, bool]:
+    """Enumerate the VALID pair space at return ≥ r: complementary
+    count-signature buckets crossed in σ_r-descending order with early exit;
+    constraints per §5 v3.3 — distinct counterparties, disjoint assets (my-give
+    masks; get-sides cannot collide across distinct counterparties), both legs
+    full-legality PASS (memoized in `legal`). Appends (return, buy_i, sell_i)
+    to `out`. Returns (pairs_visited, completed) — completed=False means the
+    visit budget truncated the walk and `out` is a verified floor, not the
+    whole space. Deterministic throughout."""
+    legs = pool.legs
+    me_t = league.teams[league.me]
+    visits = 0
+    for sig in sorted(pool.buckets):
+        if sig[0] <= 0:
+            continue
+        comp_idx = pool.buckets.get((-sig[0], -sig[1]))
+        if not comp_idx:
+            continue
+        # (−σ_r, pool index): ascending sort == σ_r-descending walk, deterministic
+        bs = sorted((r * legs[i][L_SENT] - legs[i][L_DW], i) for i in pool.buckets[sig])
+        ss = sorted((r * legs[i][L_SENT] - legs[i][L_DW], i) for i in comp_idx)
+        ns0 = ss[0][0]
+        for nb, bi in bs:
+            if nb + ns0 > 0.0:
+                break  # even the best sell can't lift this (or any later) buy to r
+            b = legs[bi]
+            b_opp, b_mask, b_dw, b_sent = b[L_OPP], b[L_MASK], b[L_DW], b[L_SENT]
+            vb = None
+            for ns, si in ss:
+                if nb + ns > 0.0:
+                    break
+                visits += 1
+                if visits > budget:
+                    return visits - 1, False
+                s = legs[si]
+                if s[L_OPP] == b_opp or (s[L_MASK] & b_mask):
+                    continue
+                if vb is None:
+                    vb = _leg_legal(league, me_t, pool, bi, legal)
+                if vb is False:
+                    break  # illegal buy leg: no pair with it exists
+                if _leg_legal(league, me_t, pool, si, legal) is False:
+                    continue
+                out.append(((b_dw + s[L_DW]) / (b_sent + s[L_SENT]), bi, si))
+    return visits, True
+
+
+def _search_cutoff(pool: PairPool, floor: float, hi: float, target: int) -> float:
+    """Highest return cutoff whose uncorrected pair count still reaches `target`
+    — where the stored-pair collection walk starts in a dense market."""
+    lo = floor
+    for _ in range(22):
+        mid = (lo + hi) / 2.0
+        if _tp_estimate(pool, mid) >= target:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def pair_return_pct(buy_card: dict, sell_card: dict) -> float:
+    """§5 v3.3 pair return on inventory deployed, from two leg cards:
+    combined ΔW(me) ÷ Σv of every asset I send across both legs, in percent."""
+    sent = sum(a["v"] for a in buy_card["give"]) + sum(a["v"] for a in sell_card["give"])
+    dw = buy_card["dW"]["me"] + sell_card["dW"]["me"]
+    return round(100.0 * dw / sent, 2)
+
+
+def find_pool_leg(pool: PairPool, opp_name: str, give_keys, get_keys) -> int | None:
+    """Locate a pool leg by counterparty + exact asset multisets (tests/CLI)."""
+    gk, tk = tuple(sorted(give_keys)), tuple(sorted(get_keys))
+    oi = pool.opp_names.index(opp_name)
+    for i, leg in enumerate(pool.legs):
+        if leg[L_OPP] == oi and leg[L_GIVE].keys == gk and leg[L_GET].keys == tk:
+            return i
+    return None
+
+
+def pair_in_space(league: md.LeagueState, pool: PairPool, buy_i: int, sell_i: int) -> float | None:
+    """Validate the §5 v3.3 pair constraints for two pool legs; returns the
+    pair's return FRACTION when the pair is in the computed space, else None.
+    (Exhaustiveness spot-checks and the CLI use this — no enumeration needed:
+    the cross over complementary buckets is total, so pool membership plus
+    these constraints IS membership in the pair space.)"""
+    b, s = pool.legs[buy_i], pool.legs[sell_i]
+    if b[L_NP] <= 0 or s[L_NP] >= 0:
+        return None
+    if b[L_NP] + s[L_NP] != 0 or b[L_NK] + s[L_NK] != 0:
+        return None
+    if b[L_OPP] == s[L_OPP] or (b[L_MASK] & s[L_MASK]):
+        return None
+    me_t = league.teams[league.me]
+    cache: dict[int, Any] = {}
+    if _leg_legal(league, me_t, pool, buy_i, cache) is False:
+        return None
+    if _leg_legal(league, me_t, pool, sell_i, cache) is False:
+        return None
+    return (b[L_DW] + s[L_DW]) / (b[L_SENT] + s[L_SENT])
 
 
 def pair_count_deltas(buy_card: dict, sell_card: dict) -> tuple[int, int]:
@@ -527,139 +773,155 @@ def pair_count_deltas(buy_card: dict, sell_card: dict) -> tuple[int, int]:
     )
 
 
-def _select_pairs(
-    buys: list[dict], sells: list[dict], max_pairs: int
-) -> tuple[list[tuple[dict, dict]], set[tuple]]:
-    """§5 v3.2 pair selection over emitted gate-PASS legs (cards still carrying
-    their _keys/_core/_sort build fields): asset-disjoint buy × sell combinations
-    netting EXACTLY 0 players AND 0 picks for my side. Ranking unchanged from
-    v3.1 — posture-fit count desc, then combined ΔW desc; different
-    counterparties preferred (same-counterparty only when that buy has no other
-    exit); each buy/sell core used at most once. Returns (kept pairs, paired buy
-    cores) — the watch list skips cores that found an exit."""
-    pair_cands: list[tuple[bool, int, float, dict, dict]] = []
-    diff_cp_buys: set[int] = set()
-    for b in buys:
-        for s in sells:
-            if b["_keys"] & s["_keys"]:
-                continue
-            if pair_count_deltas(b, s) != (0, 0):
-                continue
-            fits = int(b["posture"]["fit"]) + int(s["posture"]["fit"])
-            dwc = round(b["dW"]["me"] + s["dW"]["me"], 1)
-            same_cp = b["counterparty"] == s["counterparty"]
-            if not same_cp:
-                diff_cp_buys.add(id(b))
-            pair_cands.append((same_cp, fits, dwc, b, s))
-    kept_pairs: list[tuple[dict, dict]] = []
-    used_buy_cores: set[tuple] = set()
-    used_sell_cores: set[tuple] = set()
-    for same_cp, fits, dwc, b, s in sorted(
-        pair_cands, key=lambda pc: (-pc[1], -pc[2], pc[3]["_sort"], pc[4]["_sort"])
-    ):
-        if same_cp and id(b) in diff_cp_buys:
-            continue  # a different-counterparty exit exists — prefer it
-        if b["_core"] in used_buy_cores or s["_core"] in used_sell_cores:
-            continue  # dedup by buy-core / sell-core
-        used_buy_cores.add(b["_core"])
-        used_sell_cores.add(s["_core"])
-        kept_pairs.append((b, s))
-        if len(kept_pairs) >= max_pairs:
-            break
-    return kept_pairs, used_buy_cores
-
-
 def trade_board(league: md.LeagueState) -> dict:
-    """§5 v3.2: the recommendation unit is the fully count-neutral PAIR (buy side
-    + sell side, embedded full cards) netting exactly 0 players AND 0 picks for
-    my side. `recommendations` is the labeled secondary list of sell/neutral legs
-    — building blocks with their count deltas, not executable recommendations;
-    standalone buys never surface; unpaired buys land on the `watch` list with
-    their blocker."""
+    """§5 v3.3: the exhaustively-crossed, dial-filtered PAIR board. `pairs` is
+    the stored top-`max_stored_pairs` by return (each fully count-neutral, both
+    legs gate-PASS, posture-clean, distinct counterparties, no shared assets),
+    `counts_by_threshold` carries honest per-preset counts (exact, or a verified
+    floor flagged `saturated` when the space outruns the counting budget),
+    `truncated` reports the storage cap honestly. `recommendations` (top
+    unpaired sell/neutral legs by ΔW) and `watch` (unpaired buys) stay as data
+    for the trade-negotiator desk — the web renders pairs only."""
     params = league.params
+    presets = sorted(float(p) for p in params.return_presets)
     if not league.offseason and league.snapshot.week > params.trade_deadline_week:
         return {
             "disabled": True,
             "pairs": [],
+            "presets": presets,
+            "counts_by_threshold": [
+                {"threshold": p, "count": 0, "saturated": False} for p in presets
+            ],
+            "truncated": None,
             "recommendations": [],
             "watch": [],
             "notes": [f"trade deadline (week {params.trade_deadline_week}) has passed"],
         }
-    me_t = league.teams[league.me]
-    my_pkgs = _packages(league, give_list(league, me_t))
-    candidates: list[tuple[float, int, str, Package, Package, float, int]] = []
-    for opp_name in league.opponents:
-        candidates.extend(_enumerate_opponent(league, my_pkgs, opp_name))
 
-    # one proposal per (opponent, give-package): variants ascend by gap (§3 v3.1),
-    # so the first fully-legal variant IS the minimal-gap proposal; later variants
-    # only replace a full-legality reject, never widen the gap
-    groups: dict[tuple[str, tuple[str, ...]], list] = {}
-    for cand in candidates:
-        groups.setdefault((cand[2], cand[3].keys), []).append(cand)
-    # groups best-first: posture fit, then the proposal's ΔW, then keys (§11.9)
-    ordered = sorted(
-        groups.values(),
-        key=lambda vs: (vs[0][1], -vs[0][0], vs[0][2], vs[0][3].keys, vs[0][4].keys),
-    )
+    pool = build_pair_pool(league)
+    budget = params.pair_scan_budget
+    floor = params.return_floor
+    hi_edge = params.fleece_ratio - 1.0  # leg returns cap at the fleece edge
+    legal: dict[int, Any] = {}
+    counts: dict[float, tuple[int, bool]] = {}
 
-    cards: list[dict] = []
-    seen_cores: dict[tuple[str, str, str], int] = {}
-    budget = params.legality_budget
-    # per-side quotas: the pair board needs BOTH buy-legs and sell-legs even when
-    # the fit-first ordering front-loads one side (predicted by net player count,
-    # which since v3.2 IS the leg_type sign; the emitted card fills the quota)
-    want_buy = 2 * params.max_pairs
-    want_sell = params.top_league_wide + params.max_pairs
-    n_buy = n_sell = 0
-    for variants in ordered:
-        if budget <= 0 or (n_buy >= want_buy and n_sell >= want_sell):
-            break
-        net_pred = variants[0][4].n_players - variants[0][3].n_players
-        if net_pred > 0 and n_buy >= want_buy:
-            continue
-        if net_pred <= 0 and n_sell >= want_sell:
-            continue
-        for dw, shape, opp_name, g, t, ceiling, _var in variants:
-            core = (
-                opp_name,
-                max(g.assets, key=lambda a: (a.v, a.key)).key,
-                max(t.assets, key=lambda a: (a.v, a.key)).key,
+    stored_complete = True
+    tp_floor = _tp_estimate(pool, floor)
+    if tp_floor <= budget:
+        # sparse market: the whole ≥floor space fits the budget — everything exact
+        out: list[tuple[float, int, int]] = []
+        _walk_pairs(league, pool, floor, budget, legal, out)
+        all_pairs = sorted(out, key=lambda x: (-x[0], x[1], x[2]))
+        for p in presets:
+            counts[p] = (sum(1 for ret, _, _ in all_pairs if 100.0 * ret >= p), False)
+        stored = all_pairs[: params.max_stored_pairs]
+        total, total_sat = len(all_pairs), False
+    else:
+        # dense market: exact counts preset-by-preset (descending) until a pass
+        # saturates the budget; lower presets inherit that verified floor
+        sat: tuple[int, bool] | None = None
+        best_floor = 0
+        for p in sorted(presets, reverse=True):
+            if sat is not None:
+                counts[p] = sat
+                continue
+            out = []
+            _, done = _walk_pairs(league, pool, p / 100.0, budget, legal, out)
+            n = len(out) if done else max(len(out), best_floor)
+            counts[p] = (n, not done)
+            best_floor = max(best_floor, n)
+            if not done:
+                sat = counts[p]
+        # stored pairs: adaptive cutoff — the highest return whose uncorrected
+        # pair count still covers the storage cap with correction headroom. The
+        # very top of the space can be almost entirely correction losses (a
+        # single dominant leg crossed against colliding partners — collisions
+        # cost sub-microsecond visits, hence the deeper collection budget), so
+        # the ladder rescales on VALID yield, ending at the full budget.
+        collect_budget = max(params.pair_collect_budget, budget)
+        stored: list[tuple[float, int, int]] = []
+        stored_complete = True
+        for target in (
+            max(2000, 4 * params.max_stored_pairs),
+            max(40_000, 80 * params.max_stored_pairs),
+            collect_budget,
+        ):
+            target = min(target, collect_budget)
+            r_star = (
+                floor
+                if _tp_estimate(pool, floor) <= target
+                else _search_cutoff(pool, floor, hi_edge, target)
             )
-            if seen_cores.get(core, 0) >= params.dedup_variants:
-                break  # a like-shaped proposal already displays — never widen the gap
-            if budget <= 0:
+            out = []
+            _, done = _walk_pairs(league, pool, r_star, collect_budget, legal, out)
+            stored = sorted(out, key=lambda x: (-x[0], x[1], x[2]))
+            stored_complete = done
+            if len(stored) >= params.max_stored_pairs or r_star <= floor or not done:
                 break
-            budget -= 1
-            verdicts = legality(league, me_t, league.teams[opp_name], give=g, get=t)
-            if not verdicts["legal"]:
-                continue  # fall to the next-smallest gap for this give package
-            seen_cores[core] = seen_cores.get(core, 0) + 1
-            card = build_card(league, opp_name, g, t, leg=verdicts, ceiling=ceiling)
-            card["gate"]["verdict"] = "PASS"
-            card["_keys"] = set(g.keys) | set(t.keys)
-            card["_core"] = core
-            card["_sort"] = (shape, -dw, opp_name, g.keys, t.keys)
-            cards.append(card)
-            if card["leg_type"] == "buy":
-                n_buy += 1
-            else:
-                n_sell += 1
-            break  # smallest legal gap found — this give package is settled
+        stored = stored[: params.max_stored_pairs]
+        lowest = presets[0]
+        if abs(lowest / 100.0 - floor) < 1e-9:
+            total, total_sat = counts[lowest]
+        else:  # non-default config: the floor sits below the lowest preset
+            out = []
+            _, done = _walk_pairs(league, pool, floor, budget, legal, out)
+            total, total_sat = max(len(out), counts[lowest][0]), not done
 
-    buys = [c for c in cards if c["leg_type"] == "buy"]
-    sells = [c for c in cards if c["leg_type"] == "sell"]
-    neutrals = [c for c in cards if c["leg_type"] == "neutral"]
+    # per-preset honesty: stored pairs are themselves verified floors
+    counts_by_threshold = []
+    for p in presets:
+        c, s = counts[p]
+        n_stored = sum(1 for ret, _, _ in stored if 100.0 * ret >= p)
+        counts_by_threshold.append(
+            {"threshold": p, "count": max(c, n_stored), "saturated": s}
+        )
 
-    # PAIRS (§5 v3.2, strict): buy-leg × sell-leg, no shared assets, combined
-    # counts exactly Δ(players) = 0 AND Δ(picks) = 0 for my side; different
-    # counterparties required unless a buy has no other exit
-    kept_pairs, used_buy_cores = _select_pairs(buys, sells, params.max_pairs)
+    truncated = None
+    if total_sat or total > len(stored):
+        truncated = {
+            "stored": len(stored),
+            "total": max(total, len(stored)),
+            "total_saturated": total_sat,
+        }
 
-    pairs: list[dict] = []
-    for n, (b, s) in enumerate(kept_pairs, 1):
-        b["id"] = f"P{n}-buy"
-        s["id"] = f"P{n}-sell"
+    # ---- cards ----
+    me_t = league.teams[league.me]
+    legs = pool.legs
+    ceil_cache: dict[tuple[int, tuple], float | None] = {}
+
+    def leg_card(i: int, leg_id: str) -> dict:
+        leg = legs[i]
+        opp_name = pool.opp_names[leg[L_OPP]]
+        give, get = leg[L_GIVE], leg[L_GET]
+        ck = (leg[L_OPP], give.keys)
+        if ck not in ceil_cache:
+            vsums, pkgs = pool.opp_pkgs[opp_name]
+            ceil_cache[ck] = _ceiling_from(params, give, vsums, pkgs)
+        card = build_card(
+            league, opp_name, give, get, leg=legal[i], ceiling=ceil_cache[ck]
+        )
+        card["gate"]["verdict"] = "PASS"
+        card["id"] = leg_id
+        card["exclusive_with"] = []
+        return card
+
+    pairs_docs: list[dict] = []
+    keysets: list[frozenset] = []
+    seen_multiset: set[tuple] = set()
+    stored_leg_ids: set[int] = set()
+    for ret, bi, si in stored:
+        mk = (
+            legs[bi][L_GIVE].keys, legs[bi][L_GET].keys,
+            legs[si][L_GIVE].keys, legs[si][L_GET].keys,
+        )
+        if mk in seen_multiset:  # structurally impossible; guarded anyway (§5 v3.3)
+            continue
+        seen_multiset.add(mk)
+        n = len(pairs_docs) + 1
+        b = leg_card(bi, f"P{n}-buy")
+        s = leg_card(si, f"P{n}-sell")
+        stored_leg_ids.add(bi)
+        stored_leg_ids.add(si)
         fits = int(b["posture"]["fit"]) + int(s["posture"]["fit"])
         if fits == 2:
             fit_summary = "both legs fit posture"
@@ -671,11 +933,12 @@ def trade_board(league: md.LeagueState) -> dict:
             )
         at_cap = b["sequencing"].startswith("at the roster cap")
         np_pair, nk_pair = pair_count_deltas(b, s)
-        pairs.append(
+        pairs_docs.append(
             {
                 "id": f"P{n}",
                 "buy": b,
                 "sell": s,
+                "return_pct": round(100.0 * ret, 2),
                 "dW_combined": round(b["dW"]["me"] + s["dW"]["me"], 1),
                 "net_roster": b["net_roster"]["me"] + s["net_roster"]["me"],
                 "net_players": np_pair,  # exactly 0 by construction (§5 v3.2)
@@ -690,75 +953,114 @@ def trade_board(league: md.LeagueState) -> dict:
                 ),
             }
         )
+        keysets.append(frozenset(mk[0]) | frozenset(mk[1]) | frozenset(mk[2]) | frozenset(mk[3]))
+    for idx, pd in enumerate(pairs_docs):
+        ks = keysets[idx]
+        # inventory-overlap tally (leg-level exclusive_with across a 500-pair
+        # board would be O(pairs²) id lists — the count is the honest summary)
+        pd["overlaps"] = sum(1 for j, k2 in enumerate(keysets) if j != idx and ks & k2)
 
-    # secondary list (§5 v3.2): unpaired SELL-legs + neutral legs — building
-    # blocks that change my counts (each card carries net_players/net_picks and
-    # a pair-before-executing sequencing note unless fully count-neutral),
-    # ranked posture-fit first then ΔW; never a standalone buy
-    paired = {id(b) for b, _ in kept_pairs} | {id(s) for _, s in kept_pairs}
-    seconds = sorted(
-        (c for c in sells + neutrals if id(c) not in paired), key=lambda c: c["_sort"]
-    )
-    recommendations = seconds[: params.top_league_wide]
-    for i, card in enumerate(recommendations):
-        card["id"] = f"S{i + 1}"
-        card["rank"] = i + 1
+    # ---- secondary data (web renders pairs only; the desk reads these) ----
+    recommendations: list[dict] = []
+    seen_rec: set[tuple] = set()
+    attempts = 0
+    for i in sorted(
+        (i for i, leg in enumerate(legs) if leg[L_NP] <= 0 and i not in stored_leg_ids),
+        key=lambda i: (-legs[i][L_DW], i),
+    ):
+        if len(recommendations) >= params.top_league_wide or attempts >= 200:
+            break
+        rk = (legs[i][L_OPP], legs[i][L_GIVE].keys)
+        if rk in seen_rec:
+            continue
+        attempts += 1
+        if _leg_legal(league, me_t, pool, i, legal) is False:
+            continue
+        seen_rec.add(rk)
+        card = leg_card(i, f"S{len(recommendations) + 1}")
+        card["rank"] = len(recommendations) + 1
+        recommendations.append(card)
+    rec_keys = [{a["key"] for a in c["give"] + c["get"]} for c in recommendations]
+    for x, c in enumerate(recommendations):
+        c["exclusive_with"] = [
+            recommendations[y]["id"]
+            for y in range(len(recommendations))
+            if y != x and rec_keys[x] & rec_keys[y]
+        ]
 
-    # unpaired buys: watch list only — a buy with no identified exit is not a
-    # recommendation (§5 v3.2); one-line blocker naming the counts it needs
     watch: list[dict] = []
-    watch_cores: set[tuple] = set()
-    for b in sorted((c for c in buys if id(c) not in paired), key=lambda c: c["_sort"]):
-        if b["_core"] in used_buy_cores or b["_core"] in watch_cores:
-            continue  # a sibling variant of this buy is already hedged/watched
-        watch_cores.add(b["_core"])
+    seen_w: set[tuple] = set()
+    attempts = 0
+    for i in sorted(
+        (i for i, leg in enumerate(legs) if leg[L_NP] > 0 and i not in stored_leg_ids),
+        key=lambda i: (-legs[i][L_DW], i),
+    ):
+        if len(watch) >= params.watch_max or attempts >= 200:
+            break
+        leg = legs[i]
+        wk = (leg[L_OPP], leg[L_GIVE].keys)
+        if wk in seen_w:
+            continue
+        attempts += 1
+        if _leg_legal(league, me_t, pool, i, legal) is False:
+            continue
+        seen_w.add(wk)
         watch.append(
             {
-                "counterparty": b["counterparty"],
-                "give": [a["name"] for a in b["give"]],
-                "get": [a["name"] for a in b["get"]],
-                "dW": b["dW"]["me"],
+                "counterparty": pool.opp_names[leg[L_OPP]],
+                "give": [a.name for a in leg[L_GIVE].assets],
+                "get": [a.name for a in leg[L_GET].assets],
+                "dW": round(leg[L_DW], 1),
                 "blocker": (
-                    "no clean exit — needs a non-conflicting sell netting "
-                    f"{-b['net_players']['me']:+d} players / {-b['net_picks']['me']:+d} picks; "
-                    "none on today's board"
+                    "no clean exit in the stored pairs — needs a non-conflicting "
+                    f"sell netting {-leg[L_NP]:+d} players / {-leg[L_NK]:+d} picks"
                 ),
             }
         )
-        if len(watch) >= params.watch_max:
-            break
-
-    # exclusive_with across all DISPLAYED legs (pair legs + sell list):
-    # legs sharing any concrete asset cannot both execute (§5)
-    displayed = [leg for p in pairs for leg in (p["buy"], p["sell"])] + recommendations
-    for a in displayed:
-        a["exclusive_with"] = [
-            b["id"] for b in displayed if b is not a and a["_keys"] & b["_keys"]
-        ]
-    for c in cards:
-        del c["_keys"]
-        del c["_core"]
-        del c["_sort"]
 
     notes = [
-        "the recommendation unit is the count-neutral hedged pair (§5 v3.2) — nets exactly 0 players / 0 picks for you; buys never go out without an exit",
-        "unpaired legs are building blocks — they change your player/pick counts; pair before executing",
-        "proposals sit at the smallest in-band gap clearing W_min (§3 v3.1); each card's band ceiling is negotiating room, not the opener",
+        "v3.3 enumerate-then-filter: the board is the legal PAIR space behind your "
+        "target-return dial — every stored pair nets exactly 0 players / 0 picks for "
+        "you, ranked by return on inventory deployed (combined ΔW ÷ Σv you send)",
+        "posture is a hard engine constraint (§5 v3.3): BUYERs only receive "
+        "players-majority packages, SELLERs picks-majority, NEUTRAL either; "
+        "overrides apply first",
+        f"every leg clears the {100 * floor:g}% return floor on its own Σv sent, so "
+        "every pair clears the dial floor by construction — sub-floor legs are never "
+        "subsidized by a partner leg",
+        f"per (counterparty, give-package, count-signature) the top "
+        f"{params.variants_per_signature} in-band gets by ΔW are pooled — "
+        "count-signature coverage is complete; deeper sweetener permutations are not "
+        "enumerated",
+        "counts marked saturated are verified floors — the legal pair space is deeper "
+        "than the counting budget",
+        "band ceilings on cards are negotiating room, not the opener; anchor asks "
+        "open +8% (§3)",
         "book recomputes from fresh rosters after any executed trade",
         "don't publicly fire-sale before making buy-side asks (§5 execution protocol)",
     ]
-    per_opp: dict[str, int] = {}
-    for c in displayed:
-        per_opp[c["counterparty"]] = per_opp.get(c["counterparty"], 0) + 1
-    for opp_name in sorted(per_opp):
-        if per_opp[opp_name] > 1:
-            notes.append(
-                f"{per_opp[opp_name]} offers target {opp_name} — appetite is finite; stagger them"
-            )
+    if truncated:
+        notes.insert(
+            1,
+            f"storage cap: top {truncated['stored']} pairs by return stored, of "
+            f"{'at least ' if total_sat else ''}{truncated['total']} clearing the floor",
+        )
+    if not stored_complete:
+        notes.insert(
+            1,
+            "stored pairs are the best found within the enumeration budget — the "
+            "space above the collection cutoff outran a full sweep",
+        )
+
     return {
         "disabled": False,
-        "pairs": pairs,
+        "pairs": pairs_docs,
+        "presets": presets,
+        "counts_by_threshold": counts_by_threshold,
+        "truncated": truncated,
         "recommendations": recommendations,
         "watch": watch,
         "notes": notes,
     }
+
+

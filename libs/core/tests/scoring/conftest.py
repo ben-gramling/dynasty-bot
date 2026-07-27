@@ -89,7 +89,7 @@ def ppts_fixture() -> dict:
 
 
 def board_legs(trade_recs: dict) -> list[dict]:
-    """Every DISPLAYED leg card in the §5 v3.1 board: pair legs (buy, sell) in
+    """Every leg card in the §5 v3.3 board doc: stored pair legs (buy, sell) in
     pair order, then the secondary sell/neutral list. Watch entries are not
     cards and never count."""
     return [leg for p in trade_recs["pairs"] for leg in (p["buy"], p["sell"])] + list(

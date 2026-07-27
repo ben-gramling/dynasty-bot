@@ -13,7 +13,9 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class Params:
     # §2 the score
-    w_min: float = 150.0  # surface floor — below is noise inside KTC error bars
+    # v3.3: W_min is RETIRED as a gate — kept only for the CLI's display-level
+    # noise note (a positive ΔW inside KTC's own error bars gets flagged, never hidden)
+    w_min: float = 150.0
 
     # §3 fairness gate (measured from this league's ~33 completed trades)
     consolidation: tuple[float, ...] = (1.00, 0.90, 0.80)
@@ -26,15 +28,17 @@ class Params:
     posture_window_days: int = 365
     posture_min_trades: int = 2
 
-    # §5 enumeration bounds (implementation, not scoring)
+    # §5 v3.3 target-return dial + enumerate-then-filter bounds
     max_package: int = 3
     give_list_protect_top: int = 2  # cornerstones never enter the give-list
-    per_give_keep: int = 4  # smallest-gap in-band gets kept per give-package (§3 v3.1)
-    dedup_variants: int = 2  # variants kept per (top-give, top-get) asset pair
-    top_league_wide: int = 10
-    legality_budget: int = 400  # full apply_tx legality checks per board build
-    max_pairs: int = 8  # hedged pairs kept on the board (§5 v3.1)
-    watch_max: int = 5  # unpaired buys surfaced as watch-list notes (§5 v3.1)
+    return_floor: float = 0.01  # lowest dial preset: every leg must return ≥ 1% on Σv sent
+    return_presets: tuple[float, ...] = (1.0, 2.5, 5.0, 10.0, 20.0)  # dial presets, percent
+    max_stored_pairs: int = 500  # stored pair cap; overflow reported via `truncated`
+    variants_per_signature: int = 2  # in-band gets kept per (opponent, give, count-signature), ΔW desc
+    pair_scan_budget: int = 40_000  # pair visits per COUNTING pass; counters saturate honestly
+    pair_collect_budget: int = 2_000_000  # pair visits for the stored-pair collection walk
+    top_league_wide: int = 10  # unpaired sell/neutral legs kept as `recommendations` (ΔW desc)
+    watch_max: int = 5  # unpaired buys surfaced as watch-list notes
 
     # §2.2-style lineup strength (league tab + waiver ΔL only; never trades)
     q_qb: float = 0.06

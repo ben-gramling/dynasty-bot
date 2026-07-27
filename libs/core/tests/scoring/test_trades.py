@@ -1,5 +1,5 @@
-"""§2 the score, §3 the gate (v3.1 minimal-gap proposal policy), §5 enumeration
-+ §10 worked examples.
+"""§2 the score, §3 the gate, §5 v3.3 enumerate-then-filter pairing behind the
+target-return dial (posture as a hard pair-pool constraint) + §10 worked examples.
 
 §10 pins are computed from the COMMITTED fixtures (data/, 2026-07-26 KTC values,
 2026-07-27 transactions). The spec's §10 prose quotes 2026-07-27 live values
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from core.scoring import Params
 from core.scoring import trades as tr
 
 from .conftest import board_legs, by_name
@@ -131,36 +132,28 @@ def test_fleece_never_on_board(result):
 
 
 def test_board_gate_and_floor(result, params):
-    """§3/§11.3: every displayed leg is in-band, under the cap, above W_min."""
+    """§3/§11.3 (v3.3): every displayed leg is in-band, under the cap, and clears
+    the return floor on its own Σv sent — W_min is retired as a gate."""
     legs = board_legs(result["trade_recs"])
     assert legs, "board should not be empty on the fixture snapshot"
     for card in legs:
         g = card["gate"]
         assert g["verdict"] == "PASS"
         assert g["gap"] <= g["band"] + 1e-9
-        assert card["dW"]["me"] >= params.w_min
+        assert card["return_pct"] >= 100 * params.return_floor - 1e-9
         assert card["dW"]["me"] == -card["dW"]["them"]
 
 
-def test_board_ranking_and_shape_ordering(result):
-    """§5 v3.1: pairs rank fit-first then combined ΔW; the secondary sell list
-    likewise (posture-shape rank, then ΔW desc); ids are sequential."""
+def test_board_ranking_and_ids(result):
+    """§5 v3.3: pairs rank by return on inventory deployed, descending; the
+    secondary sell/neutral list by ΔW descending; ids are sequential."""
     doc = result["trade_recs"]
-    pair_keys = [
-        (
-            -(int(p["buy"]["posture"]["fit"]) + int(p["sell"]["posture"]["fit"])),
-            -p["dW_combined"],
-        )
-        for p in doc["pairs"]
-    ]
-    assert pair_keys == sorted(pair_keys)
+    rets = [p["return_pct"] for p in doc["pairs"]]
+    assert rets == sorted(rets, reverse=True)
     assert [p["id"] for p in doc["pairs"]] == [f"P{i + 1}" for i in range(len(doc["pairs"]))]
     recs = doc["recommendations"]
-    rec_keys = [
-        (tr._shape_rank(c["posture"]["shape"], c["posture"]["label"]), -c["dW"]["me"])
-        for c in recs
-    ]
-    assert rec_keys == sorted(rec_keys)
+    dws = [c["dW"]["me"] for c in recs]
+    assert dws == sorted(dws, reverse=True)
     assert [c["id"] for c in recs] == [f"S{i + 1}" for i in range(len(recs))]
     assert [c["rank"] for c in recs] == list(range(1, len(recs) + 1))
 
@@ -200,68 +193,31 @@ def test_trade_board_disabled_after_deadline(snapshot, params):
     board = tr.trade_board(league2)
     assert board["disabled"] is True
     assert board["recommendations"] == [] and board["pairs"] == [] and board["watch"] == []
+    assert board["truncated"] is None
+    assert [e["count"] for e in board["counts_by_threshold"]] == [0] * len(board["presets"])
 
 
 def test_below_noise_floor_note(league):
-    """propose() flags a positive ΔW under W_min instead of hiding it."""
+    """propose() flags a positive ΔW inside the W_min noise band instead of
+    hiding it — display note only, never a gate (v3.3)."""
     mine = tr.team_assets(league, league.teams[league.me])
     theirs = tr.team_assets(league, league.teams["jaketoppen"])
     # my 2026 2.09 at tranche 3,504 for their 2028 2nd at 3,579: ΔW +75 < 150
     card = tr.propose(league, "jaketoppen", [mine["2026 2.09"]], [theirs["2028 R2 (own)"]])
     assert card["dW"]["me"] == 75.0
-    assert any("noise floor" in n for n in card.get("notes", []))
+    note = next(n for n in card.get("notes", []) if "noise" in n)
+    assert "not a gate" in note
 
 
-# ------------------------------------------------------ §3 v3.1 minimal-gap policy
 
-
-def _reconstruct_min_gap(league, card):
-    """Brute-force the §3 v3.1 selection for a displayed card's give package:
-    the smallest in-band gap clearing W_min over the opponent's give-list, with
-    the engine's own filters (fleece range, cheap positional legality on both
-    sides, per_give_keep window, full §3.3 legality)."""
-    params = league.params
-    me_t = league.teams[league.me]
-    opp_t = league.teams[card["counterparty"]]
-    by_key = {a.key: a for a in tr.team_assets(league, me_t).values()}
-    give = tr.package_of(league, [by_key[a["key"]] for a in card["give"]])
-    alts = []
-    for t in tr._packages(league, tr.give_list(league, opp_t)):
-        if not (give.v_sum + params.w_min <= t.v_sum <= params.fleece_ratio * give.v_sum):
-            continue
-        gap = abs(t.adjv - give.adjv)
-        band = max(params.fairness_abs, params.fairness_rel * max(t.adjv, give.adjv))
-        if gap > band:
-            continue
-        if not tr._pos_legal_cheap(me_t, give.pos_out, t.pos_out, t.n_players - give.n_players):
-            continue
-        if not tr._pos_legal_cheap(opp_t, t.pos_out, give.pos_out, give.n_players - t.n_players):
-            continue
-        alts.append((gap, t.keys, t))
-    alts.sort(key=lambda x: x[0])
-    for gap, _keys, t in alts[: params.per_give_keep]:
-        if tr.legality(league, me_t, opp_t, give, t)["legal"]:
-            return gap
-    return None
-
-
-def test_board_proposals_sit_at_the_minimal_gap(result, league):
-    """v3.1 invariant 1: every board proposal's gap is the MINIMUM among in-band
-    alternatives for its give package clearing W_min — verified by reconstruction
-    for a sample of displayed legs (the band is a tolerance, not a target)."""
-    legs = board_legs(result["trade_recs"])
-    sample = legs[:3] + legs[-2:]
-    assert sample
-    for card in sample:
-        min_gap = _reconstruct_min_gap(league, card)
-        assert min_gap is not None, card["id"]
-        assert round(min_gap, 1) == card["gate"]["gap"], card["id"]
+# --------------------------------------- §3 v3.3 ceiling annotation (band edge)
 
 
 def test_ceiling_is_band_edge_info(result, league, params):
-    """v3.1 invariant 4: each displayed card's ceiling ≥ the proposal's get value,
-    and the ceiling package itself is in-band and fleece-clean (it is the maximum
-    such Σv — pure negotiating-room information, never the proposal)."""
+    """Each displayed card's ceiling ≥ the proposal's get value, and the ceiling
+    package itself is in-band and fleece-clean (it is the maximum such Σv — pure
+    negotiating-room information, never the proposal). v3.3: no W_min edge on
+    the reconstruction window — W_min retired as a gate."""
     legs = board_legs(result["trade_recs"])
     assert legs
     me_t = league.teams[league.me]
@@ -274,7 +230,11 @@ def test_ceiling_is_band_edge_info(result, league, params):
         opp_t = league.teams[card["counterparty"]]
         best = None
         for t in tr._packages(league, tr.give_list(league, opp_t)):
-            if not (give.v_sum + params.w_min <= t.v_sum <= params.fleece_ratio * give.v_sum):
+            if not (
+                give.v_sum / params.fleece_ratio
+                <= t.v_sum
+                <= params.fleece_ratio * give.v_sum
+            ):
                 continue
             g = tr.gate_info(league, give, t)
             if not g["band_ok"]:
@@ -286,78 +246,127 @@ def test_ceiling_is_band_edge_info(result, league, params):
         assert best[1]["band_ok"] and best[1]["ratio_ok"], card["id"]
 
 
-# ------------------------------------------------- §5 v3.2 strict count-neutrality
+# ------------------------- §5 v3.3 pair space: count-neutrality, posture, dial
 
 
-def _with_build_fields(card: dict, tag: str) -> dict:
-    """Give a propose()-built card the _keys/_core/_sort fields trade_board
-    attaches before pair selection, so _select_pairs accepts it verbatim."""
-    card["_keys"] = {a["key"] for a in card["give"] + card["get"]}
-    card["_core"] = (card["counterparty"], tag)
-    card["_sort"] = (0, -card["dW"]["me"], card["counterparty"], tag)
-    return card
-
-
-def _v32_buy(league) -> dict:
-    """§10.2 buy from the fixtures: Jauan Jennings for my 2028 3rd (+1P / −1pk)."""
-    return _with_build_fields(
-        tr.propose_by_names(league, "millj", ["2028 R3 (own)"], ["Jauan Jennings"]),
-        "buy",
-    )
+def _fixture_pair_legs(league):
+    """The §10.2 buy (millj: my 2028 R3 → Jauan Jennings, +1P/−1pk) and its
+    fixture complement (cmgaither43: Sam LaPorta → 2026 1.04, −1P/+1pk) — both
+    gate-PASS, distinct counterparties, no shared assets."""
+    buy = tr.propose_by_names(league, "millj", ["2028 R3 (own)"], ["Jauan Jennings"])
+    sell = tr.propose_by_names(league, "cmgaither43", ["Sam LaPorta"], ["2026 1.04"])
+    return buy, sell
 
 
 def test_pair_count_deltas_both_currencies(league):
-    buy = _v32_buy(league)
-    sell = tr.propose_by_names(league, "cmgaither43", ["Sam LaPorta"], ["2026 1.04"])
+    buy, sell = _fixture_pair_legs(league)
     assert buy["gate"]["verdict"] == "PASS" and sell["gate"]["verdict"] == "PASS"
     assert (buy["net_players"]["me"], buy["net_picks"]["me"]) == (1, -1)
     assert (sell["net_players"]["me"], sell["net_picks"]["me"]) == (-1, 1)
     assert tr.pair_count_deltas(buy, sell) == (0, 0)
 
 
-def test_select_pairs_keeps_only_exact_count_neutral(league):
-    """§5 v3.2 contract on fixture-built gate-PASS cards: the complementary
-    sell (−1P/+1pk) pairs with the +1P/−1pk buy; the pick-inflating sell does not."""
-    buy = _v32_buy(league)
-    sell_ok = _with_build_fields(
-        tr.propose_by_names(league, "cmgaither43", ["Sam LaPorta"], ["2026 1.04"]),
-        "sell-ok",
-    )
-    kept, cores = tr._select_pairs([buy], [sell_ok], max_pairs=8)
-    assert kept == [(buy, sell_ok)]
-    assert buy["_core"] in cores
-    assert tr.pair_count_deltas(buy, sell_ok) == (0, 0)
+def test_return_pct_math_pinned(league):
+    """§5 v3.3 return-on-inventory arithmetic, pinned to the fixtures:
+    buy ΔW +533 on 2,468 sent (21.6%), sell ΔW +1,048 on 5,195 sent (20.17%),
+    pair (533+1048)/(2468+5195) = 20.63% — the sent-weighted mediant, strictly
+    between the leg returns."""
+    buy, sell = _fixture_pair_legs(league)
+    assert (buy["dW"]["me"], sum(a["v"] for a in buy["give"])) == (533.0, 2468)
+    assert buy["return_pct"] == 21.6
+    assert (sell["dW"]["me"], sum(a["v"] for a in sell["give"])) == (1048.0, 5195)
+    assert sell["return_pct"] == 20.17
+    assert tr.pair_return_pct(buy, sell) == 20.63
+    assert sell["return_pct"] < 20.63 < buy["return_pct"]
 
 
-def test_pinned_negative_player_neutral_pick_inflating_pair(league):
-    """v3.2 pinned must-never-pair: a gate-PASS sell of 1 player for 2 picks
-    (−1P/+2pk) is player-neutral against the §10.2 buy but nets +1 pick — the
-    pair must NOT be emitted (picks count as picks regardless of year)."""
-    buy = _v32_buy(league)
-    sell_inflating = _with_build_fields(
-        tr.propose_by_names(
-            league, "cmgaither43", ["Kenneth Walker III"], ["2026 1.04", "2028 R4 (own)"]
-        ),
-        "sell-picks",
+def test_exhaustiveness_spot_check(league):
+    """v3.3 anti-starvation: a known-legal complementary leg pair built by hand
+    from the fixtures IS present in the engine's pool and validates as a member
+    of the computed pair space at exactly its return — the enumerate-then-filter
+    inversion this version exists for."""
+    pool = tr.build_pair_pool(league)
+    buy, sell = _fixture_pair_legs(league)
+    bi = tr.find_pool_leg(
+        pool, "millj",
+        [a["key"] for a in buy["give"]], [a["key"] for a in buy["get"]],
     )
-    # both legs individually clear the gate — only the combined count fails
-    assert sell_inflating["gate"]["verdict"] == "PASS"
+    si = tr.find_pool_leg(
+        pool, "cmgaither43",
+        [a["key"] for a in sell["give"]], [a["key"] for a in sell["get"]],
+    )
+    assert bi is not None and si is not None, "legs missing from the v3.3 pool"
+    ret = tr.pair_in_space(league, pool, bi, si)
+    assert ret is not None
+    assert round(100 * ret, 2) == 20.63 == tr.pair_return_pct(buy, sell)
+
+
+def test_pinned_negative_count_signature_mismatch(league):
+    """v3.2 pinned must-never-pair, restated on the v3.3 machinery: a sell of
+    1 player for 2 picks (−1P/+2pk) is player-neutral against the +1P/−1pk buy
+    but nets +1 pick — the signatures do not complement, so the pair is never
+    in the space (picks count as picks regardless of year)."""
+    buy, _ = _fixture_pair_legs(league)
+    sell_inflating = tr.propose_by_names(
+        league, "cmgaither43", ["Kenneth Walker III"], ["2026 1.04", "2028 R4 (own)"]
+    )
+    assert sell_inflating["gate"]["verdict"] == "PASS"  # the leg itself is clean
     assert (sell_inflating["net_players"]["me"], sell_inflating["net_picks"]["me"]) == (-1, 2)
-    assert tr.pair_count_deltas(buy, sell_inflating) == (0, 1)  # player-neutral, +1 pick
-    kept, cores = tr._select_pairs([buy], [sell_inflating], max_pairs=8)
-    assert kept == [] and cores == set()  # v3.1 (net roster ≤ 0) would have paired it
+    assert tr.pair_count_deltas(buy, sell_inflating) == (0, 1)
+    pool = tr.build_pair_pool(league)
+    bi = tr.find_pool_leg(
+        pool, "millj", [a["key"] for a in buy["give"]], [a["key"] for a in buy["get"]]
+    )
+    assert bi is not None
+    # every pool leg with the (−1, +2) signature refuses to pair with the buy
+    for si in pool.buckets.get((-1, 2), [])[:50]:
+        assert tr.pair_in_space(league, pool, bi, si) is None
 
 
-def test_board_pairs_scarce_but_honest_on_fixture(result):
-    """§5 v3.2 strict: on the committed fixture no emitted sell-leg exactly
-    complements any buy-leg on both currencies — the board honestly shows zero
-    pairs rather than relaxing the constraint; every unpaired leg is a labeled
-    building block and every blocked buy names the exit it needs."""
+def test_posture_is_a_hard_pair_pool_constraint(league, result):
+    """§5 v3.3 pinned negative: ronakpatel32 is the fixture's BUYER — a
+    picks-majority package at him passes the §3 gate (my 2026 1.01 for Emeka
+    Egbuka, ΔW +583, leg return 9.34%) yet appears NOWHERE in the pair pool or
+    on the board; millj (SELLER) likewise never receives players-majority."""
+    mine = tr.team_assets(league, league.teams[league.me])
+    ron = tr.team_assets(league, league.teams["ronakpatel32"])
+    candidate = tr.propose(league, "ronakpatel32", [mine["2026 1.01"]], [ron["Emeka Egbuka"]])
+    assert candidate["gate"]["verdict"] == "PASS"
+    assert candidate["dW"]["me"] == 583.0 and candidate["return_pct"] == 9.34
+    assert candidate["posture"]["label"] == "BUYER"
+    assert candidate["posture"]["shape"] == "picks"  # count-majority: 1 pick out
+
+    pool = tr.build_pair_pool(league)
+    assert league.postures["ronakpatel32"]["label"] == "BUYER"
+    assert league.postures["millj"]["label"] == "SELLER"
+    ron_i = pool.opp_names.index("ronakpatel32")
+    mil_i = pool.opp_names.index("millj")
+    for leg in pool.legs:
+        if leg[tr.L_OPP] == ron_i:
+            assert tr.offer_shape(leg[tr.L_GIVE]) == "players"
+        elif leg[tr.L_OPP] == mil_i:
+            assert tr.offer_shape(leg[tr.L_GIVE]) == "picks"
+    assert tr.find_pool_leg(pool, "ronakpatel32", ["2026-1.01"], [ron["Emeka Egbuka"].key]) is None
+    for card in board_legs(result["trade_recs"]):
+        label = card["posture"]["label"]
+        assert tr.posture_allows(label, card["posture"]["shape"]), card["id"]
+
+
+def test_board_pairs_dense_and_honest_on_fixture(result, params):
+    """§5 v3.3 on the committed fixture: the pair space is deep — the board
+    stores exactly max_stored_pairs by return, reports the cap via `truncated`,
+    and every counter is a saturated verified floor. The v3.2 starvation
+    (zero pairs) is the pinned regression this replaces."""
     doc = result["trade_recs"]
-    assert doc["pairs"] == []
-    for pair in doc["pairs"]:  # live boards: every pair is exactly (0, 0)
+    assert len(doc["pairs"]) == params.max_stored_pairs == 500
+    assert doc["presets"] == [1.0, 2.5, 5.0, 10.0, 20.0]
+    assert doc["pairs"][0]["return_pct"] == 31.72  # fixture pin
+    t = doc["truncated"]
+    assert t is not None and t["stored"] == 500
+    assert t["total"] >= 500 and t["total_saturated"] is True
+    for pair in doc["pairs"]:
         assert tr.pair_count_deltas(pair["buy"], pair["sell"]) == (0, 0)
-    assert doc["recommendations"], "building blocks still list"
+        assert pair["return_pct"] >= 100 * params.return_floor
     for card in doc["recommendations"]:
         assert card["leg_type"] in ("sell", "neutral")
         if card["standalone"]:
@@ -368,6 +377,40 @@ def test_board_pairs_scarce_but_honest_on_fixture(result):
     for w in doc["watch"]:
         assert "no clean exit" in w["blocker"]
         assert "players" in w["blocker"] and "picks" in w["blocker"]
+
+
+def test_counts_by_threshold_consistency(result):
+    """§5 v3.3 dial counts: thresholds ascend with the presets, counts are
+    non-increasing in the threshold, saturation is downward-closed (a saturated
+    floor at r saturates every threshold below r), and every count covers the
+    stored pairs clearing that threshold."""
+    doc = result["trade_recs"]
+    entries = doc["counts_by_threshold"]
+    assert [e["threshold"] for e in entries] == doc["presets"]
+    counts = [e["count"] for e in entries]
+    assert counts == sorted(counts, reverse=True)
+    sat = [e["saturated"] for e in entries]
+    assert sat == sorted(sat, reverse=True)  # True-prefix on ascending thresholds
+    for e in entries:
+        n_stored = sum(1 for p in doc["pairs"] if p["return_pct"] >= e["threshold"])
+        assert e["count"] >= n_stored
+
+
+def test_truncation_honesty_with_tiny_cap(snapshot):
+    """Force truncation with a tiny max_stored_pairs: the board stores exactly
+    that many (top by return, sequential ids) and `truncated` reports the full
+    depth honestly."""
+    from core.scoring import model as md
+
+    small = Params(max_stored_pairs=5, pair_scan_budget=2000, pair_collect_budget=60_000)
+    board = tr.trade_board(md.build_league(snapshot, small))
+    assert len(board["pairs"]) == 5
+    assert [p["id"] for p in board["pairs"]] == ["P1", "P2", "P3", "P4", "P5"]
+    rets = [p["return_pct"] for p in board["pairs"]]
+    assert rets == sorted(rets, reverse=True)
+    t = board["truncated"]
+    assert t is not None and t["stored"] == 5 and t["total"] > 5
+    assert any("storage cap" in n for n in board["notes"])
 
 
 def test_count_deltas_track_taxi_and_negate_exactly(result, league):

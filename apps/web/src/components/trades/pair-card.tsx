@@ -1,5 +1,5 @@
 import type { TradePair } from "@/lib/queries";
-import { fmtSigned } from "@/lib/format";
+import { fmtPct, fmtSigned } from "@/lib/format";
 import { ValueChip } from "@/components/value-chip";
 import { TradeCard } from "./trade-card";
 import { pairLegs } from "./derive";
@@ -26,6 +26,12 @@ export function PairCard({ pair }: { pair: TradePair }) {
         </span>
         <span className="text-[11.5px] text-ink-muted">{pair.fit_summary}</span>
         <span className="ml-auto flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <span
+            className="num text-[13px] font-medium text-sky-deep"
+            title="Return on inventory deployed (§5 v3.3): combined ΔW(you) ÷ Σv of every asset you send across both legs — the dial's ranking metric"
+          >
+            {fmtPct(pair.return_pct, 1)} return
+          </span>
           <ValueChip label="pair ΔW" value={pair.dW_combined} emphasis />
           <span
             className="text-[11.5px] text-ink-muted"
