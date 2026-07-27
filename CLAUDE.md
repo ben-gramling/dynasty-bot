@@ -33,6 +33,22 @@ are the test suite, pinned to the committed `data/` fixtures.
   scores arbitrary proposals two-sided via `scripts/score_trade.py` (which also
   works standalone: `teams`, `list-assets`, `score --alternatives`).
 
+## League managers (real name ↔ Sleeper username)
+
+The user refers to league-mates by real name; the data uses usernames. Map:
+
+| Real name | Username | | Real name | Username |
+|---|---|---|---|---|
+| Ben Gramling (the user) | `bengramling` | | Jake Millsaps | `millj` |
+| Colin | `cmgaither43` | | Joey Davis | `joeydavis299` |
+| Jake Toppen | `jaketoppen` | | Vishan Lingam | `vishan` |
+| Josh Ukinski | `Jukinski` | | Josh Baskin | `josbaski` |
+| Theo Douglas | `trdouglas` | | Noah Moell | `NoahMoell` |
+| Drew Rosenberg | `DrewR87` | | Ronak Patel | `ronakpatel32` |
+
+First names alone can be ambiguous — "Jake" (Toppen vs Millsaps) and "Josh"
+(Ukinski vs Baskin): use context or ask.
+
 ## Conventions
 
 - Python 3.12, uv workspace, hatchling per package, pytest in `[dependency-groups] dev`.
