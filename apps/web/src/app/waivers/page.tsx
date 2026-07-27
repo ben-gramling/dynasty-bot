@@ -2,16 +2,13 @@ import {
   getPlayerInfoMap,
   getWaiverBoard,
   type PlayerInfo,
-  type QueuedClaim,
   type WaiverBoard,
 } from "@/lib/queries";
 import { fmtDateTime, fmtFaab, fmtValue } from "@/lib/format";
-import { ValueChip } from "@/components/value-chip";
 import { Board } from "@/components/waivers/board";
 import { Caret } from "@/components/waivers/bits";
 import { ClaimCard } from "@/components/waivers/claim-card";
 import { DropQueue } from "@/components/waivers/drop-queue";
-import { PromoteCard } from "@/components/waivers/promote-card";
 import "./waivers.css";
 
 /** How many recommended claims render as full cards before the board takes over. */
@@ -61,9 +58,8 @@ export default async function WaiversPage() {
   const topCards = recommended.slice(0, TOP_CARDS);
   const restCount = recommended.length - topCards.length;
   const restAllZero = recommended.slice(TOP_CARDS).every((t) => t.bid.bid === 0);
-  const freeCount = board.targets.filter((t) => t.free_option).length;
-  const cutsDue = board.drops.filter((d) => d.scheduled_cut).length;
-  const standingDrop = board.drops[0]?.player ?? null;
+  // The drop behind the claims: null when a roster slot is open (no drop needed).
+  const claimDrop = board.targets.find((t) => !t.taxi_stash)?.drop ?? null;
 
   return (
     <div className="space-y-6">
@@ -76,9 +72,13 @@ export default async function WaiversPage() {
           </span>
           <span>
             <span className="num">{board.targets.length}</span> targets ·{" "}
-            <span className="num">{freeCount}</span> free options
+            <span className="num">{recommended.length}</span> positive claims
           </span>
-          {standingDrop ? <span>Standing drop: {standingDrop}</span> : null}
+          {claimDrop ? (
+            <span>Standing drop: {claimDrop}</span>
+          ) : (
+            <span>Open roster spot — claims need no drop</span>
+          )}
           <span>
             Board computed <span className="num">{fmtDateTime(board.computed_at)}</span>
           </span>
@@ -98,24 +98,16 @@ export default async function WaiversPage() {
       <section className="card">
         <h2 className="display text-[17px]">Recommended claims</h2>
         <p className="mt-1 text-[12.5px] text-ink-muted">
+          Claim score = v(add) − v(drop) against the standing drop; positive claims
+          list here.{" "}
           {offseason
-            ? "Offseason bids: $0 uncontested · $1 when a rival wants him (D ≥ 1) · $3 cap when two do."
-            : "In-season bids: sized by lineup gain against remaining budget, capped by the raw-value ceiling and 65% of FAAB."}
-          {freeCount > 0 && cutsDue > 0 ? (
-            <>
-              {" "}
-              Free option: with <span className="num">{cutsDue}</span> cuts due Aug 15,
-              an add below the cut line scores ≈ 0 — the crunch charge cancels his
-              value. Claim strictly-better doomed inventory at{" "}
-              <span className="num">$0</span>; never pay for bodies you&apos;re about
-              to cut.
-            </>
-          ) : null}
+            ? "Offseason bids: $0 uncontested · $1 when a rival wants him · $3 cap when two do."
+            : "In-season bids: the §6.4 ladder — lineup need against remaining budget, capped by the raw-value ceiling and 65% of FAAB."}
         </p>
         {topCards.length ? (
           <div className="mt-3 space-y-2">
-            {topCards.map((t, i) => (
-              <ClaimCard key={t.sid} t={t} info={info[t.sid]} defaultOpen={i === 0} />
+            {topCards.map((t) => (
+              <ClaimCard key={t.sid} t={t} info={info[t.sid]} />
             ))}
           </div>
         ) : (
@@ -125,25 +117,26 @@ export default async function WaiversPage() {
         )}
         {restCount > 0 ? (
           <p className="mt-3 text-[12.5px] text-ink-muted">
-            …and <span className="num">{restCount}</span> more recommended claims on the
+            …and <span className="num">{restCount}</span> more positive claims on the
             board below{restAllZero ? (
               <>
                 {" "}
-                — every one a free option at <span className="num">$0</span>
+                — every one uncontested at <span className="num">$0</span>
               </>
             ) : null}
             .
           </p>
         ) : null}
-        {board.queued.length ? <Queued rows={board.queued} /> : null}
       </section>
 
       <section className="card">
         <h2 className="display text-[17px]">Full board</h2>
         <p className="mb-3 mt-1 text-[12.5px] text-ink-muted">
-          Every scored target, ranked by crunch-aware net claim against the standing
-          drop{standingDrop ? ` (${standingDrop})` : ""}. Expand a row for the full
-          audit.
+          Every scored target, ranked by claim score
+          {claimDrop
+            ? ` against the standing drop (${claimDrop})`
+            : " — a roster slot is open, so no drop is charged"}
+          . Expand a row for the plan.
         </p>
         {board.targets.length ? (
           <Board targets={board.targets} info={info} />
@@ -153,11 +146,10 @@ export default async function WaiversPage() {
       </section>
 
       <section className="card">
-        <h2 className="display text-[17px]">Drop queue</h2>
+        <h2 className="display text-[17px]">Drop list</h2>
         <p className="mb-3 mt-1 text-[12.5px] text-ink-muted">
-          Actives ranked by crunch-aware keep value (RV) — the head of the queue is
-          the standing drop behind every claim. Aug 15 tags mark the draft-day cut
-          plan.
+          Actives ascending by KTC value — informational housekeeping. The head of
+          the list is the first player out whenever a claim needs a drop.
         </p>
         {board.drops.length ? (
           <DropQueue drops={board.drops} info={info} />
@@ -166,21 +158,7 @@ export default async function WaiversPage() {
         )}
       </section>
 
-      {board.taxi_promotions.length ? (
-        <section className="card">
-          <h2 className="display text-[17px]">Taxi promotions</h2>
-          <p className="mb-3 mt-1 text-[12.5px] text-ink-muted">
-            Stashes worth activating now, with the drop each one forces.
-          </p>
-          <div className="space-y-2">
-            {board.taxi_promotions.map((p) => (
-              <PromoteCard key={p.player} p={p} />
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      {board.taxi_fill && board.taxi_fill.free_slots > 0 ? (
+      {board.taxi_fill.free_slots > 0 ? (
         <section className="card">
           <h2 className="display text-[17px]">Open taxi slots</h2>
           {board.taxi_fill.surplus_slots > 0 ? (
@@ -196,7 +174,7 @@ export default async function WaiversPage() {
                   <li key={c.player}>
                     <span className="font-medium">{c.player}</span>{" "}
                     <span className="text-ink-muted">{c.pos}</span>{" "}
-                    <span className="num">{c.v.toLocaleString("en-US")}</span>
+                    <span className="num">{fmtValue(c.v)}</span>
                   </li>
                 ))}
               </ul>
@@ -237,32 +215,6 @@ export default async function WaiversPage() {
           </div>
         </details>
       ) : null}
-    </div>
-  );
-}
-
-/** Post-draft queue (§6.1 erratum): swaps that flip positive once the crunch clears. */
-function Queued({ rows }: { rows: QueuedClaim[] }) {
-  return (
-    <div className="mt-4 border-t border-line pt-3">
-      <h3 className="display text-[13px] text-ink-muted">Queued for post-draft</h3>
-      <ul className="mt-2 space-y-2">
-        {rows.map((q) => (
-          <li
-            key={q.player}
-            className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[12.5px]"
-          >
-            <span className="font-medium">
-              {q.action === "CLAIM" ? "Add" : q.action} {q.player}
-            </span>
-            {q.drop ? <span className="text-ink-muted">drop {q.drop}</span> : null}
-            <ValueChip label="today" value={q.score_today} decimals={1} />
-            <span className="text-ink-muted">→</span>
-            <ValueChip label="post-draft" value={q.score_post_draft} decimals={1} />
-            <span className="text-ink-muted">{q.note.replace(/^queued:\s*/, "")}</span>
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }

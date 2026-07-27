@@ -1,125 +1,74 @@
-import type { LeagueRow, TradeRec, TradeZoneRow } from "@/lib/queries";
+import type { LeagueRow, TradePair, TradeRec } from "@/lib/queries";
 
 /**
  * Pure helpers for the Trades tab. Everything here is a typed view or a
  * restatement of facts already in the collector's output (scoring-system.md
- * §7) — never a recomputation of scores.
+ * v3 §4–§5) — never a recomputation of scores.
  */
 
-// ---- typed views over fields the shared interfaces leave loose ----
+export { ord } from "@/components/league/util";
 
-/** §7.6 pick-anchor entries (typed view over TradeRec.pick_anchor). */
-export interface PickAnchor {
-  side: "give" | "get";
-  pick: string;
-  concrete: number;
-  tranche: number;
-  sell_floor: number;
-}
-
-export function pickAnchors(rec: TradeRec): PickAnchor[] {
-  return (rec.pick_anchor ?? []) as PickAnchor[];
-}
-
-/** §7.3 rank score H = my score + 0.3 · clipped their score (on the doc). */
-export function hScore(rec: TradeRec): number | null {
-  const h = (rec as TradeRec & { rank_score_H?: number }).rank_score_H;
-  return typeof h === "number" ? h : null;
-}
-
-/** trade_zone.zone is null in the data when their floor clears my ceiling. */
-export function zoneValue(row: TradeZoneRow): number | null {
-  const z = (row as Omit<TradeZoneRow, "zone"> & { zone: number | null }).zone;
-  return typeof z === "number" ? z : null;
-}
-
-/** DIP entries are empty in current data; render whatever shape shows up. */
-export function describeDip(entry: unknown): string {
-  if (typeof entry === "string") return entry;
-  if (entry && typeof entry === "object") {
-    const e = entry as Record<string, unknown>;
-    const name = [e.player, e.name, e.target, e.pick].find(
-      (x) => typeof x === "string",
-    );
-    if (name) return name as string;
-  }
-  return JSON.stringify(entry);
-}
-
-// ---- acceptance layer labels (§7.4) ----
-
-export function tierLabel(rec: TradeRec): string {
-  if (rec.tier === "A") return "should accept";
-  if (rec.tier === "B") return rec.posture_fit ? "worth asking" : "needs selling";
-  return rec.posture_fit ? "thin for them" : "thin for them · misfit";
-}
-
-// ---- posture + "what they want" (§7.4 thresholds over league-table facts) ----
-
-export function posture(omega: number): "Contender" | "On the fence" | "Rebuilder" {
-  if (omega >= 0.55) return "Contender";
-  if (omega <= 0.4) return "Rebuilder";
-  return "On the fence";
-}
-
-export function ordinal(n: number): string {
-  const s = ["th", "st", "nd", "rd"];
-  const v = n % 100;
-  return `${n}${s[(v - 20) % 10] ?? s[v] ?? s[0]}`;
-}
-
-/** Two weakest lineup groups by within-column rank (higher rank = weaker). */
-function weakestSlots(row: LeagueRow): string {
-  return Object.entries(row.lineup)
-    .map(([slot, g]) => ({ slot, rank: g.rank }))
-    .sort((a, b) => b.rank - a.rank)
-    .slice(0, 2)
-    .map((w) => `${w.slot} (${ordinal(w.rank)})`)
-    .join(" and ");
-}
-
-function cutsClause(row: LeagueRow): string {
-  const cuts = row.market.cuts;
-  if (cuts === 0) return "No cuts due — room to take on bodies";
-  if (cuts >= 4) return `${cuts} cuts due Aug 15 — motivated to shed bodies`;
-  return `${cuts} cuts due Aug 15`;
+/** "BUY LEG" / "SELL LEG" / "NEUTRAL" badge text. */
+export function legLabel(rec: TradeRec): string {
+  if (rec.leg_type === "buy") return "buy leg";
+  if (rec.leg_type === "sell") return "sell leg";
+  return "roster-neutral";
 }
 
 /**
- * One honest sentence per opponent, derived from their ω posture and their
- * league-table row — weakest slot groups, futures rank, crunch pressure.
+ * §4 posture sentence: what the counterparty receives, aimed at their
+ * observed posture — "players → BUYER ronakpatel32 (3 trades on record)".
  */
-export function wantsLine(row: LeagueRow): string {
-  const p = posture(row.omega);
-  if (p === "Contender")
-    return `Wants now-help — players over picks; thinnest at ${weakestSlots(row)}. ${cutsClause(row)}.`;
-  if (p === "Rebuilder")
-    return `Wants futures — at least half the package in picks and under-25s (futures rank ${ordinal(row.future.F_rank)}). ${cutsClause(row)}.`;
-  return `Takes either side of a fair deal; thinnest at ${weakestSlots(row)}. ${cutsClause(row)}.`;
+export function postureEvidenceNote(rec: TradeRec): string {
+  const n = rec.posture.evidence_count;
+  if (rec.posture.source !== "trades") return "user override";
+  if (n === 0) return "no posture trades in window";
+  return `${n} trade${n > 1 ? "s" : ""} on record`;
 }
 
-// ---- opponent ordering: best available deal first, dealless teams last ----
+/**
+ * Legs of a pair in execution order: at the roster cap the sell-leg goes
+ * first (the engine's sequencing note on the buy leg says so); otherwise
+ * the engine's order stands. Ids missing from the board resolve to null.
+ */
+export function pairLegs(
+  pair: TradePair,
+  byId: Map<string, TradeRec>,
+): (TradeRec | null)[] {
+  const legs = pair.legs.map((id) => byId.get(id) ?? null);
+  const buy = legs.find((l) => l?.leg_type === "buy");
+  if (buy && buy.sequencing.startsWith("at the roster cap")) {
+    return [...legs].sort((a, b) => {
+      const w = (r: TradeRec | null) => (r?.leg_type === "sell" ? 0 : 1);
+      return w(a) - w(b);
+    });
+  }
+  return legs;
+}
 
-const TIER_ORDER: Record<string, number> = { A: 0, B: 1, C: 2 };
+/** One compact "give → get" sentence for a pair-card leg row. */
+export function assetSummary(rec: TradeRec): { give: string; get: string } {
+  const names = (assets: TradeRec["give"]) => assets.map((a) => a.name).join(", ");
+  return { give: names(rec.give), get: names(rec.get) };
+}
 
-export function opponentOrder(
-  perOpp: Record<string, TradeRec[]>,
-  rows: LeagueRow[],
-  myTeam: string,
-): string[] {
-  const names = new Set<string>([
-    ...Object.keys(perOpp),
-    ...rows.map((r) => r.team).filter((t) => t !== myTeam),
-  ]);
-  const lRank = new Map(rows.map((r) => [r.team, r.L_rank] as const));
-  return [...names].sort((a, b) => {
-    const da = perOpp[a]?.[0];
-    const db = perOpp[b]?.[0];
-    const t =
-      (da ? (TIER_ORDER[da.tier] ?? 3) : 4) - (db ? (TIER_ORDER[db.tier] ?? 3) : 4);
-    if (t !== 0) return t;
-    const h = (db ? (hScore(db) ?? 0) : -Infinity) - (da ? (hScore(da) ?? 0) : -Infinity);
-    if (h !== 0) return h;
-    return (lRank.get(a) ?? 99) - (lRank.get(b) ?? 99);
-  });
+// ---- market strip (league-table market blocks, §7 targeting console) ----
+
+export interface MarketStripEntry {
+  team: string;
+  posture: string;
+  count: number;
+}
+
+/** BUYERs and SELLERs with their evidence tallies, for the trades-tab strip. */
+export function marketStrip(rows: LeagueRow[], myTeam: string): MarketStripEntry[] {
+  return rows
+    .filter((r) => r.team !== myTeam && r.market.posture !== "NEUTRAL")
+    .map((r) => ({
+      team: r.team,
+      posture: r.market.posture,
+      count:
+        r.market.posture === "BUYER" ? r.market.bought : r.market.sold,
+    }))
+    .sort((a, b) => a.posture.localeCompare(b.posture) || b.count - a.count);
 }

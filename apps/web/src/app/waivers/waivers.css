@@ -72,18 +72,24 @@
 .wv-grid {
   display: grid;
   grid-template-columns:
-    2rem minmax(11rem, 1fr) 2.2rem 2.6rem 2.2rem 3.8rem 4.2rem 4.6rem 5rem
-    1.4rem 4.4rem 0.9rem;
+    2rem minmax(11rem, 1fr) 2.2rem 2.6rem 2.2rem 3.8rem 4.6rem 4.2rem
+    1.4rem 5.4rem 0.9rem;
   gap: 0 0.7rem;
   align-items: baseline;
-  min-width: 54rem;
+  min-width: 47rem;
 }
 
 .wv-grid--drops {
   grid-template-columns:
-    2rem minmax(11rem, 1fr) 2.2rem 2.6rem 2.2rem 3.8rem 4.6rem 4.6rem
-    minmax(9rem, 13rem) 0.9rem;
-  min-width: 50rem;
+    2rem minmax(11rem, 1fr) 2.2rem 2.6rem 2.2rem 3.8rem
+    minmax(9rem, 13rem);
+  min-width: 34rem;
+}
+
+/* non-expanding rows (drop list) mirror the summary row's padding */
+.wv-static {
+  padding: 0.34rem 0.25rem;
+  font-size: 12.5px;
 }
 
 .wv-r {

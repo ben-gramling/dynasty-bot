@@ -1,41 +1,67 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * Trades tab against the live seeded DB: ranked offers render as cards,
- * every opponent gets a block, and both sides of a deal carry the
- * decomposition sentence.
+ * Trades tab against the live seeded DB (scoring v3): ranked leg cards carry
+ * ΔW both ways and the fairness-gate strip, the roster-neutral pairs section
+ * renders (cards when the engine found bundles, honest empty state when not),
+ * and the market map points into the League tab.
  */
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/trades");
 });
 
-test("best offers render as real trade cards", async ({ page }) => {
-  await expect(page.getByRole("heading", { name: "Best offers" })).toBeVisible();
-  const cards = page.locator('section[aria-labelledby="best-offers"] article');
+test("best trades render as ranked cards with ΔW and the gate strip", async ({
+  page,
+}) => {
+  await expect(page.getByRole("heading", { name: "Best trades" })).toBeVisible();
+  const cards = page.locator('section[aria-labelledby="best-trades"] article');
   expect(await cards.count()).toBeGreaterThan(0);
+  const first = cards.first();
   // Two-sided ethic: You send / You get on every card.
-  await expect(cards.first().getByText("You send")).toBeVisible();
-  await expect(cards.first().getByText("You get")).toBeVisible();
+  await expect(first.getByText("You send")).toBeVisible();
+  await expect(first.getByText("You get")).toBeVisible();
+  // Headline ΔW(you) chip plus the honest zero-sum "them" line.
+  await expect(first.getByText("ΔW you")).toBeVisible();
+  const themLine = first.locator('[title*="zero-sum"]');
+  await expect(themLine).toBeVisible();
+  await expect(themLine).toHaveText(/them/);
+  // The §3 gate strip: band gap, anti-fleece ratio, verdict.
+  await expect(first.getByText(/of .*band/)).toBeVisible();
+  await expect(first.getByText(/cap/)).toBeVisible();
+  await expect(first.getByText("PASS", { exact: true })).toBeVisible();
 });
 
-test("all 11 opponents get a block", async ({ page }) => {
-  await expect(page.getByRole("heading", { name: "Opponent by opponent" })).toBeVisible();
-  const blocks = page.locator('section[aria-labelledby="by-opponent"] > div > article');
-  expect(await blocks.count()).toBe(11);
+test("cards carry posture shape and sequencing notes", async ({ page }) => {
+  const first = page.locator('section[aria-labelledby="best-trades"] article').first();
+  await expect(first.getByText(/Shape: (players|picks|mixed) →/)).toBeVisible();
+  await expect(first.getByText(/Sequencing:/)).toBeVisible();
 });
 
-test("a trade decomposition expands on click", async ({ page }) => {
-  // Pin the first closed decomposition by index — a :not([open]) locator
-  // would re-resolve to the next closed one after the click.
-  const decomps = page.locator("details.decomp");
-  const idx = await decomps.evaluateAll((els) =>
-    els.findIndex((el) => !el.hasAttribute("open")),
-  );
-  expect(idx).toBeGreaterThanOrEqual(0);
-  const decomp = decomps.nth(idx);
-  await expect(decomp).toBeVisible();
-  await decomp.locator("summary").click();
-  await expect(decomp).toHaveJSProperty("open", true);
-  await expect(decomp.locator(".decomp-audit")).toBeVisible();
+test("roster-neutral pairs section renders cards or its empty state", async ({
+  page,
+}) => {
+  await expect(
+    page.getByRole("heading", { name: "Roster-neutral pairs" }),
+  ).toBeVisible();
+  const section = page.locator('section[aria-labelledby="pairs"]');
+  const pairCards = section.locator("article", { hasText: "pair ΔW" });
+  if ((await pairCards.count()) === 0) {
+    // No bundles in today's data — the section must say so honestly.
+    await expect(section.getByText(/No pairings needed/)).toBeVisible();
+    return;
+  }
+  const first = pairCards.first();
+  // A pair names its legs (R-ids) and carries the combined ΔW chip.
+  await expect(first.getByText("pair ΔW")).toBeVisible();
+  await expect(first.getByText(/net roster/)).toBeVisible();
+});
+
+test("market map links into the League tab", async ({ page }) => {
+  await expect(page.getByRole("heading", { name: "Market map" })).toBeVisible();
+  const link = page
+    .locator('section[aria-labelledby="market-map"]')
+    .getByRole("link", { name: /League tab/ });
+  await expect(link).toBeVisible();
+  await expect(link).toHaveAttribute("href", "/league");
 });

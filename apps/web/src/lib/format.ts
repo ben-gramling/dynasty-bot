@@ -21,13 +21,6 @@ export function fmtValue(n: number): string {
   return grouped.format(Math.round(n)).replace("-", MINUS);
 }
 
-/** Unsigned 1-decimal magnitude ("1,087.2"); true minus; −0 → "0.0". */
-export function fmt1(n: number): string {
-  return groupedDp(1)
-    .format(n === 0 ? 0 : n)
-    .replace("-", MINUS);
-}
-
 /** Signed delta: "+1,240" / "−524". decimals > 0 keeps e.g. "+6.9". */
 export function fmtSigned(n: number, decimals = 0): string {
   const body = (decimals > 0 ? groupedDp(decimals) : grouped)

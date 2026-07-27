@@ -6,9 +6,7 @@ import { fmtSigned } from "@/lib/format";
  * from the .text-star class, never decoration.
  */
 
-export { fmt1 } from "@/lib/format";
-
-/** Tiny uppercase tag ("free", "Aug 15 cut"). emphasis = sky-deep border. */
+/** Tiny uppercase tag ("taxi", "standing drop"). emphasis = sky-deep border. */
 export function Tag({
   children,
   emphasis = false,

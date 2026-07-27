@@ -1,24 +1,15 @@
 import type { PlayerInfo, WaiverTarget } from "@/lib/queries";
-import { fmtFaab, fmtSigned, fmtValue } from "@/lib/format";
-import { Decomposition } from "@/components/decomposition";
+import { fmtFaab, fmtValue } from "@/lib/format";
 import { Star } from "@/components/star";
 import { ValueChip } from "@/components/value-chip";
 import { InjuryTag, Tag } from "@/components/waivers/bits";
 
 /**
- * A prominent recommended-claim card: verdict verb, bio line, the add/drop/bid
- * plan in user words, and the signature decomposition sentence (§12) with the
- * bid chip prepended. Full before/after lineup tables ride in the audit.
+ * A prominent recommended-claim card: verdict verb, bio line, the
+ * add/drop/bid plan in user words, and the claim sentence as value chips —
+ * claim = v(add) − v(drop) straight off the doc (§6), never recomputed.
  */
-export function ClaimCard({
-  t,
-  info,
-  defaultOpen = false,
-}: {
-  t: WaiverTarget;
-  info?: PlayerInfo;
-  defaultOpen?: boolean;
-}) {
+export function ClaimCard({ t, info }: { t: WaiverTarget; info?: PlayerInfo }) {
   const bio = [t.pos, info?.team ?? "FA", info?.age != null ? `age ${info.age}` : null]
     .filter(Boolean)
     .join(" · ");
@@ -32,34 +23,35 @@ export function ClaimCard({
         <span className="wv-player">{t.player}</span>
         <span className="text-[12.5px] text-ink-muted">{bio}</span>
         <InjuryTag status={info?.injury ?? null} />
-        {t.free_option ? (
-          <Tag emphasis title="Free-option rule: lands below the Aug-15 cut line, so the crunch charge cancels his value — never bid on him">
-            free option
+        {t.taxi_stash ? (
+          <Tag emphasis title="Erratum 10: stashes on taxi — consumes no active spot, no drop needed">
+            taxi stash
           </Tag>
         ) : null}
         {t.dip ? <Tag title="KTC value dipping — buy-low window">dip</Tag> : null}
         <span className="num ml-auto text-[14px]">KTC {fmtValue(t.v)}</span>
       </div>
       <p className="wv-plan">
-        Add {t.player} · drop {t.drop ?? "no one — a slot is open"} · bid{" "}
-        <span className="num">{fmtFaab(t.bid.bid)}</span>
-        {t.ir_move ? ` · IR move: ${t.ir_move}` : ""}
+        Add {t.player} ·{" "}
+        {t.taxi_stash
+          ? "stash on taxi — no drop needed"
+          : `drop ${t.drop ?? "no one — a slot is open"}`}{" "}
+        · bid <span className="num">{fmtFaab(t.bid.bid)}</span>
         <span className="num">
           {" "}
-          · raw {fmtSigned(t.netclaim_raw, 1)} · demand D {t.bid.D} · ceiling{" "}
-          {fmtFaab(t.bid.ceiling)}
+          · demand D {t.bid.D} · ceiling {fmtFaab(t.bid.ceiling)}
         </span>
-        {t.bid.clamp ? ` · clamp: ${t.bid.clamp}` : ""}
+        {t.bid.clamp !== null ? (
+          <span className="num"> · clamp {fmtFaab(t.bid.clamp)}</span>
+        ) : null}
       </p>
-      <div className="mt-2">
-        <Decomposition
-          side={t.sides.me}
-          tables={t.audit.lineup_tables}
-          scoreLabel="net claim"
-          lead={<ValueChip label="bid" text={fmtFaab(t.bid.bid)} />}
-          defaultOpen={defaultOpen}
-        />
-      </div>
+      <p className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1">
+        <ValueChip label="claim" value={t.claim} emphasis />
+        <span className="text-[11px] text-ink-muted">
+          = v(add) − v(drop)
+        </span>
+        <ValueChip label="bid" text={fmtFaab(t.bid.bid)} />
+      </p>
     </article>
   );
 }

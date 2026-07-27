@@ -1,21 +1,28 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * Waivers tab against the live seeded DB: the board has real rows, the
- * status pill carries a real run time, and the signature decomposition
- * sentence expands to its audit on click.
+ * Waivers tab against the live seeded DB (scoring v3): the board has real
+ * rows ranked by claim score, rows expand to the plan line, the drop list
+ * is the ascending housekeeping list, and the status pill carries a real
+ * run time.
  */
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/waivers");
 });
 
-test("board renders real seeded rows", async ({ page }) => {
-  await expect(page.getByRole("heading", { name: "Full board", exact: true })).toBeVisible();
+test("board renders real seeded rows with the claim column", async ({ page }) => {
+  await expect(
+    page.getByRole("heading", { name: "Full board", exact: true }),
+  ).toBeVisible();
   const rows = page.locator(".wv-row");
   expect(await rows.count()).toBeGreaterThan(0);
   // Every row leads with a KTC value in the data face.
   await expect(rows.first().locator(".num").first()).toBeVisible();
+  // v3 board header: Claim replaces NetClaim; no Net/Raw split.
+  const head = page.locator(".wv-head").first();
+  await expect(head.getByText("Claim", { exact: true })).toBeVisible();
+  await expect(head.getByText("Net", { exact: true })).toHaveCount(0);
 });
 
 test("status pill shows a run time and Refresh exists", async ({ page }) => {
@@ -26,30 +33,19 @@ test("status pill shows a run time and Refresh exists", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Refresh" })).toBeVisible();
 });
 
-test("a decomposition sentence expands to the full audit on click", async ({ page }) => {
-  // Pick a closed decomposition (the first claim card ships open by design).
-  // Pin it by index — a :not([open]) locator would re-resolve after the click.
-  const decomps = page.locator("details.decomp");
-  const idx = await decomps.evaluateAll((els) =>
-    els.findIndex((el) => !el.hasAttribute("open")),
-  );
-  expect(idx).toBeGreaterThanOrEqual(0);
-  const closed = decomps.nth(idx);
-  await expect(closed).toBeVisible();
-  const audit = closed.locator(".decomp-audit");
-  await expect(audit).toBeHidden();
-  await closed.locator("summary").click();
-  await expect(closed).toHaveJSProperty("open", true);
-  await expect(audit).toBeVisible();
-  // The audit always closes with the sum line (components must sum, §12).
-  await expect(audit.locator("p").last()).toHaveText(/=/);
+test("board rows expand to the plan line", async ({ page }) => {
+  const row = page.locator("details.wv-row").first();
+  await row.locator("summary").first().click();
+  await expect(row).toHaveJSProperty("open", true);
+  const plan = row.locator(".wv-plan");
+  await expect(plan).toBeVisible();
+  // The plan states the add and the bid in user words.
+  await expect(plan).toHaveText(/Add .+ bid \$\d+/);
 });
 
-test("board rows expand to the plan line and decomposition", async ({ page }) => {
-  const row = page.locator(".wv-row").first();
-  await row.locator("summary").first().click();
-  await expect(row.locator(".wv-plan")).toBeVisible();
-  await expect(row.locator(".decomp")).toBeVisible();
+test("drop list is present with the standing drop tagged", async ({ page }) => {
+  await expect(page.getByRole("heading", { name: "Drop list" })).toBeVisible();
+  await expect(page.getByText("standing drop").first()).toBeVisible();
 });
 
 test("position filter pills exist with real counts", async ({ page }) => {

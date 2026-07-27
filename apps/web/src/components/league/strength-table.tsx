@@ -2,15 +2,16 @@ import type { LeagueRow, LeagueTableDoc } from "@/lib/queries";
 import { Star } from "@/components/star";
 import { fmtFaab, fmtValue } from "@/lib/format";
 import { POSITIONS } from "@/components/league/chart-data";
-import { fmtOmega, ord, slugFor } from "@/components/league/util";
+import { ord, slugFor } from "@/components/league/util";
 
 /**
  * The headline strength map: one row per team, three strictly separated
- * column groups (scoring-system.md §8) — starting lineup (L + per-position
- * sums), future assets (F), market (ω / cuts / FAAB). Strength cells are
- * heat-tinted by within-column rank with the sanctioned sequential ramp
- * (sky-deep light→dark, docs/web-design.md §5); my row is anchored with the
- * six-pointed star. Team names link to the front-office cards below.
+ * column groups (scoring-system.md v3 §7) — starting lineup (L + per-position
+ * sums), future assets (F), market (posture / holes / pick inventory / FAAB —
+ * the targeting console). Strength cells are heat-tinted by within-column
+ * rank with the sanctioned sequential ramp (sky-deep light→dark,
+ * docs/web-design.md §5); my row is anchored with the six-pointed star.
+ * Team names link to the front-office cards below.
  */
 
 /** Sequential single-hue heat: rank 1 deepest, last rank ~white. */
@@ -29,6 +30,29 @@ function posTitle(row: LeagueRow, pos: string, teams: number): string {
   return `${ord(g.rank)} of ${teams} — ${players}`;
 }
 
+/** Hover: the evidence trades behind the posture label, human-readably (§4). */
+function postureTitle(row: LeagueRow): string {
+  const m = row.market;
+  const head = `${m.posture} — bought ${m.bought} / sold ${m.sold} of ${m.trades_12mo} trades in 12 months`;
+  if (!m.evidence.length) return head;
+  const lines = m.evidence.map((e) => `${e.date} — ${e.summary}`);
+  return `${head}\n${lines.join("\n")}`;
+}
+
+function holesTitle(row: LeagueRow, teams: number): string {
+  const holes = row.market.holes;
+  if (!holes.length) return "No starting-lineup group ranked in the league's bottom quarter";
+  return holes.map((h) => `${h.pos} ${ord(h.rank)} of ${teams}`).join(" · ");
+}
+
+function picksTitle(row: LeagueRow): string {
+  const inv = row.market.pick_inventory;
+  const byYear = Object.entries(inv.by_year)
+    .map(([y, n]) => `${y}: ${n}`)
+    .join(" · ");
+  return `${inv.count} picks worth ${fmtValue(inv.value)} at tranche — ${byYear}`;
+}
+
 export function StrengthTable({ table }: { table: LeagueTableDoc }) {
   const rows = [...table.rows].sort((a, b) => a.L_rank - b.L_rank);
   const n = rows.length;
@@ -36,7 +60,7 @@ export function StrengthTable({ table }: { table: LeagueTableDoc }) {
 
   return (
     <div className="card-scroll">
-      <table className="data-table min-w-[860px]">
+      <table className="data-table min-w-[960px]">
         <thead>
           <tr>
             <th colSpan={2} aria-hidden />
@@ -46,7 +70,7 @@ export function StrengthTable({ table }: { table: LeagueTableDoc }) {
             <th colSpan={2} style={groupEdge} className="pl-2">
               Future assets
             </th>
-            <th colSpan={3} style={groupEdge} className="pl-2">
+            <th colSpan={5} style={groupEdge} className="pl-2">
               Market
             </th>
           </tr>
@@ -65,17 +89,20 @@ export function StrengthTable({ table }: { table: LeagueTableDoc }) {
               F
             </th>
             <th className="num">Rk</th>
-            {/* keep the lowercase omega — .data-table th uppercases text */}
-            <th className="num pl-2" style={{ ...groupEdge, textTransform: "none" }}>
-              ω
+            <th className="pl-2" style={groupEdge}>
+              Posture
             </th>
-            <th className="num">Cuts</th>
+            <th>Holes</th>
+            <th className="num">Picks</th>
+            <th className="num">Pick Σv</th>
             <th className="num">FAAB</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((r) => {
             const me = r.team === my;
+            const m = r.market;
+            const neutral = m.posture === "NEUTRAL";
             return (
               <tr key={r.team} style={me ? { background: "#eaf4fb" } : undefined}>
                 <td className="num text-ink-muted">{r.L_rank}</td>
@@ -117,20 +144,29 @@ export function StrengthTable({ table }: { table: LeagueTableDoc }) {
                   {fmtValue(r.future.F)}
                 </td>
                 <td className="num text-ink-muted">{r.future.F_rank}</td>
-                <td className="num pl-2 text-ink-muted" style={groupEdge}>
-                  {fmtOmega(r.omega)}
+                <td
+                  className={`pl-2 whitespace-nowrap ${neutral ? "text-ink-muted" : "font-medium"}`}
+                  style={groupEdge}
+                  title={postureTitle(r)}
+                >
+                  {m.posture.toLowerCase()}
+                  {m.evidence.length ? (
+                    <span className="num text-ink-muted"> ·{m.evidence.length}</span>
+                  ) : null}
                 </td>
                 <td
-                  className="num text-ink-muted"
-                  title={
-                    r.market.cuts
-                      ? `C ${fmtValue(r.market.C)} — ${r.market.cut_list.join(", ")}`
-                      : "No forced cuts"
-                  }
+                  className="whitespace-nowrap text-ink-muted"
+                  title={holesTitle(r, n)}
                 >
-                  {r.market.cuts}
+                  {m.holes.length ? m.holes.map((h) => h.pos).join(" ") : "—"}
                 </td>
-                <td className="num text-ink-muted">{fmtFaab(r.market.faab)}</td>
+                <td className="num text-ink-muted" title={picksTitle(r)}>
+                  {m.pick_inventory.count}
+                </td>
+                <td className="num text-ink-muted" title={picksTitle(r)}>
+                  {fmtValue(m.pick_inventory.value)}
+                </td>
+                <td className="num text-ink-muted">{fmtFaab(m.faab)}</td>
               </tr>
             );
           })}

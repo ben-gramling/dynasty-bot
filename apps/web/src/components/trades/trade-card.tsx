@@ -1,113 +1,100 @@
-import type { ReactNode } from "react";
 import type { TradeAsset, TradeRec } from "@/lib/queries";
-import { fmt1, fmtPct, fmtSigned, fmtValue } from "@/lib/format";
-import { Decomposition } from "@/components/decomposition";
-import {
-  describeDip,
-  hScore,
-  pickAnchors,
-  tierLabel,
-  type PickAnchor,
-} from "./derive";
+import { fmtPct, fmtSigned, fmtValue } from "@/lib/format";
+import { ValueChip } from "@/components/value-chip";
+import { legLabel, ord, postureEvidenceNote } from "./derive";
 
 /**
- * One ranked trade card (scoring-system.md §7): You send / You get columns,
- * both sides' gains as decomposition sentences side by side (two-sided is the
- * ethic), acceptance tier, fairness + anti-fleece status, ask anchor,
- * ω-sensitivity, and §7.6 market-timing flags. The row-per-asset columns keep
- * a 3-for-1 as scannable as a 1-for-1.
+ * One ranked trade leg (scoring-system.md v3 §2–§5): You send / You get at
+ * face KTC value, the headline ΔW(you) with the honest zero-sum "them" line,
+ * the §3 gate strip (band gap, anti-fleece ratio, PASS), the §4 posture
+ * shape line with visible holes, and the §5 execution notes (sequencing,
+ * exclusive-with, anchor ask). The row-per-asset columns keep a 3-for-1 as
+ * scannable as a 1-for-1.
  */
-export function TradeCard({
-  rec,
-  rank,
-  omegaMe,
-  myCuts,
-  frame = "card",
-  showCounterparty = true,
-}: {
-  rec: TradeRec;
-  /** 1-based position in the league-wide list (best-offers section only). */
-  rank?: number;
-  /** meta.omega_me — marks the current row of the ω-sensitivity line. */
-  omegaMe: number;
-  /** My scheduled-cut names (league-table cut_list) — tags doomed inventory. */
-  myCuts: string[];
-  frame?: "card" | "inset";
-  showCounterparty?: boolean;
-}) {
-  const h = hScore(rec);
-  const anchors = pickAnchors(rec);
-  const f = rec.fairness;
-  const Heading = frame === "card" ? ("h3" as const) : ("h4" as const);
+export function TradeCard({ rec, compact = false }: { rec: TradeRec; compact?: boolean }) {
   return (
-    <article className={frame === "card" ? "card" : "rounded-md border border-line p-3"}>
+    <article className="card" id={`leg-${rec.id}`}>
       <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        {rank !== undefined ? (
-          <span className="num text-[13px] text-ink-muted">{rank}</span>
-        ) : null}
-        {showCounterparty ? (
-          <Heading className="display text-[17px]">
-            <span className="text-ink-muted">With</span> {rec.counterparty}
-          </Heading>
-        ) : null}
-        <TierBadge rec={rec} />
-        <span className="text-[11px] text-ink-muted">
-          {rec.activity === "Low"
-            ? "Low-activity partner — tier demoted"
-            : `${rec.activity}-activity partner`}
+        <span className="num text-[13px] text-ink-muted" title="Rank by ΔW(you)">
+          {rec.rank}
         </span>
-        {h !== null ? (
+        <h3 className="display text-[17px]">
+          <span className="text-ink-muted">With</span> {rec.counterparty}
+        </h3>
+        <LegBadge rec={rec} />
+        <span className="num text-[11px] text-ink-muted">{rec.id}</span>
+        <span className="ml-auto flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <ValueChip label="ΔW you" value={rec.dW.me} emphasis />
           <span
-            className="ml-auto text-[11px] text-ink-muted"
-            title="Rank score H: your gain plus 30% of theirs (§7.3) — orders the cards"
+            className="text-[11.5px] text-ink-muted"
+            title="Exact zero-sum by construction — their loss is your gain (§11.1)"
           >
-            Rank score <span className="num">H {fmt1(h)}</span>
+            them <span className={`num${rec.dW.them < 0 ? " text-star" : ""}`}>
+              {fmtSigned(rec.dW.them)}
+            </span>
           </span>
-        ) : null}
+        </span>
       </header>
 
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <AssetColumn title="You send" assets={rec.give} cuts={myCuts} />
+        <AssetColumn title="You send" assets={rec.give} />
         <AssetColumn title="You get" assets={rec.get} />
       </div>
 
-      <div className="mt-3 grid gap-x-6 gap-y-2 lg:grid-cols-2">
-        <Decomposition
-          side={rec.sides.me}
-          tables={rec.audit.lineup_tables.me}
-          lead={<SideTag>You</SideTag>}
-        />
-        <Decomposition
-          side={rec.sides.them}
-          tables={rec.audit.lineup_tables.them}
-          lead={<SideTag>{rec.counterparty}</SideTag>}
-        />
-      </div>
+      <GateStrip rec={rec} />
 
-      <footer className="mt-3 space-y-1 border-t border-line pt-2 text-[11.5px] text-ink-muted">
+      <footer className="mt-2 space-y-1 text-[11.5px] text-ink-muted">
         <p>
-          Fairness: adjusted <span className="num">{fmt1(f.adj_give)}</span> vs{" "}
-          <span className="num">{fmt1(f.adj_get)}</span> — gap{" "}
-          <span className="num">{fmtPct(f.gap_pct, 1)}</span> of a{" "}
-          <span className="num">{fmtPct(f.band_pct, 0)}</span> band
-          {f.gap_pct > f.band_pct ? " (over the band — scheduled-cut exemption)" : ""} · raw{" "}
-          <span className="num">{f.raw_ratio.toFixed(2)}×</span> against the{" "}
-          <span className="num">{f.cap.toFixed(2)}×</span> anti-fleece cap
+          Shape: {rec.posture.shape} →{" "}
+          <span className="font-medium text-ink">
+            {rec.posture.label} {rec.counterparty}
+          </span>{" "}
+          ({postureEvidenceNote(rec)})
+          {rec.posture.fit ? null : (
+            <span> · does not fit posture — expect a harder sell</span>
+          )}
+          {rec.holes.length ? (
+            <>
+              {" "}
+              · aims at their{" "}
+              {rec.holes
+                .map((h) => `${h.pos} (${ord(h.their_rank)})`)
+                .join(", ")}
+            </>
+          ) : null}
         </p>
-        <p>
-          Ask: open <span className="num">+{fmtPct(rec.anchor_ask_pct, 0)}</span> above
-          this package on your side · your score at{" "}
-          <OmegaSens sens={rec.omega_sensitivity} omegaMe={omegaMe} />
-        </p>
-        {anchors.map((a, i) => (
-          <p key={i}>
-            <AnchorLine a={a} />
-          </p>
-        ))}
-        {rec.dip_targets.length ? (
+        <p>Sequencing: {rec.sequencing}</p>
+        {!compact ? (
           <p>
-            Dip flags: {rec.dip_targets.map(describeDip).join(" · ")} — value down ≥ 6%
-            from the 30-day high with role unchanged
+            Ask: {rec.anchor_ask.note} — open at ≈{" "}
+            <span className="num">{fmtValue(rec.anchor_ask.ask)}</span> on your side
+          </p>
+        ) : null}
+        {rec.exclusive_with.length ? (
+          <p title="Shared assets — executing this leg takes the others off the board (§5)">
+            Exclusive with{" "}
+            <span className="num">{rec.exclusive_with.join(", ")}</span>
+          </p>
+        ) : null}
+        {rec.taxi_stashed.me.length || rec.taxi_stashed.them.length ? (
+          <p>
+            Taxi routing:{" "}
+            {rec.taxi_stashed.me.length
+              ? `you stash ${rec.taxi_stashed.me.join(", ")}`
+              : null}
+            {rec.taxi_stashed.me.length && rec.taxi_stashed.them.length ? " · " : null}
+            {rec.taxi_stashed.them.length
+              ? `they stash ${rec.taxi_stashed.them.join(", ")}`
+              : null}
+          </p>
+        ) : null}
+        {rec.dip_notes.length ? (
+          <p>Buy-low: {rec.dip_notes.join(", ")} — trading below the trailing-30-day high</p>
+        ) : null}
+        {rec.unvalued.length ? (
+          <p className="text-ink">
+            <WarnTag>unvalued</WarnTag> {rec.unvalued.join(", ")} — no KTC price;
+            contributes 0 to ΔW, verify by hand (§11.7)
           </p>
         ) : null}
       </footer>
@@ -115,40 +102,38 @@ export function TradeCard({
   );
 }
 
-function TierBadge({ rec }: { rec: TradeRec }) {
+function LegBadge({ rec }: { rec: TradeRec }) {
   const tone =
-    rec.tier === "A"
-      ? "border-sky-deep bg-chip text-sky-deep"
-      : rec.tier === "B"
-        ? "border-line text-ink"
+    rec.leg_type === "buy"
+      ? "border-sky-deep text-sky-deep"
+      : rec.leg_type === "sell"
+        ? "border-ink text-ink"
         : "border-line text-ink-muted";
   return (
     <span
-      className={`inline-flex items-baseline gap-1.5 rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] ${tone}`}
+      className={`rounded border bg-surface px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] ${tone}`}
+      title={
+        rec.leg_type === "buy"
+          ? "Adds a body — pairs with a sell-leg for roster neutrality (§5)"
+          : rec.leg_type === "sell"
+            ? "Sheds a body — needs no pairing (§5)"
+            : "Bodies in = bodies out — order free (§5)"
+      }
     >
-      <span className="num text-[11.5px] font-semibold">{rec.tier}</span>
-      {tierLabel(rec)}
+      {legLabel(rec)}
     </span>
   );
 }
 
-function SideTag({ children }: { children: ReactNode }) {
+function WarnTag({ children }: { children: React.ReactNode }) {
   return (
-    <span className="mr-1 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink">
+    <span className="rounded border border-line bg-chip px-1 text-[9.5px] uppercase tracking-[0.08em] text-ink-muted">
       {children}
     </span>
   );
 }
 
-function AssetColumn({
-  title,
-  assets,
-  cuts,
-}: {
-  title: string;
-  assets: TradeAsset[];
-  cuts?: string[];
-}) {
+function AssetColumn({ title, assets }: { title: string; assets: TradeAsset[] }) {
   const total = assets.reduce((s, a) => s + a.v, 0);
   return (
     <div className="overflow-hidden rounded-md border border-line">
@@ -156,13 +141,16 @@ function AssetColumn({
         <span className="text-[10.5px] font-medium uppercase tracking-[0.08em] text-ink-muted">
           {title}
         </span>
-        <span className="num text-[11px] text-ink-muted" title="Raw Σv — the anti-fleece basis">
+        <span
+          className="num text-[11px] text-ink-muted"
+          title="Face Σv — the ΔW and anti-fleece basis (§2)"
+        >
           Σ {fmtValue(total)}
         </span>
       </div>
       <ul className="divide-y divide-field">
-        {assets.map((a, i) => (
-          <li key={i} className="flex items-baseline gap-2 px-3 py-1.5">
+        {assets.map((a) => (
+          <li key={a.key} className="flex items-baseline gap-2 px-3 py-1.5">
             {a.type === "pick" ? (
               <span className="rounded bg-chip px-1 text-[9.5px] uppercase tracking-[0.08em] text-ink-muted">
                 pick
@@ -170,28 +158,23 @@ function AssetColumn({
             ) : null}
             <span className="min-w-0">
               <span className="text-[13px]">{a.name}</span>
-              {cuts?.includes(a.name) ? (
+              {a.unvalued ? (
                 <span
-                  className="ml-1.5 rounded bg-chip px-1 text-[9.5px] uppercase tracking-[0.08em] text-ink-muted"
-                  title="Scheduled Aug-15 cut — doomed inventory"
+                  className="ml-1.5 rounded border border-line bg-chip px-1 text-[9.5px] uppercase tracking-[0.08em] text-ink-muted"
+                  title="No KTC price on record — contributes 0 to ΔW (§11.7)"
                 >
-                  cut due
-                </span>
-              ) : null}
-              {a.pricing ? (
-                <span className="block text-[10.5px] text-ink-muted">
-                  {a.pricing.band} — {a.pricing.band_reason}
+                  unvalued
                 </span>
               ) : null}
             </span>
             <span className="num ml-auto text-right text-[13px]">
-              {fmtValue(a.v)}
-              {a.mv !== undefined && Math.round(a.mv) !== Math.round(a.v) ? (
+              {a.unvalued ? "—" : fmtValue(a.v)}
+              {a.concrete !== undefined ? (
                 <span
                   className="block text-[10.5px] text-ink-muted"
-                  title="Market-visible value (tranche anchor)"
+                  title={a.note ?? "Rookie-board slot value — information only, never scored"}
                 >
-                  mkt {fmtValue(a.mv)}
+                  concrete {fmtValue(a.concrete)}
                 </span>
               ) : null}
             </span>
@@ -202,54 +185,34 @@ function AssetColumn({
   );
 }
 
-function OmegaSens({
-  sens,
-  omegaMe,
-}: {
-  sens: Record<string, number>;
-  omegaMe: number;
-}) {
-  const entries = Object.entries(sens).sort((a, b) => Number(a[0]) - Number(b[0]));
+/** The §3 fairness gate, verbatim from the doc: band gap, raw ratio, verdict. */
+function GateStrip({ rec }: { rec: TradeRec }) {
+  const g = rec.gate;
   return (
-    <>
-      {entries.map(([k, v], i) => {
-        const current = Math.abs(Number(k) - omegaMe) < 1e-9;
-        return (
-          <span key={k} className={current ? "text-ink" : undefined}>
-            {i > 0 ? " · " : ""}ω {k}{" "}
-            <span className={`num${v < 0 ? " text-star" : ""}`}>{fmtSigned(v, 1)}</span>
-            {current ? " (now)" : ""}
-          </span>
-        );
-      })}
-    </>
-  );
-}
-
-function AnchorLine({ a }: { a: PickAnchor }) {
-  const belowFloor = a.side === "give" && a.tranche < a.sell_floor;
-  const arb = a.concrete - a.tranche;
-  return (
-    <>
-      Pick anchor: {a.pick} ({a.side === "give" ? "you send" : "you get"}) — market
-      anchors <span className="num">{fmtValue(a.tranche)}</span>, concrete{" "}
-      <span className="num">{fmtValue(a.concrete)}</span>
-      {a.side === "give" ? (
-        <>
-          , sell floor <span className="num">{fmtValue(a.sell_floor)}</span>
-        </>
-      ) : (
-        <>
-          {" "}
-          (anchor arb{" "}
-          <span className={`num${arb < 0 ? " text-star" : ""}`}>{fmtSigned(arb)}</span>)
-        </>
-      )}
-      {belowFloor ? (
-        <span className="ml-1.5 rounded border border-line px-1 text-[9.5px] uppercase tracking-[0.08em]">
-          below sell floor
-        </span>
-      ) : null}
-    </>
+    <p className="mt-3 flex flex-wrap items-baseline gap-x-4 gap-y-1 border-t border-line pt-2 text-[11.5px] text-ink-muted">
+      <span
+        title={`Adjusted values (consolidation-discounted): ${fmtValue(g.adj_give)} give vs ${fmtValue(g.adj_get)} get — gap ${fmtValue(g.gap)} of a ${fmtValue(g.band)} band`}
+      >
+        gap <span className="num">{fmtPct(g.gap_pct, 1)}</span> of{" "}
+        <span className="num">{fmtPct(g.band_pct, 0)}</span> band
+      </span>
+      <span title="Raw Σv ratio against the anti-fleece cap — never exempted (§3.2)">
+        raw <span className="num">{g.raw_ratio.toFixed(2)}×</span> of{" "}
+        <span className="num">{g.cap.toFixed(2)}×</span> cap
+      </span>
+      <span title="Both post-trade rosters legal: minima, caps with taxi routing, IR, deadline (§3.3)">
+        {g.legal ? "legal both sides" : "ILLEGAL"}
+      </span>
+      <span
+        className={`rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] ${
+          g.verdict === "PASS"
+            ? "border-sky-deep text-sky-deep"
+            : "border-star text-star"
+        }`}
+        title="Would they think it's fair? — the §3 gate over this league's observed KTC norms"
+      >
+        {g.verdict}
+      </span>
+    </p>
   );
 }

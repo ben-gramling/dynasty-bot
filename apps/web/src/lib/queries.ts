@@ -1,5 +1,5 @@
 /**
- * Typed reads over the collector's Mongo output (docs/scoring-system.md §12,
+ * Typed reads over the collector's Mongo output (docs/scoring-system.md v3,
  * libs/core/core/store.py). One function per page need; every function selects
  * the "dynasty-bot" db by name and returns plain JSON-safe objects (Dates →
  * ISO strings, ObjectIds → hex strings) so results can cross into client
@@ -7,69 +7,31 @@
  */
 import { getDb } from "@/lib/mongodb";
 
-// ---- shared decomposition shapes (§12 explainability contract) ----
-
-export interface DLTerm {
-  kind: "starter" | "backup";
-  slot: string;
-  out: string;
-  in: string;
-  delta: number;
-}
-
-export interface CrunchInfo {
-  cuts_before: number;
-  cuts_after: number;
-  rescued: string[];
-}
-
-/** One side of a move. lineup_weighted + wealth_weighted + crunch_term = score (±0.1). */
-export interface SideDecomp {
-  omega: number;
-  dL: number;
-  dNC: number;
-  dA: number;
-  dC: number;
-  score: number;
-  lineup_weighted: number;
-  wealth_weighted: number;
-  crunch_term: number;
-  dL_terms: DLTerm[];
-  crunch?: CrunchInfo;
-}
-
-export interface LineupSlotRow {
-  slot: string;
-  player: string;
-  v: number;
-}
-
-export interface BeforeAfter {
-  before: LineupSlotRow[];
-  after: LineupSlotRow[];
-}
+// ---- shared meta (compute_all meta block) ----
 
 export interface ScoringMeta {
   mode: string;
   week: number;
   draft_status: string;
   current_year: number;
-  omega_me: number;
+  /** Noise floor: trades below this ΔW are inside KTC's own error bars (§2). */
+  w_min: number;
   replacement: Record<string, number>;
   unvalued_rostered: string[];
   alerts: string[];
   my_team: string;
 }
 
-// ---- waiver board ----
+// ---- waiver board (§6) ----
 
 export interface BidBlock {
   mode: string;
+  /** Rival demand — teams that visibly need him and can pay. */
   D: number;
-  netclaim: number;
-  netclaim_raw: number;
+  claim: number;
   ceiling: number;
-  clamp: string | null;
+  /** In-season only: 65%-of-FAAB clamp; null offseason. */
+  clamp: number | null;
   bid: number;
 }
 
@@ -79,53 +41,32 @@ export interface WaiverTarget {
   sid: string;
   pos: string;
   v: number;
+  /** Claim score = v(add) − v(drop) — the ranking score (§6). */
+  claim: number;
   dL: number;
-  netclaim: number;
-  netclaim_raw: number;
+  /** Erratum 10: stashes on taxi — consumes no active spot, no drop needed. */
+  taxi_stash: boolean;
   drop: string | null;
-  ir_move: string | null;
   recommended: boolean;
-  free_option: boolean;
   dip: boolean;
   bid: BidBlock;
-  sides: { me: SideDecomp };
-  audit: { lineup_tables: BeforeAfter };
   rank: number;
 }
 
+/** Drop list row (§6): actives ascending by v — informational housekeeping. */
 export interface DropRow {
   action: "DROP";
   player: string;
   sid: string;
   pos: string;
   v: number;
-  rv: number;
-  rv0: number;
-  scheduled_cut: boolean;
   unvalued: boolean;
-  require_confirm: boolean;
-  sides: { me: SideDecomp };
-  audit: { lineup_tables: BeforeAfter };
 }
 
-export interface QueuedClaim {
-  action: string;
-  player: string;
-  drop: string | null;
-  score_today: number;
-  score_post_draft: number;
-  note: string;
-}
-
-export interface TaxiPromotion {
-  action: "PROMOTE";
-  player: string;
-  attached_drop: string | null;
-  score: number;
-  lock_penalty: number;
-  omega_dl: number;
-  sides: { me: SideDecomp };
-  audit: { lineup_tables: BeforeAfter };
+export interface TaxiFill {
+  free_slots: number;
+  surplus_slots: number;
+  candidates: { player: string; pos: string; v: number; note: string }[];
 }
 
 export interface RookieInventoryRow {
@@ -143,60 +84,81 @@ export interface WaiverBoard {
   faab_remaining: number;
   targets: WaiverTarget[];
   drops: DropRow[];
-  queued: QueuedClaim[];
-  taxi_promotions: TaxiPromotion[];
-  taxi_fill?: {
-    free_slots: number;
-    surplus_slots: number;
-    candidates: { player: string; pos: string; v: number; note: string }[];
-  };
+  taxi_fill: TaxiFill;
   rookie_inventory: RookieInventoryRow[];
 }
 
-// ---- trade recs ----
+// ---- trade recs (§2–§5) ----
 
 export interface TradeAsset {
   type: "player" | "pick";
+  key: string;
   name: string;
+  /** Face KTC value — the ΔW basis. 0 when unvalued (display "—", §11.7). */
   v: number;
-  mv?: number;
-  pricing?: { rule: string; band: string; band_reason: string };
+  /** No KTC price on record — contributes 0 to ΔW; card flags it. */
+  unvalued?: boolean;
+  /** Current-year picks: rookie-board slot value (information only, never scored). */
+  concrete?: number;
+  note?: string;
 }
 
-export interface Fairness {
+/** The §3 fairness gate — band, anti-fleece cap, legality. */
+export interface TradeGate {
   adj_give: number;
   adj_get: number;
+  gap: number;
   gap_pct: number;
+  band: number;
   band_pct: number;
-  adj: string;
+  band_ok: boolean;
   raw_ratio: number;
   cap: number;
+  ratio_ok: boolean;
+  legal: boolean;
+  verdict: string;
+}
+
+/** §4 posture context: observed-trades label + how this offer is shaped. */
+export interface TradePosture {
+  label: string; // BUYER | SELLER | NEUTRAL
+  source: string; // "trades" | "override"
+  evidence_count: number;
+  shape: string; // what they receive: "players" | "picks" | "mixed"
+  fit: boolean;
 }
 
 export interface TradeRec {
   action: "TRADE";
+  id: string;
+  rank: number;
   counterparty: string;
+  leg_type: "buy" | "sell" | "neutral";
   give: TradeAsset[];
   get: TradeAsset[];
-  sides: { me: SideDecomp; them: SideDecomp };
-  fairness: Fairness;
-  tier: string;
-  posture_fit: boolean;
-  activity: string;
-  anchor_ask_pct: number;
-  omega_sensitivity: Record<string, number>;
-  dip_targets: unknown[];
-  pick_anchor: unknown[];
-  audit: { lineup_tables: { me: BeforeAfter; them: BeforeAfter } };
+  /** ΔW both ways — exact zero-sum by construction (§11.1). */
+  dW: { me: number; them: number };
+  gate: TradeGate;
+  posture: TradePosture;
+  /** Their league rank at each position I send — "aim at visible holes". */
+  holes: { pos: string; their_rank: number }[];
+  net_roster: { me: number; them: number };
+  sequencing: string;
+  taxi_stashed: { me: string[]; them: string[] };
+  anchor_ask: { pct: number; ask: number; note: string };
+  dip_notes: string[];
+  unvalued: string[];
+  notes?: string[];
+  /** Shared-asset conflicts: executing this leg takes these off the board. */
+  exclusive_with: string[];
 }
 
-export interface TradeZoneRow {
-  target: string;
-  v: number;
-  owner: string;
-  their_floor: number;
-  my_ceiling: number;
-  zone: number;
+/** §5 roster-neutral bundle: a buy-leg with its hedge sell-leg (ids into recommendations). */
+export interface TradePair {
+  legs: string[];
+  dW: number;
+  net_roster: number;
+  note: string;
 }
 
 export interface TradeRecsDoc {
@@ -204,11 +166,11 @@ export interface TradeRecsDoc {
   meta: ScoringMeta;
   disabled: boolean;
   recommendations: TradeRec[];
-  per_opponent: Record<string, TradeRec[]>;
-  trade_zone: TradeZoneRow[];
+  pairs: TradePair[];
+  notes: string[];
 }
 
-// ---- league table ----
+// ---- league table (§7) ----
 
 export interface PositionGroup {
   sum: number;
@@ -218,12 +180,12 @@ export interface PositionGroup {
 
 export interface PickDetail {
   label: string;
-  p: number;
-  mv: number;
-  rule?: string;
+  /** KTC tranche value — the number every league-mate sees. */
+  v: number;
   band?: string;
   band_reason?: string;
-  sell_floor?: number;
+  /** Current-year picks: rookie-board slot-implied value (annotation only). */
+  concrete?: number;
 }
 
 export interface FutureBlock {
@@ -235,10 +197,30 @@ export interface FutureBlock {
   F_rank: number;
 }
 
+/** One completed trade backing a posture label (§4 evidence). */
+export interface EvidenceTrade {
+  transaction_id: string;
+  date: string;
+  verdict: string; // "bought" | "sold"
+  got: string[];
+  sent: string[];
+  summary: string;
+}
+
+/** The §7 market map block — the targeting console. */
 export interface MarketBlock {
-  cuts: number;
-  C: number;
-  cut_list: string[];
+  posture: string; // BUYER | SELLER | NEUTRAL
+  posture_source: string;
+  bought: number;
+  sold: number;
+  trades_12mo: number;
+  evidence: EvidenceTrade[];
+  holes: { pos: string; rank: number }[];
+  pick_inventory: {
+    count: number;
+    by_year: Record<string, number>;
+    value: number;
+  };
   faab: number;
 }
 
@@ -249,15 +231,12 @@ export interface LeagueRow {
   L: number;
   L_rank: number;
   L_z: number;
-  omega: number;
-  omega_suggest: number;
   future: FutureBlock;
   market: MarketBlock;
 }
 
 export interface MyTeamDetail extends LeagueRow {
   picks_by_year: Record<string, PickDetail[]>;
-  crunch_due: string;
   unvalued: string[];
 }
 

@@ -20,8 +20,3 @@ export function ord(n: number): string {
 export function slugFor(team: string): string {
   return `team-${team.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
 }
-
-/** ω rendered "0.60" (two decimals, data face applied by caller). */
-export function fmtOmega(n: number): string {
-  return n.toFixed(2);
-}

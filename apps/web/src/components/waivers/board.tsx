@@ -1,15 +1,13 @@
 import type { PlayerInfo, WaiverTarget } from "@/lib/queries";
 import { fmtFaab, fmtValue } from "@/lib/format";
-import { Decomposition } from "@/components/decomposition";
 import { Star } from "@/components/star";
-import { ValueChip } from "@/components/value-chip";
 import { Caret, InjuryTag, SignedCell, Tag } from "@/components/waivers/bits";
 
 /**
- * The full waiver board: every scored target in NetClaim rank order, position
- * filter on top. The filter is radios + CSS `:has` — client-side, zero JS, and
- * it only hides rows: star markers and ledger colors never repaint.
- * Each row expands (details/summary) to the plan line + §12 decomposition.
+ * The full waiver board: every scored target in claim-score rank order,
+ * position filter on top. The filter is radios + CSS `:has` — client-side,
+ * zero JS, and it only hides rows: star markers and ledger colors never
+ * repaint. Each row expands (details/summary) to the plan line (§6).
  */
 
 const POSITIONS = ["QB", "RB", "WR", "TE"] as const;
@@ -52,14 +50,11 @@ export function Board({
           <span>Team</span>
           <span className="wv-r">Age</span>
           <span className="wv-r">KTC</span>
-          <span className="wv-r" title="Lineup delta if claimed">
+          <span className="wv-r" title="Claim score = v(add) − v(drop) — the ranking score">
+            Claim
+          </span>
+          <span className="wv-r" title="Lineup delta if claimed — bid sizing only, never the score">
             ΔL
-          </span>
-          <span className="wv-r" title="Crunch-aware NetClaim — the ranking score">
-            Net
-          </span>
-          <span className="wv-r" title="NetClaim without the crunch charge">
-            Raw
           </span>
           <span className="wv-r" title="Rival demand — teams that want him and can pay">
             D
@@ -90,17 +85,16 @@ function BoardRow({ t, info }: { t: WaiverTarget; info?: PlayerInfo }) {
         <span className="text-ink-muted">{info?.team ?? "FA"}</span>
         <span className="num wv-r text-ink-muted">{info?.age ?? "—"}</span>
         <span className="num wv-r">{fmtValue(t.v)}</span>
+        <SignedCell v={t.claim} decimals={0} />
         <SignedCell v={t.dL} />
-        <SignedCell v={t.netclaim} />
-        <SignedCell v={t.netclaim_raw} />
         <span className="num wv-r text-ink-muted">{t.bid.D}</span>
         <span className="wv-r whitespace-nowrap">
           <span className="num">{fmtFaab(t.bid.bid)}</span>
-          {t.free_option ? (
+          {t.taxi_stash ? (
             <>
               {" "}
-              <Tag title="Free-option rule: lands below the Aug-15 cut line — never bid on him">
-                free
+              <Tag title="Stashes on taxi — consumes no active spot, no drop needed">
+                taxi
               </Tag>
             </>
           ) : null}
@@ -115,25 +109,19 @@ function BoardRow({ t, info }: { t: WaiverTarget; info?: PlayerInfo }) {
       </summary>
       <div className="wv-row-detail">
         <p className="wv-plan">
-          Add {t.player} · drop {t.drop ?? "no one — a slot is open"} · bid{" "}
-          <span className="num">{fmtFaab(t.bid.bid)}</span>
-          {t.free_option ? " — free option, never pay" : ""}
-          {t.ir_move ? ` · IR move: ${t.ir_move}` : ""}
+          Add {t.player} ·{" "}
+          {t.taxi_stash
+            ? "stash on taxi — no drop needed"
+            : `drop ${t.drop ?? "no one — a slot is open"}`}{" "}
+          · bid <span className="num">{fmtFaab(t.bid.bid)}</span>
           <span className="num">
             {" "}
-            · ceiling {fmtFaab(t.bid.ceiling)}
+            · demand D {t.bid.D} · ceiling {fmtFaab(t.bid.ceiling)}
           </span>
-          {t.bid.clamp ? ` · clamp: ${t.bid.clamp}` : ""}
+          {t.bid.clamp !== null ? (
+            <span className="num"> · clamp {fmtFaab(t.bid.clamp)}</span>
+          ) : null}
         </p>
-        <div className="mt-1.5">
-          <Decomposition
-            side={t.sides.me}
-            tables={t.sides.me.dL_terms.length ? t.audit.lineup_tables : undefined}
-            scoreLabel="net claim"
-            lead={<ValueChip label="bid" text={fmtFaab(t.bid.bid)} />}
-            defaultOpen
-          />
-        </div>
       </div>
     </details>
   );
