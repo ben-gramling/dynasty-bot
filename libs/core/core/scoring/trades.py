@@ -168,6 +168,28 @@ def gate_info(league: md.LeagueState, give: Package, get: Package) -> dict:
     }
 
 
+def band_ceiling(league: md.LeagueState, opp_name: str, give: Package) -> float | None:
+    """§3 v3.1 negotiating-room annotation: the maximum in-band, fleece-clean get
+    Σv the opponent's give-list can form against this give package (what v3.0
+    would have proposed). Information only — never the proposal. None when the
+    opponent has no in-band package clearing W_min for this give."""
+    params = league.params
+    their_pkgs = sorted(
+        _packages(league, give_list(league, league.teams[opp_name])),
+        key=lambda p: (p.v_sum, p.keys),
+    )
+    vsums = [p.v_sum for p in their_pkgs]
+    i0 = bisect_left(vsums, give.v_sum + params.w_min)
+    i1 = bisect_right(vsums, params.fleece_ratio * give.v_sum)
+    for i in range(i1 - 1, i0 - 1, -1):  # descending Σv: first in-band is the max
+        t = their_pkgs[i]
+        hi = t.adjv if t.adjv > give.adjv else give.adjv
+        band = max(params.fairness_abs, params.fairness_rel * hi)
+        if abs(t.adjv - give.adjv) <= band:
+            return t.v_sum
+    return None
+
+
 def _apply(league: md.LeagueState, t: md.TeamCtx, get: Package, give: Package) -> md.TeamCtx:
     return md.apply_tx(
         league,
@@ -269,6 +291,7 @@ def build_card(
     give: Package,
     get: Package,
     leg: dict | None = None,
+    ceiling: float | None = None,
 ) -> dict:
     """The §5/§10 card for one leg. dW is exactly zero-sum by construction (§11.1)."""
     params = league.params
@@ -328,6 +351,14 @@ def build_card(
         "dip_notes": _dip_notes(league, get),
         "unvalued": unvalued,
     }
+    if ceiling is not None:
+        card["ceiling"] = {
+            "value": round(ceiling),
+            "note": (
+                "band-edge ceiling for this give package — negotiating room above "
+                "the proposal, never the opener (§3 v3.1)"
+            ),
+        }
     if unvalued:
         card["notes"] = ["unvalued assets contribute 0 to ΔW — verify by hand (§11.7)"]
     return card
@@ -343,7 +374,9 @@ def propose(
     return its card plus the full gate verdict."""
     give = package_of(league, give_assets)
     get = package_of(league, get_assets)
-    card = build_card(league, opp_name, give, get)
+    card = build_card(
+        league, opp_name, give, get, ceiling=band_ceiling(league, opp_name, give)
+    )
     g = card["gate"]
     reasons = []
     if not g["band_ok"]:
@@ -377,10 +410,15 @@ def _enumerate_opponent(
     league: md.LeagueState,
     my_pkgs: list[Package],
     opp_name: str,
-) -> list[tuple[float, int, str, Package, Package]]:
+) -> list[tuple[float, int, str, Package, Package, float, int]]:
     """In-band, fleece-clean, minima-clean candidate legs against one opponent,
-    (dW, shape_rank, opp, give, get). Per give-package only the best per_give_keep
-    gets survive — the engine always proposes the most-favorable in-band package."""
+    (dW, shape_rank, opp, give, get, ceiling, variant). §3 v3.1 proposal policy —
+    the band is a tolerance, not a target: per give-package the per_give_keep
+    SMALLEST-gap gets that still clear W_min survive, ascending (variant 0 is THE
+    proposal; later variants exist only as fallbacks for full-legality rejects,
+    never to widen the gap). `ceiling` is the band-edge maximum in-band,
+    fleece-clean get Σv for the give package — the package v3.0 would have
+    proposed, carried as negotiating-room information only."""
     params = league.params
     me_t = league.teams[league.me]
     opp_t = league.teams[opp_name]
@@ -389,137 +427,273 @@ def _enumerate_opponent(
         _packages(league, give_list(league, opp_t)), key=lambda p: (p.v_sum, p.keys)
     )
     vsums = [p.v_sum for p in their_pkgs]
-    out: list[tuple[float, int, str, Package, Package]] = []
+    adjvs = [p.adjv for p in their_pkgs]
+    # adjv-ordered view: the minimal-gap search walks outward from g.adjv, which
+    # IS ascending-gap order — no full-range scan, no sort per give-package
+    by_adj = sorted(range(len(their_pkgs)), key=lambda i: (adjvs[i], their_pkgs[i].keys))
+    adjs = [adjvs[i] for i in by_adj]
+    n = len(adjs)
+    out: list[tuple[float, int, str, Package, Package, float, int]] = []
     w_min, fleece, keep = params.w_min, params.fleece_ratio, params.per_give_keep
-    fairness_abs, fairness_rel, coeffs = params.fairness_abs, params.fairness_rel, params.consolidation
+    fairness_abs, fairness_rel = params.fairness_abs, params.fairness_rel
     for g in my_pkgs:
         gv, g_adj = g.v_sum, g.adjv
-        i0 = bisect_left(vsums, gv + w_min)
-        i1 = bisect_right(vsums, fleece * gv)
+        lo, hi_v = gv + w_min, fleece * gv
+        i0 = bisect_left(vsums, lo)
+        i1 = bisect_right(vsums, hi_v)
+        if i0 >= i1:
+            continue
+        # ceiling: max in-band, fleece-clean Σv — first band-pass descending from
+        # the fleece edge (the package v3.0 would have proposed; info only)
+        ceiling = None
+        for i in range(i1 - 1, i0 - 1, -1):
+            t_adj = adjvs[i]
+            hi = t_adj if t_adj > g_adj else g_adj
+            gap = t_adj - g_adj
+            if gap < 0:
+                gap = -gap
+            if gap <= (fairness_abs if fairness_abs > fairness_rel * hi else fairness_rel * hi):
+                ceiling = vsums[i]
+                break
+        if ceiling is None:
+            continue  # nothing in-band for this give package
+        # walk limits: beyond these no candidate can be in-band (left side band is
+        # exactly max(abs, rel·g_adj); right side bound is the superset
+        # max(g_adj+abs, g_adj/(1-rel)) — the exact band re-checks per candidate)
+        band_g = fairness_abs if fairness_abs > fairness_rel * g_adj else fairness_rel * g_adj
+        left_lim = g_adj - band_g
+        right_lim = g_adj / (1.0 - fairness_rel)
+        if g_adj + fairness_abs > right_lim:
+            right_lim = g_adj + fairness_abs
+        shape = _shape_rank(offer_shape(g), label)
+        r = bisect_left(adjs, g_adj)
+        l = r - 1
         kept = 0
-        for i in range(i1 - 1, i0 - 1, -1):  # descending ΔW(me)
-            t = their_pkgs[i]
-            hi = t.adjv if t.adjv > g_adj else g_adj
-            if abs(t.adjv - g_adj) > (fairness_abs if fairness_abs > fairness_rel * hi else fairness_rel * hi):
+        while kept < keep:
+            lv = l >= 0 and adjs[l] >= left_lim
+            rv = r < n and adjs[r] <= right_lim
+            if not lv and not rv:
+                break
+            if lv and (not rv or g_adj - adjs[l] <= adjs[r] - g_adj):
+                idx, t_adj = by_adj[l], adjs[l]
+                l -= 1
+            else:
+                idx, t_adj = by_adj[r], adjs[r]
+                r += 1
+            tv = vsums[idx]
+            if tv < lo or tv > hi_v:
                 continue
+            hi = t_adj if t_adj > g_adj else g_adj
+            gap = t_adj - g_adj
+            if gap < 0:
+                gap = -gap
+            if gap > (fairness_abs if fairness_abs > fairness_rel * hi else fairness_rel * hi):
+                continue
+            t = their_pkgs[idx]
             if not _pos_legal_cheap(me_t, g.pos_out, t.pos_out, t.n_players - g.n_players):
                 continue
             if not _pos_legal_cheap(opp_t, t.pos_out, g.pos_out, g.n_players - t.n_players):
                 continue
-            out.append((t.v_sum - gv, _shape_rank(offer_shape(g), label), opp_name, g, t))
+            out.append((tv - gv, shape, opp_name, g, t, ceiling, kept))
             kept += 1
-            if kept >= keep:
-                break
     return out
 
 
 def trade_board(league: md.LeagueState) -> dict:
-    """§5: ranked gated legs, roster-neutral bundles, exclusive_with, notes."""
+    """§5 v3.1: the recommendation unit is the hedged PAIR (buy side + sell side,
+    embedded full cards). `recommendations` is the labeled secondary list of
+    sell-side legs (plus neutral legs) — standalone buys never surface; unpaired
+    buys land on the `watch` list with their blocker."""
     params = league.params
     if not league.offseason and league.snapshot.week > params.trade_deadline_week:
         return {
             "disabled": True,
-            "recommendations": [],
             "pairs": [],
+            "recommendations": [],
+            "watch": [],
             "notes": [f"trade deadline (week {params.trade_deadline_week}) has passed"],
         }
     me_t = league.teams[league.me]
     my_pkgs = _packages(league, give_list(league, me_t))
-    candidates: list[tuple[float, int, str, Package, Package]] = []
+    candidates: list[tuple[float, int, str, Package, Package, float, int]] = []
     for opp_name in league.opponents:
         candidates.extend(_enumerate_opponent(league, my_pkgs, opp_name))
-    # ΔW desc; posture shape orders within equal ΔW; then deterministic keys (§11.9)
-    candidates.sort(key=lambda c: (-c[0], c[1], c[2], c[3].keys, c[4].keys))
+
+    # one proposal per (opponent, give-package): variants ascend by gap (§3 v3.1),
+    # so the first fully-legal variant IS the minimal-gap proposal; later variants
+    # only replace a full-legality reject, never widen the gap
+    groups: dict[tuple[str, tuple[str, ...]], list] = {}
+    for cand in candidates:
+        groups.setdefault((cand[2], cand[3].keys), []).append(cand)
+    # groups best-first: posture fit, then the proposal's ΔW, then keys (§11.9)
+    ordered = sorted(
+        groups.values(),
+        key=lambda vs: (vs[0][1], -vs[0][0], vs[0][2], vs[0][3].keys, vs[0][4].keys),
+    )
 
     cards: list[dict] = []
-    seen_pairs: dict[tuple[str, str, str], int] = {}
+    seen_cores: dict[tuple[str, str, str], int] = {}
     budget = params.legality_budget
-    want = 3 * params.top_league_wide  # slack for pairing + exclusivity display
-    for dw, shape, opp_name, g, t in candidates:
-        if budget <= 0 or len(cards) >= want:
+    # per-side quotas: the pair board needs BOTH buy-legs and sell-legs even when
+    # the fit-first ordering front-loads one side (predicted by net bodies; the
+    # emitted card's actual leg_type fills the quota)
+    want_buy = 2 * params.max_pairs
+    want_sell = params.top_league_wide + params.max_pairs
+    n_buy = n_sell = 0
+    for variants in ordered:
+        if budget <= 0 or (n_buy >= want_buy and n_sell >= want_sell):
             break
-        core = (
-            opp_name,
-            max(g.assets, key=lambda a: (a.v, a.key)).key,
-            max(t.assets, key=lambda a: (a.v, a.key)).key,
-        )
-        if seen_pairs.get(core, 0) >= params.dedup_variants:
+        net_pred = variants[0][4].n_players - variants[0][3].n_players
+        if net_pred > 0 and n_buy >= want_buy:
             continue
-        budget -= 1
-        verdicts = legality(league, me_t, league.teams[opp_name], give=g, get=t)
-        if not verdicts["legal"]:
+        if net_pred <= 0 and n_sell >= want_sell:
             continue
-        seen_pairs[core] = seen_pairs.get(core, 0) + 1
-        card = build_card(league, opp_name, g, t, leg=verdicts)
-        card["gate"]["verdict"] = "PASS"
-        card["_keys"] = set(g.keys) | set(t.keys)
-        card["_sort"] = (-dw, shape, opp_name, g.keys, t.keys)
-        cards.append(card)
-
-    recommendations = cards[: params.top_league_wide]
-    extras = cards[params.top_league_wide :]
-
-    # roster-neutral bundles (§5): pair each buy-leg with the best non-conflicting
-    # sell-leg; a hedge found only among the extras is promoted onto the board
-    raw_pairs: list[tuple[dict, dict | None]] = []
-    extra_sells = [c for c in extras if c["leg_type"] == "sell"]
-    used_sells: set[int] = set()
-    for buy in [c for c in recommendations if c["leg_type"] == "buy"]:
-        hedge = None
-        for sell in [c for c in recommendations if c["leg_type"] == "sell"] + extra_sells:
-            if id(sell) in used_sells or sell["_keys"] & buy["_keys"]:
-                continue
-            if buy["net_roster"]["me"] + sell["net_roster"]["me"] <= 0:
-                hedge = sell
+        for dw, shape, opp_name, g, t, ceiling, _var in variants:
+            core = (
+                opp_name,
+                max(g.assets, key=lambda a: (a.v, a.key)).key,
+                max(t.assets, key=lambda a: (a.v, a.key)).key,
+            )
+            if seen_cores.get(core, 0) >= params.dedup_variants:
+                break  # a like-shaped proposal already displays — never widen the gap
+            if budget <= 0:
                 break
-        raw_pairs.append((buy, hedge))
-        if hedge is not None:
-            used_sells.add(id(hedge))
-            if not any(hedge is c for c in recommendations):
-                recommendations.append(hedge)  # promoted to make the bundle whole
+            budget -= 1
+            verdicts = legality(league, me_t, league.teams[opp_name], give=g, get=t)
+            if not verdicts["legal"]:
+                continue  # fall to the next-smallest gap for this give package
+            seen_cores[core] = seen_cores.get(core, 0) + 1
+            card = build_card(league, opp_name, g, t, leg=verdicts, ceiling=ceiling)
+            card["gate"]["verdict"] = "PASS"
+            card["_keys"] = set(g.keys) | set(t.keys)
+            card["_core"] = core
+            card["_sort"] = (shape, -dw, opp_name, g.keys, t.keys)
+            cards.append(card)
+            if card["leg_type"] == "buy":
+                n_buy += 1
+            else:
+                n_sell += 1
+            break  # smallest legal gap found — this give package is settled
 
-    # final display order: ΔW desc (posture shape within equal ΔW), ids assigned last
-    recommendations.sort(key=lambda c: c["_sort"])
-    for i, card in enumerate(recommendations):
-        card["id"] = f"R{i + 1}"
-        card["rank"] = i + 1
+    buys = [c for c in cards if c["leg_type"] == "buy"]
+    sells = [c for c in cards if c["leg_type"] == "sell"]
+    neutrals = [c for c in cards if c["leg_type"] == "neutral"]
+
+    # PAIRS (§5 v3.1): buy-leg × sell-leg, no shared assets, combined net roster
+    # ≤ 0; different counterparties required unless a buy has no other exit
+    pair_cands: list[tuple[int, float, tuple, tuple, dict, dict]] = []
+    diff_cp_buys: set[int] = set()
+    for b in buys:
+        for s in sells:
+            if b["_keys"] & s["_keys"]:
+                continue
+            if b["net_roster"]["me"] + s["net_roster"]["me"] > 0:
+                continue
+            fits = int(b["posture"]["fit"]) + int(s["posture"]["fit"])
+            dwc = round(b["dW"]["me"] + s["dW"]["me"], 1)
+            same_cp = b["counterparty"] == s["counterparty"]
+            if not same_cp:
+                diff_cp_buys.add(id(b))
+            pair_cands.append((same_cp, fits, dwc, b, s))
+    kept_pairs: list[tuple[dict, dict]] = []
+    used_buy_cores: set[tuple] = set()
+    used_sell_cores: set[tuple] = set()
+    for same_cp, fits, dwc, b, s in sorted(
+        pair_cands, key=lambda pc: (-pc[1], -pc[2], pc[3]["_sort"], pc[4]["_sort"])
+    ):
+        if same_cp and id(b) in diff_cp_buys:
+            continue  # a different-counterparty exit exists — prefer it
+        if b["_core"] in used_buy_cores or s["_core"] in used_sell_cores:
+            continue  # dedup by buy-core / sell-core
+        used_buy_cores.add(b["_core"])
+        used_sell_cores.add(s["_core"])
+        kept_pairs.append((b, s))
+        if len(kept_pairs) >= params.max_pairs:
+            break
+
     pairs: list[dict] = []
-    for buy, hedge in raw_pairs:
-        if hedge is None:
-            pairs.append(
-                {
-                    "legs": [buy["id"]],
-                    "dW": buy["dW"]["me"],
-                    "net_roster": buy["net_roster"]["me"],
-                    "note": "no hedge sell-leg on the board — find a sell before executing (§5)",
-                }
-            )
+    for n, (b, s) in enumerate(kept_pairs, 1):
+        b["id"] = f"P{n}-buy"
+        s["id"] = f"P{n}-sell"
+        fits = int(b["posture"]["fit"]) + int(s["posture"]["fit"])
+        if fits == 2:
+            fit_summary = "both legs fit posture"
+        elif fits == 0:
+            fit_summary = "neither leg fits posture"
         else:
-            pairs.append(
-                {
-                    "legs": [buy["id"], hedge["id"]],
-                    "dW": round(buy["dW"]["me"] + hedge["dW"]["me"], 1),
-                    "net_roster": buy["net_roster"]["me"] + hedge["net_roster"]["me"],
-                    "note": "agreement-first: verbal yes on the buy, execute the sell, then the buy",
-                }
+            fit_summary = (
+                "buy leg fits posture" if b["posture"]["fit"] else "sell leg fits posture"
             )
-    pairs.sort(key=lambda p: (-p["dW"], p["legs"]))
+        at_cap = b["sequencing"].startswith("at the roster cap")
+        pairs.append(
+            {
+                "id": f"P{n}",
+                "buy": b,
+                "sell": s,
+                "dW_combined": round(b["dW"]["me"] + s["dW"]["me"], 1),
+                "net_roster": b["net_roster"]["me"] + s["net_roster"]["me"],
+                "fit_summary": fit_summary,
+                "sequencing": (
+                    "at the roster cap: agreement-first — verbal yes on the buy, "
+                    "execute the sell, then the buy (Sleeper processes trades instantly)"
+                    if at_cap
+                    else "roster space available: the buy may execute first — "
+                    "agreement-first still applies"
+                ),
+            }
+        )
 
-    # exclusive_with: legs sharing any concrete asset cannot both execute
-    for i, a in enumerate(recommendations):
+    # secondary list: standalone SELL-legs (no hedge needed) + neutral legs,
+    # ranked posture-fit first then ΔW (§5 v3.1); never a standalone buy
+    paired = {id(b) for b, _ in kept_pairs} | {id(s) for _, s in kept_pairs}
+    seconds = sorted(
+        (c for c in sells + neutrals if id(c) not in paired), key=lambda c: c["_sort"]
+    )
+    recommendations = seconds[: params.top_league_wide]
+    for i, card in enumerate(recommendations):
+        card["id"] = f"S{i + 1}"
+        card["rank"] = i + 1
+
+    # unpaired buys: watch list only — a buy with no identified exit is not a
+    # recommendation (§5 v3.1); one-line blocker, no card
+    watch: list[dict] = []
+    watch_cores: set[tuple] = set()
+    for b in sorted((c for c in buys if id(c) not in paired), key=lambda c: c["_sort"]):
+        if b["_core"] in used_buy_cores or b["_core"] in watch_cores:
+            continue  # a sibling variant of this buy is already hedged/watched
+        watch_cores.add(b["_core"])
+        watch.append(
+            {
+                "counterparty": b["counterparty"],
+                "give": [a["name"] for a in b["give"]],
+                "get": [a["name"] for a in b["get"]],
+                "dW": b["dW"]["me"],
+                "blocker": "no clean exit — no non-conflicting sell-leg on today's board",
+            }
+        )
+        if len(watch) >= params.watch_max:
+            break
+
+    # exclusive_with across all DISPLAYED legs (pair legs + sell list):
+    # legs sharing any concrete asset cannot both execute (§5)
+    displayed = [leg for p in pairs for leg in (p["buy"], p["sell"])] + recommendations
+    for a in displayed:
         a["exclusive_with"] = [
-            b["id"] for j, b in enumerate(recommendations) if j != i and a["_keys"] & b["_keys"]
+            b["id"] for b in displayed if b is not a and a["_keys"] & b["_keys"]
         ]
-    for c in recommendations:
+    for c in cards:
         del c["_keys"]
+        del c["_core"]
         del c["_sort"]
 
     notes = [
+        "the recommendation unit is the hedged pair (§5 v3.1) — buys never go out without an exit",
+        "proposals sit at the smallest in-band gap clearing W_min (§3 v3.1); each card's band ceiling is negotiating room, not the opener",
         "book recomputes from fresh rosters after any executed trade",
         "don't publicly fire-sale before making buy-side asks (§5 execution protocol)",
     ]
     per_opp: dict[str, int] = {}
-    for c in recommendations:
+    for c in displayed:
         per_opp[c["counterparty"]] = per_opp.get(c["counterparty"], 0) + 1
     for opp_name in sorted(per_opp):
         if per_opp[opp_name] > 1:
@@ -528,7 +702,8 @@ def trade_board(league: md.LeagueState) -> dict:
             )
     return {
         "disabled": False,
-        "recommendations": recommendations,
         "pairs": pairs,
+        "recommendations": recommendations,
+        "watch": watch,
         "notes": notes,
     }

@@ -17,6 +17,8 @@ from core.scoring import Params, compute_all
 from core.scoring import model as md
 from core.scoring import trades as tr
 
+from .conftest import board_legs
+
 SCORING = Path(tr.__file__).resolve().parent
 
 
@@ -25,7 +27,7 @@ SCORING = Path(tr.__file__).resolve().parent
 
 def test_zero_sum_every_card(result, league):
     """§11.1: ΔW(me) + ΔW(them) = 0 exactly, on every emitted and proposed trade."""
-    for card in result["trade_recs"]["recommendations"]:
+    for card in board_legs(result["trade_recs"]):
         assert card["dW"]["me"] + card["dW"]["them"] == 0.0
     for give, get in (
         (["Mike Evans", "Courtland Sutton"], ["2027 R1 (from vishan)", "2028 R4 (own)"]),
@@ -87,9 +89,9 @@ def test_roster_tweaks_never_move_dw(snapshot, params, league):
         tuple(sorted(a["key"] for a in c["give"])),
         tuple(sorted(a["key"] for a in c["get"])),
     )
-    base_board = {key(c): c["dW"]["me"] for c in tr.trade_board(league)["recommendations"]}
+    base_board = {key(c): c["dW"]["me"] for c in board_legs(tr.trade_board(league))}
     overlap = 0
-    for c in board2["recommendations"]:
+    for c in board_legs(board2):
         if key(c) in base_board:
             overlap += 1
             assert c["dW"]["me"] == base_board[key(c)]
@@ -119,40 +121,63 @@ def test_trade_and_posture_import_no_lineup():
 # ------------------------------------------------------- 5. bundles + exclusivity
 
 
-def test_pairs_are_roster_neutral(result):
-    """§11.5: two-leg bundles net Δ(roster count) ≤ 0; every referenced id exists."""
-    recs = {c["id"]: c for c in result["trade_recs"]["recommendations"]}
+def test_pairs_v31_contract(result, params):
+    """§11.5 / §5 v3.1 invariant 3: every pair embeds a gate-PASS buy and sell
+    sharing no assets, netting Δ(roster) ≤ 0, with honest combined ΔW; pairs are
+    the primary unit and each buy/sell core appears at most once."""
     pairs = result["trade_recs"]["pairs"]
-    assert pairs
-    complete = 0
+    assert 1 <= len(pairs) <= params.max_pairs
+    keys = lambda c: {a["key"] for a in c["give"] + c["get"]}
     for pair in pairs:
-        assert all(leg in recs for leg in pair["legs"])
-        if len(pair["legs"]) == 2:
-            complete += 1
-            buy, sell = (recs[leg] for leg in pair["legs"])
-            assert buy["leg_type"] == "buy" and sell["leg_type"] == "sell"
-            assert pair["net_roster"] <= 0
-            assert pair["net_roster"] == (
-                buy["net_roster"]["me"] + sell["net_roster"]["me"]
-            )
-            assert pair["dW"] == round(buy["dW"]["me"] + sell["dW"]["me"], 1)
-            # a bundle never shares an asset between its legs
-            keys = lambda c: {a["key"] for a in c["give"] + c["get"]}
-            assert not keys(buy) & keys(sell)
-        else:
-            assert "no hedge" in pair["note"]
-    assert complete > 0  # the fixture board does produce whole bundles
-    # every buy-leg on the board appears in exactly one pair entry
-    buy_ids = {c["id"] for c in recs.values() if c["leg_type"] == "buy"}
-    assert sorted(leg for p in pairs for leg in p["legs"][:1]) == sorted(buy_ids)
+        buy, sell = pair["buy"], pair["sell"]
+        assert buy["leg_type"] == "buy" and sell["leg_type"] == "sell"
+        assert buy["gate"]["verdict"] == "PASS" and sell["gate"]["verdict"] == "PASS"
+        assert not keys(buy) & keys(sell)  # invariant 3: no shared assets
+        assert pair["net_roster"] <= 0
+        assert pair["net_roster"] == buy["net_roster"]["me"] + sell["net_roster"]["me"]
+        assert pair["dW_combined"] == round(buy["dW"]["me"] + sell["dW"]["me"], 1)
+        # different counterparties (required unless a buy has no other exit —
+        # the fixture board always finds one; pin it as a regression)
+        assert buy["counterparty"] != sell["counterparty"]
+        assert pair["fit_summary"] in (
+            "both legs fit posture",
+            "buy leg fits posture",
+            "sell leg fits posture",
+            "neither leg fits posture",
+        )
+        assert "sell" in pair["sequencing"] or "buy may execute first" in pair["sequencing"]
+
+
+def test_no_standalone_buy_anywhere(result):
+    """§5 v3.1 invariant 2: buy legs exist ONLY inside pairs — never in the
+    secondary list, and the watch list carries blockers, not proposal cards."""
+    doc = result["trade_recs"]
+    pair_buys = {id(p["buy"]) for p in doc["pairs"]}
+
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("leg_type") == "buy":
+                assert id(node) in pair_buys, "standalone buy leg emitted"
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(doc)
+    for card in doc["recommendations"]:
+        assert card["leg_type"] in ("sell", "neutral")
+    for w in doc["watch"]:
+        assert set(w) == {"counterparty", "give", "get", "dW", "blocker"}
+        assert "no clean exit" in w["blocker"]
 
 
 def test_exclusive_with_fires_on_shared_assets(result):
-    """§11.5: any two legs sharing a concrete asset name each other."""
-    recs = result["trade_recs"]["recommendations"]
-    keys = {c["id"]: {a["key"] for a in c["give"] + c["get"]} for c in recs}
-    for a in recs:
-        for b in recs:
+    """§11.5: any two DISPLAYED legs sharing a concrete asset name each other."""
+    legs = board_legs(result["trade_recs"])
+    keys = {c["id"]: {a["key"] for a in c["give"] + c["get"]} for c in legs}
+    for a in legs:
+        for b in legs:
             if a["id"] == b["id"]:
                 continue
             if keys[a["id"]] & keys[b["id"]]:
@@ -172,7 +197,7 @@ def test_legality_on_both_rosters(result, league):
         for a in tr.team_assets(league, t).values():
             by_key[a.key] = a
     me_t = league.teams[league.me]
-    for card in result["trade_recs"]["recommendations"]:
+    for card in board_legs(result["trade_recs"]):
         give = tr.package_of(league, [by_key[a["key"]] for a in card["give"]])
         get = tr.package_of(league, [by_key[a["key"]] for a in card["get"]])
         verdicts = tr.legality(league, me_t, league.teams[card["counterparty"]], give, get)
@@ -205,7 +230,7 @@ def test_runtime_within_budget(snapshot, params):
 
 def test_unvalued_never_in_board_recs(result):
     """§11.7: enumeration never floats a zero-value asset into a package."""
-    for card in result["trade_recs"]["recommendations"]:
+    for card in board_legs(result["trade_recs"]):
         for a in card["give"] + card["get"]:
             assert not a.get("unvalued"), card["id"]
         assert card["unvalued"] == []

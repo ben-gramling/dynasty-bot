@@ -8,6 +8,8 @@ from dataclasses import replace as dc_replace
 
 from core.scoring import Snapshot, validate_snapshot
 
+from .conftest import board_legs
+
 
 def test_output_is_json_serializable(result):
     payload = json.dumps(result)
@@ -24,24 +26,30 @@ def test_top_level_shape(result):
     assert meta["alerts"] == []
     assert meta["w_min"] == 150.0
     tr = result["trade_recs"]
-    assert set(tr) == {"disabled", "recommendations", "pairs", "notes"}
+    assert set(tr) == {"disabled", "pairs", "recommendations", "watch", "notes"}
     assert tr["disabled"] is False
-    assert 1 <= len(tr["recommendations"]) <= 30
-    assert isinstance(tr["pairs"], list) and isinstance(tr["notes"], list)
+    assert 1 <= len(tr["pairs"]) <= 8  # the PRIMARY list (§5 v3.1)
+    assert 0 <= len(tr["recommendations"]) <= 10  # secondary: sell/neutral legs
+    assert isinstance(tr["watch"], list) and isinstance(tr["notes"], list)
+    for pair in tr["pairs"]:
+        assert set(pair) == {
+            "id", "buy", "sell", "dW_combined", "net_roster", "fit_summary", "sequencing",
+        }
 
 
 def test_card_schema_matches_contract(result):
-    """§5/§10 field census on every emitted trade card."""
-    for card in result["trade_recs"]["recommendations"]:
+    """§5/§10 field census on every displayed trade card (pair legs + sell list)."""
+    for card in board_legs(result["trade_recs"]):
         for key in (
-            "id", "rank", "action", "counterparty", "give", "get", "dW", "gate",
-            "posture", "holes", "net_roster", "leg_type", "sequencing",
+            "id", "action", "counterparty", "give", "get", "dW", "gate",
+            "posture", "holes", "net_roster", "leg_type", "sequencing", "ceiling",
             "taxi_stashed", "anchor_ask", "dip_notes", "unvalued", "exclusive_with",
         ):
             assert key in card, key
         assert card["action"] == "TRADE"
         assert card["leg_type"] in ("buy", "sell", "neutral")
         assert set(card["dW"]) == {"me", "them"}
+        assert set(card["ceiling"]) == {"value", "note"}  # §3 v3.1 negotiating room
         g = card["gate"]
         for key in (
             "adj_give", "adj_get", "gap", "gap_pct", "band", "band_pct",
@@ -55,15 +63,18 @@ def test_card_schema_matches_contract(result):
         for entry in card["give"] + card["get"]:
             assert entry["type"] in ("player", "pick")
             assert {"key", "name", "v"} <= set(entry)
+    for card in result["trade_recs"]["recommendations"]:
+        assert "rank" in card  # ranks only on the secondary list
 
 
 def test_notes_mention_execution_protocol(result):
     notes = result["trade_recs"]["notes"]
     assert any("recomputes" in n for n in notes)
     assert any("fire-sale" in n for n in notes)
+    assert any("hedged pair" in n for n in notes)  # §5 v3.1 board unit
     # multiple offers to one counterparty are flagged (§4 appetite note)
     per_opp: dict[str, int] = {}
-    for c in result["trade_recs"]["recommendations"]:
+    for c in board_legs(result["trade_recs"]):
         per_opp[c["counterparty"]] = per_opp.get(c["counterparty"], 0) + 1
     for opp, n in per_opp.items():
         if n > 1:

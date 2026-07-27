@@ -15,9 +15,14 @@ export function TradeCard({ rec, compact = false }: { rec: TradeRec; compact?: b
   return (
     <article className="card" id={`leg-${rec.id}`}>
       <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="num text-[13px] text-ink-muted" title="Rank by ΔW(you)">
-          {rec.rank}
-        </span>
+        {rec.rank !== undefined ? (
+          <span
+            className="num text-[13px] text-ink-muted"
+            title="Rank: posture fit first, then ΔW(you)"
+          >
+            {rec.rank}
+          </span>
+        ) : null}
         <h3 className="display text-[17px]">
           <span className="text-ink-muted">With</span> {rec.counterparty}
         </h3>
@@ -68,6 +73,13 @@ export function TradeCard({ rec, compact = false }: { rec: TradeRec; compact?: b
           <p>
             Ask: {rec.anchor_ask.note} — open at ≈{" "}
             <span className="num">{fmtValue(rec.anchor_ask.ask)}</span> on your side
+          </p>
+        ) : null}
+        {rec.ceiling ? (
+          <p title={rec.ceiling.note}>
+            Band ceiling for this package: ≈{" "}
+            <span className="num">{fmtValue(rec.ceiling.value)}</span> — negotiating
+            room above the proposal
           </p>
         ) : null}
         {rec.exclusive_with.length ? (

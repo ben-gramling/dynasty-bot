@@ -177,7 +177,7 @@ def find_hedges(
     cands.sort(key=lambda c: (-c[0], c[1]))
     out: list[dict] = []
     seen_core: set[tuple] = set()
-    for _dw, _shape, opp, g, t in cands[:80]:
+    for _dw, _shape, opp, g, t, *_ in cands[:80]:
         core = (opp, max(g.assets, key=lambda a: a.v).key)
         if core in seen_core:
             continue
@@ -219,6 +219,11 @@ def fmt_card(card: dict, header: str = "") -> str:
         f"{card['net_roster']['them']:+d} them) · {card['sequencing']}",
         f"  Anchor ask: open at ≈{card['anchor_ask']['ask']} ({card['anchor_ask']['note']})",
     ]
+    if card.get("ceiling"):
+        lines.append(
+            f"  Band ceiling for this package: ≈{card['ceiling']['value']} — "
+            "negotiating room above the proposal"
+        )
     if card.get("holes"):
         holes = ", ".join(f"{h['pos']} (their rank {h['their_rank']})" for h in card["holes"])
         lines.append(f"  Their visible holes at positions you send: {holes}")

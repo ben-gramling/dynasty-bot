@@ -27,29 +27,14 @@ export function postureEvidenceNote(rec: TradeRec): string {
 }
 
 /**
- * Legs of a pair in execution order: at the roster cap the sell-leg goes
- * first (the engine's sequencing note on the buy leg says so); otherwise
- * the engine's order stands. Ids missing from the board resolve to null.
+ * A pair's embedded legs in execution order (§5 v3.1): at the roster cap the
+ * sell executes first (the engine's pair sequencing note says so); with open
+ * roster space the buy may go first — agreement-first either way.
  */
-export function pairLegs(
-  pair: TradePair,
-  byId: Map<string, TradeRec>,
-): (TradeRec | null)[] {
-  const legs = pair.legs.map((id) => byId.get(id) ?? null);
-  const buy = legs.find((l) => l?.leg_type === "buy");
-  if (buy && buy.sequencing.startsWith("at the roster cap")) {
-    return [...legs].sort((a, b) => {
-      const w = (r: TradeRec | null) => (r?.leg_type === "sell" ? 0 : 1);
-      return w(a) - w(b);
-    });
-  }
-  return legs;
-}
-
-/** One compact "give → get" sentence for a pair-card leg row. */
-export function assetSummary(rec: TradeRec): { give: string; get: string } {
-  const names = (assets: TradeRec["give"]) => assets.map((a) => a.name).join(", ");
-  return { give: names(rec.give), get: names(rec.get) };
+export function pairLegs(pair: TradePair): [TradeRec, TradeRec] {
+  return pair.sequencing.startsWith("at the roster cap")
+    ? [pair.sell, pair.buy]
+    : [pair.buy, pair.sell];
 }
 
 // ---- market strip (league-table market blocks, §7 targeting console) ----

@@ -29,10 +29,12 @@ class Params:
     # §5 enumeration bounds (implementation, not scoring)
     max_package: int = 3
     give_list_protect_top: int = 2  # cornerstones never enter the give-list
-    per_give_keep: int = 4  # best in-band get-packages kept per give-package
+    per_give_keep: int = 4  # smallest-gap in-band gets kept per give-package (§3 v3.1)
     dedup_variants: int = 2  # variants kept per (top-give, top-get) asset pair
     top_league_wide: int = 10
     legality_budget: int = 400  # full apply_tx legality checks per board build
+    max_pairs: int = 8  # hedged pairs kept on the board (§5 v3.1)
+    watch_max: int = 5  # unpaired buys surfaced as watch-list notes (§5 v3.1)
 
     # §2.2-style lineup strength (league tab + waiver ΔL only; never trades)
     q_qb: float = 0.06

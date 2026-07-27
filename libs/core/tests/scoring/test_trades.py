@@ -1,4 +1,5 @@
-"""§2 the score, §3 the gate, §5 enumeration + §10 worked examples.
+"""§2 the score, §3 the gate (v3.1 minimal-gap proposal policy), §5 enumeration
++ §10 worked examples.
 
 §10 pins are computed from the COMMITTED fixtures (data/, 2026-07-26 KTC values,
 2026-07-27 transactions). The spec's §10 prose quotes 2026-07-27 live values
@@ -12,7 +13,7 @@ import pytest
 
 from core.scoring import trades as tr
 
-from .conftest import by_name
+from .conftest import board_legs, by_name
 
 
 def test_give_list_protects_cornerstones_and_skips_unvalued(league, me):
@@ -110,7 +111,7 @@ def test_worked_example_3_fleece_rejected(league):
 
 def test_fleece_never_on_board(result):
     """§11.3: the §10.3 shape never surfaces, and no emitted card violates the cap."""
-    for card in result["trade_recs"]["recommendations"]:
+    for card in board_legs(result["trade_recs"]):
         names = ({a["name"] for a in card["give"]}, {a["name"] for a in card["get"]})
         assert names != ({"Cam Ward"}, {"Shedeur Sanders"})
         assert card["gate"]["raw_ratio"] <= 1.35
@@ -118,10 +119,10 @@ def test_fleece_never_on_board(result):
 
 
 def test_board_gate_and_floor(result, params):
-    """§3/§11.3: every emitted recommendation is in-band, under the cap, above W_min."""
-    recs = result["trade_recs"]["recommendations"]
-    assert recs, "board should not be empty on the fixture snapshot"
-    for card in recs:
+    """§3/§11.3: every displayed leg is in-band, under the cap, above W_min."""
+    legs = board_legs(result["trade_recs"])
+    assert legs, "board should not be empty on the fixture snapshot"
+    for card in legs:
         g = card["gate"]
         assert g["verdict"] == "PASS"
         assert g["gap"] <= g["band"] + 1e-9
@@ -130,18 +131,32 @@ def test_board_gate_and_floor(result, params):
 
 
 def test_board_ranking_and_shape_ordering(result):
-    """§5: legs sort by ΔW(me) desc; ids are sequential."""
-    recs = result["trade_recs"]["recommendations"]
-    dws = [c["dW"]["me"] for c in recs]
-    assert dws == sorted(dws, reverse=True)
-    assert [c["id"] for c in recs] == [f"R{i + 1}" for i in range(len(recs))]
+    """§5 v3.1: pairs rank fit-first then combined ΔW; the secondary sell list
+    likewise (posture-shape rank, then ΔW desc); ids are sequential."""
+    doc = result["trade_recs"]
+    pair_keys = [
+        (
+            -(int(p["buy"]["posture"]["fit"]) + int(p["sell"]["posture"]["fit"])),
+            -p["dW_combined"],
+        )
+        for p in doc["pairs"]
+    ]
+    assert pair_keys == sorted(pair_keys)
+    assert [p["id"] for p in doc["pairs"]] == [f"P{i + 1}" for i in range(len(doc["pairs"]))]
+    recs = doc["recommendations"]
+    rec_keys = [
+        (tr._shape_rank(c["posture"]["shape"], c["posture"]["label"]), -c["dW"]["me"])
+        for c in recs
+    ]
+    assert rec_keys == sorted(rec_keys)
+    assert [c["id"] for c in recs] == [f"S{i + 1}" for i in range(len(recs))]
     assert [c["rank"] for c in recs] == list(range(1, len(recs) + 1))
 
 
 def test_concrete_pick_annotation_display_only(result):
     """§1: current-year picks trade at tranche; the board slot value is a note."""
     seen = 0
-    for card in result["trade_recs"]["recommendations"]:
+    for card in board_legs(result["trade_recs"]):
         for a in card["give"] + card["get"]:
             if a["type"] == "pick" and "concrete" in a:
                 seen += 1
@@ -172,7 +187,7 @@ def test_trade_board_disabled_after_deadline(snapshot, params):
     league2 = md.build_league(late, params)
     board = tr.trade_board(league2)
     assert board["disabled"] is True
-    assert board["recommendations"] == [] and board["pairs"] == []
+    assert board["recommendations"] == [] and board["pairs"] == [] and board["watch"] == []
 
 
 def test_below_noise_floor_note(league):
@@ -183,6 +198,80 @@ def test_below_noise_floor_note(league):
     card = tr.propose(league, "jaketoppen", [mine["2026 2.09"]], [theirs["2028 R2 (own)"]])
     assert card["dW"]["me"] == 75.0
     assert any("noise floor" in n for n in card.get("notes", []))
+
+
+# ------------------------------------------------------ §3 v3.1 minimal-gap policy
+
+
+def _reconstruct_min_gap(league, card):
+    """Brute-force the §3 v3.1 selection for a displayed card's give package:
+    the smallest in-band gap clearing W_min over the opponent's give-list, with
+    the engine's own filters (fleece range, cheap positional legality on both
+    sides, per_give_keep window, full §3.3 legality)."""
+    params = league.params
+    me_t = league.teams[league.me]
+    opp_t = league.teams[card["counterparty"]]
+    by_key = {a.key: a for a in tr.team_assets(league, me_t).values()}
+    give = tr.package_of(league, [by_key[a["key"]] for a in card["give"]])
+    alts = []
+    for t in tr._packages(league, tr.give_list(league, opp_t)):
+        if not (give.v_sum + params.w_min <= t.v_sum <= params.fleece_ratio * give.v_sum):
+            continue
+        gap = abs(t.adjv - give.adjv)
+        band = max(params.fairness_abs, params.fairness_rel * max(t.adjv, give.adjv))
+        if gap > band:
+            continue
+        if not tr._pos_legal_cheap(me_t, give.pos_out, t.pos_out, t.n_players - give.n_players):
+            continue
+        if not tr._pos_legal_cheap(opp_t, t.pos_out, give.pos_out, give.n_players - t.n_players):
+            continue
+        alts.append((gap, t.keys, t))
+    alts.sort(key=lambda x: x[0])
+    for gap, _keys, t in alts[: params.per_give_keep]:
+        if tr.legality(league, me_t, opp_t, give, t)["legal"]:
+            return gap
+    return None
+
+
+def test_board_proposals_sit_at_the_minimal_gap(result, league):
+    """v3.1 invariant 1: every board proposal's gap is the MINIMUM among in-band
+    alternatives for its give package clearing W_min — verified by reconstruction
+    for a sample of displayed legs (the band is a tolerance, not a target)."""
+    legs = board_legs(result["trade_recs"])
+    sample = legs[:3] + legs[-2:]
+    assert sample
+    for card in sample:
+        min_gap = _reconstruct_min_gap(league, card)
+        assert min_gap is not None, card["id"]
+        assert round(min_gap, 1) == card["gate"]["gap"], card["id"]
+
+
+def test_ceiling_is_band_edge_info(result, league, params):
+    """v3.1 invariant 4: each displayed card's ceiling ≥ the proposal's get value,
+    and the ceiling package itself is in-band and fleece-clean (it is the maximum
+    such Σv — pure negotiating-room information, never the proposal)."""
+    legs = board_legs(result["trade_recs"])
+    assert legs
+    me_t = league.teams[league.me]
+    by_key = {a.key: a for a in tr.team_assets(league, me_t).values()}
+    for card in legs:
+        get_sum = sum(a["v"] for a in card["get"])
+        assert card["ceiling"]["value"] + 0.5 >= get_sum, card["id"]
+    for card in legs[:3]:  # full reconstruction on a sample
+        give = tr.package_of(league, [by_key[a["key"]] for a in card["give"]])
+        opp_t = league.teams[card["counterparty"]]
+        best = None
+        for t in tr._packages(league, tr.give_list(league, opp_t)):
+            if not (give.v_sum + params.w_min <= t.v_sum <= params.fleece_ratio * give.v_sum):
+                continue
+            g = tr.gate_info(league, give, t)
+            if not g["band_ok"]:
+                continue
+            if best is None or t.v_sum > best[0]:
+                best = (t.v_sum, g)
+        assert best is not None, card["id"]
+        assert round(best[0]) == card["ceiling"]["value"], card["id"]
+        assert best[1]["band_ok"] and best[1]["ratio_ok"], card["id"]
 
 
 def test_unvalued_flagged_in_propose(league):

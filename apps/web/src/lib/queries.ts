@@ -131,7 +131,8 @@ export interface TradePosture {
 export interface TradeRec {
   action: "TRADE";
   id: string;
-  rank: number;
+  /** Rank within the secondary sell list — pair legs carry none. */
+  rank?: number;
   counterparty: string;
   leg_type: "buy" | "sell" | "neutral";
   give: TradeAsset[];
@@ -146,6 +147,8 @@ export interface TradeRec {
   sequencing: string;
   taxi_stashed: { me: string[]; them: string[] };
   anchor_ask: { pct: number; ask: number; note: string };
+  /** §3 v3.1 band-edge ceiling — negotiating room above the proposal, info only. */
+  ceiling?: { value: number; note: string };
   dip_notes: string[];
   unvalued: string[];
   notes?: string[];
@@ -153,20 +156,38 @@ export interface TradeRec {
   exclusive_with: string[];
 }
 
-/** §5 roster-neutral bundle: a buy-leg with its hedge sell-leg (ids into recommendations). */
+/**
+ * §5 v3.1 hedged pair — the PRIMARY recommendation unit: a buy side and a sell
+ * side (full embedded cards) sharing no assets, netting Δ(roster) ≤ 0.
+ */
 export interface TradePair {
-  legs: string[];
-  dW: number;
+  id: string;
+  buy: TradeRec;
+  sell: TradeRec;
+  dW_combined: number;
   net_roster: number;
-  note: string;
+  fit_summary: string;
+  sequencing: string;
+}
+
+/** Unpaired buy — never a recommendation (§5 v3.1); one-line blocker only. */
+export interface WatchEntry {
+  counterparty: string;
+  give: string[];
+  get: string[];
+  dW: number;
+  blocker: string;
 }
 
 export interface TradeRecsDoc {
   computed_at: string;
   meta: ScoringMeta;
   disabled: boolean;
-  recommendations: TradeRec[];
+  /** Primary: hedged pairs, ranked posture-fit first then combined ΔW. */
   pairs: TradePair[];
+  /** Secondary: standalone sell-side legs (plus neutral legs) — never buys. */
+  recommendations: TradeRec[];
+  watch: WatchEntry[];
   notes: string[];
 }
 

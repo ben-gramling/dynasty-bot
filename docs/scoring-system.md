@@ -41,7 +41,7 @@ League-mates evaluate trades by checking KTC — the same site this system scrap
 2. **Anti-fleece cap.** Raw `Σv` ratio ≤ **1.35**. Never exempted: fleeces don't clear, and reputation is an asset in an 11-opponent repeated game.
 3. **Legality.** Both post-trade rosters legal: positional minima, roster caps with taxi routing per the taxi mechanics (§8), IR rules, trade deadline week 11.
 
-A trade passing the gate at the favorable end of the band is the entire quantitative edge: **maximum extraction per trade ≈ the band width (~20%), harvested repeatedly in the right direction.** The engine always proposes the most-favorable in-band package; the +8% anchor-ask convention (start above your target, from v1's observed negotiations) is a card annotation.
+**Proposal policy (v3.1 — the band is a tolerance, not a target):** for any give-package, the engine proposes the get-package with the **smallest in-band gap that still clears `ΔW(me) ≥ W_min`** — the least-favorable trade worth doing. Offers therefore read as nearly fair on KTC (which is why they clear); the band's remaining width is negotiating room, opened via the +8% anchor-ask convention (a card annotation, from v1's observed negotiations); the card also shows the band-edge ceiling as information. Edge comes from running near-fair trades repeatedly in the right direction, never from gouging on a single leg. (v3.0 proposed the band-edge package on every leg — offers at the maximum gap the league has ever tolerated read as attempted fleeces and were rejected in practice; user: "extremely lopsided roster-neutral trades that nobody would ever take.")
 
 ## 4. Targeting — "who do I call, and what do I offer?" (qualitative only)
 
@@ -61,9 +61,9 @@ Each label is displayed **with its evidence** (the trades that produced it) and 
 
 ## 5. Pairings, the book, and execution
 
-- **Roster-neutrality:** recommended plans net `Δ(roster count) ≤ 0` overall. A buy-leg is presented paired with a sell-leg (its "hedge") such that the pair nets neutral; standalone sell-legs need no pairing. Roster space is otherwise pure **sequencing**: with open roster spots you may execute a buy before its paired sell; at the cap, sell first (Sleeper trades process instantly, `trade_review_days = 0`).
-- **Execution protocol (rules, not math):** agreement-first — negotiate the buy to a verbal yes, execute the sell-leg, execute the buy minutes later. Don't publicly fire-sale before making buy-side asks. After any executed trade, the whole board recomputes from fresh rosters.
-- **Ranking:** legs and pairs sort by `ΔW(me)`, descending, gated by §3. No optimizer: with no cross-trade score terms, trades are independent except for roster counting — the "book" is simply the top gated recommendations grouped into roster-neutral bundles, with shared-asset conflicts labeled `exclusive_with`.
+- **The recommendation unit is the PAIR (v3.1, strict):** a **buy side** (I receive a player, paying picks — aimed at SELLER-posture counterparties) matched with a **sell side** (I send player(s) for picks — aimed at BUYERs), sharing no assets, netting `Δ(roster count) ≤ 0`. Standalone **sell-legs** are a labeled secondary section (they free space; no hedge needed). Standalone **buy-legs are never recommended** — a buy with no identified exit does not appear on the board (watch-list note at most).
+- **Ranking:** pairs by posture fit first (both legs fit their counterparty's label/intel), then combined `ΔW(me)`; sell-legs likewise. All legs individually pass §3. Shared-asset conflicts across displayed items carry `exclusive_with`.
+- **Execution protocol (rules, not math):** agreement-first — negotiate the buy to a verbal yes, execute the sell-leg, execute the buy minutes later (Sleeper trades process instantly, `trade_review_days = 0`). With open roster spots the buy may execute first; at the cap, sell first. Don't publicly fire-sale before making buy-side asks. After any executed trade, the whole board recomputes from fresh rosters.
 
 ## 6. Waiver tab
 
@@ -120,7 +120,8 @@ Nothing else. Posture labels are user-overridable; every parameter above is re-d
 
 - **v1 (2026-07-26):** ω-blended lineup+wealth+crunch score. Superseded: crunch mis-modeled as a per-transaction cost; recommendations were sell-only.
 - **v2 (2026-07-27, never implemented):** wealth arbitrage with probabilistic inventory-risk (clearing odds, hazard decay, four-outcome pair EV). Superseded the same day: the probabilities were not computable from available information ("I want the parameters and inputs to come from information that you can reliably and accurately compute").
-- **v3 (this document):** pure face-value KTC arbitrage. One score (`ΔW`), one gate (observed KTC fairness), qualitative targeting (observed posture + visible holes), roster-neutral pairings, execution protocol as rules. Successive user simplifications removed: counterparty utility simulation ("to determine if they would think the offer is fair we should just use pure KTC math"), roster-count/cut signals ("that does not mean that they are a seller"), and the incoming cut-fodder gate (cancelled — face value both directions, no exceptions).
+- **v3.1 (2026-07-27):** proposal policy inverted after first live board review — minimum in-band gap clearing `W_min` instead of band-edge maximization (the band is tolerance, not target), and the board unit is strictly the hedged pair (buy side + sell side); standalone buys never surface. User: "every trade should come with a corresponding hedge… the model is giving me extremely lopsided roster-neutral trades that nobody would ever take."
+- **v3 (original):** pure face-value KTC arbitrage. One score (`ΔW`), one gate (observed KTC fairness), qualitative targeting (observed posture + visible holes), roster-neutral pairings, execution protocol as rules. Successive user simplifications removed: counterparty utility simulation ("to determine if they would think the offer is fair we should just use pure KTC math"), roster-count/cut signals ("that does not mean that they are a seller"), and the incoming cut-fodder gate (cancelled — face value both directions, no exceptions).
 
 ## Design provenance
 

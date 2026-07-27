@@ -60,7 +60,9 @@ The user will feed you color like: *"trdouglas is hunting draft capital"* ·
 2. **Load the desk view**:
    - `uv run python scripts/score_trade.py teams` — L/F, posture + evidence, FAAB.
    - Active intel: `... get_db()['market-intel'].find({'active': True})` (sort by team).
-   - The nightly board: `trade-recs` doc (`recommendations`, `pairs`, `notes`).
+   - The nightly board: `trade-recs` doc (v3.1: `pairs` is the primary list —
+     hedged buy+sell with embedded cards; `recommendations` is sell/neutral legs
+     only; `watch` is blocked buys; `notes`).
 3. **Open with a desk brief**: per-team one-liners merging posture (+evidence
    count), active intel, visible holes, pick inventory — then the board's top
    legs and any intel-driven opportunities the board can't see.
