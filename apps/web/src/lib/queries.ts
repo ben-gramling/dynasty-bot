@@ -183,7 +183,7 @@ export interface TradePair {
   sell: TradeRec;
   /**
    * §5 v3.3 return on inventory deployed, percent: combined ΔW(me) ÷ Σv of
-   * every asset I send across both legs — the dial's ranking metric.
+   * every asset I send across both legs — the range filter's ranking metric.
    */
   return_pct: number;
   dW_combined: number;
@@ -199,12 +199,32 @@ export interface TradePair {
   overlaps: number;
 }
 
-/** §5 v3.3 dial counter: exact, or a verified floor when `saturated` ("≥ N"). */
+/** §5 v3.3 ≥-threshold counter: exact, or a verified floor when `saturated` ("≥ N"). */
 export interface ThresholdCount {
   /** Percent, matches an entry of `presets`. */
   threshold: number;
   count: number;
   /** True when the counting budget truncated the walk — count is a floor. */
+  saturated: boolean;
+}
+
+/**
+ * §5 v3.3.1 per-band inventory: bands derive from the presets as half-open
+ * [lo, hi) percent intervals (hi null on the open top). The engine stores the
+ * top `stored` pairs by return WITHIN each band (quota 100), so any min/max
+ * range over the presets has inventory; `count` is the band's legal pair
+ * count — exact, or a verified floor when `saturated`.
+ */
+export interface BandInfo {
+  /** Band lower edge, percent (inclusive) — coincides with a preset. */
+  lo: number;
+  /** Band upper edge, percent (exclusive); null = no cap. */
+  hi: number | null;
+  /** Pairs stored for this band (≤ the engine's per-band quota). */
+  stored: number;
+  /** Legal pairs in the band — exact, or a verified floor when saturated. */
+  count: number;
+  /** True when the band's space outran the collection budget ("≥ N"). */
   saturated: boolean;
 }
 
@@ -230,15 +250,18 @@ export interface TradeRecsDoc {
   meta: ScoringMeta;
   disabled: boolean;
   /**
-   * Primary (§5 v3.3): the stored pair space behind the target-return dial —
-   * count-neutral pairs ranked by return_pct descending, capped at the
-   * engine's max_stored_pairs (see `truncated`).
+   * Primary (§5 v3.3.1): the stratified stored pair space behind the
+   * target-return RANGE — count-neutral pairs, top-quota per return band,
+   * return-desc within band, bands concatenated descending (so the whole
+   * list also reads return-desc). See `bands` for per-band honesty.
    */
   pairs: TradePair[];
-  /** Dial presets, percent: [1, 2.5, 5, 10, 20]. */
+  /** Range presets, percent: [1, 2.5, 5, 10, 20]. */
   presets: number[];
-  /** Honest pair counts per preset (ascending thresholds). */
+  /** Honest pair counts per preset (ascending thresholds; ≥-style compat). */
   counts_by_threshold: ThresholdCount[];
+  /** v3.3.1 per-band inventory (ascending lo) — the range filter's source. */
+  bands: BandInfo[];
   /** Set when more pairs cleared the floor than were stored; null otherwise. */
   truncated: TruncationInfo | null;
   /**

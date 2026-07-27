@@ -10,13 +10,14 @@ export const metadata: Metadata = {
 };
 
 /**
- * Trades tab (scoring-system.md v3.3): the stored PAIR space behind the
- * target-return dial. Pairs stay fully count-neutral (exactly 0 players /
- * 0 picks net for our side; a buy never goes out without its exit); the dial
- * (presets 1 / 2.5 / 5 / 10 / 20%, default 5%) filters the stored list
- * client-side while the header counts come from the engine's honest
- * counts_by_threshold. Unpaired legs and blocked buys stay in Mongo for the
- * trade-negotiator desk but do not render here (user: nothing without an
+ * Trades tab (scoring-system.md v3.3.1): the stratified stored PAIR space
+ * behind the target-return RANGE. Pairs stay fully count-neutral (exactly
+ * 0 players / 0 picks net for our side; a buy never goes out without its
+ * exit); the range controls (min presets 1 / 2.5 / 5 / 10 / 20, default 5;
+ * max presets 2.5 / 5 / 10 / 20 / no cap, default no cap) filter the stored
+ * list client-side while the inventory line comes from the engine's honest
+ * per-band `bands` counts. Unpaired legs and blocked buys stay in Mongo for
+ * the trade-negotiator desk but do not render here (user: nothing without an
  * associated hedge). Reads Mongo only — every number is the engine's, never
  * recomputed here.
  */
@@ -72,14 +73,14 @@ export default async function TradesPage() {
           exactly 0 players and 0 picks for your side — players count wherever
           they land, picks regardless of year. Every leg passes the fairness
           gate and respects posture (BUYERs receive players, SELLERs picks);
-          the dial sets your minimum return on the inventory you send. Band
-          ceilings on cards are negotiating room, not the opener.
+          the range sets the return window — on the inventory you send — you
+          want to see. Band ceilings on cards are negotiating room, not the
+          opener.
         </p>
         <PairsBoard
           pairs={doc.pairs}
           presets={doc.presets}
-          counts={doc.counts_by_threshold}
-          truncated={doc.truncated}
+          bands={doc.bands ?? []}
           computedAt={doc.computed_at}
         />
         {doc.notes.length ? (

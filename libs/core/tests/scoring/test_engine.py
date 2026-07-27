@@ -27,15 +27,21 @@ def test_top_level_shape(result):
     assert meta["w_min"] == 150.0
     tr = result["trade_recs"]
     assert set(tr) == {
-        "disabled", "pairs", "presets", "counts_by_threshold", "truncated",
-        "recommendations", "watch", "notes",
+        "disabled", "pairs", "presets", "counts_by_threshold", "bands",
+        "truncated", "recommendations", "watch", "notes",
     }
     assert tr["disabled"] is False
-    # the PRIMARY list (§5 v3.3): the stored pair space behind the return dial —
-    # dense on this fixture (500 stored, truncation reported honestly)
+    # the PRIMARY list (§5 v3.3.1): stratified per-band storage behind the
+    # return RANGE — dense on this fixture (every band at quota, honest floors)
     assert 0 < len(tr["pairs"]) <= 500
     assert tr["presets"] == [1.0, 2.5, 5.0, 10.0, 20.0]
     assert {e["threshold"] for e in tr["counts_by_threshold"]} == set(tr["presets"])
+    # v3.3.1 band inventory: one entry per band, derived from the presets
+    assert [set(b) for b in tr["bands"]] == [
+        {"lo", "hi", "stored", "count", "saturated"}
+    ] * len(tr["presets"])
+    assert [b["lo"] for b in tr["bands"]] == tr["presets"]
+    assert [b["hi"] for b in tr["bands"]] == tr["presets"][1:] + [None]
     assert 0 <= len(tr["recommendations"]) <= 10  # secondary: building blocks
     assert isinstance(tr["watch"], list) and isinstance(tr["notes"], list)
     for pair in tr["pairs"]:
@@ -85,7 +91,8 @@ def test_notes_mention_execution_protocol(result):
     assert any("recomputes" in n for n in notes)
     assert any("fire-sale" in n for n in notes)
     assert any("0 players / 0 picks" in n for n in notes)  # §5 pair unit
-    assert any("target-return dial" in n for n in notes)  # §5 v3.3 selectivity
+    assert any("target-return range" in n for n in notes)  # §5 v3.3.1 selectivity
+    assert any("stratified storage" in n for n in notes)  # v3.3.1 per-band quota
     assert any("posture is a hard engine constraint" in n for n in notes)
     assert any("saturated" in n for n in notes)  # honest-counter semantics
     # truncation is reported in the notes whenever the doc carries the flag

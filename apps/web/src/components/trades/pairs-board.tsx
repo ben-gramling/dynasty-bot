@@ -1,92 +1,148 @@
 "use client";
 
 import { useState } from "react";
-import type { ThresholdCount, TradePair, TruncationInfo } from "@/lib/queries";
+import type { BandInfo, TradePair } from "@/lib/queries";
 import { fmtDateTime } from "@/lib/format";
 import { PairCard } from "./pair-card";
 
 const RENDER_CAP = 50;
-const DEFAULT_TARGET = 5;
+const DEFAULT_MIN = 5;
 
 /**
- * §5 v3.3 target-return dial over the STORED pair list. The dial filters
- * client-side (the doc already holds the top pairs by return); the header
- * counts come from the engine's counts_by_threshold so they stay honest even
- * when storage truncates — saturated counters render as "≥ N" (verified
- * floors, never estimates).
+ * §5 v3.3.1 target-return RANGE over the STORED pair list: a min selector
+ * (presets 1 / 2.5 / 5 / 10 / 20, default 5) and a max selector (2.5 / 5 / 10
+ * / 20 / "No cap", default no cap), min < max enforced by disabling invalid
+ * combos. Filtering is client-side on return_pct ∈ [min, max); the engine's
+ * stratified per-band storage guarantees every such range has whatever
+ * inventory exists. The inventory line comes from the doc's `bands` — exact
+ * counts, or verified floors rendered "≥ N" when a band is saturated.
  */
 export function PairsBoard({
   pairs,
   presets,
-  counts,
-  truncated,
+  bands,
   computedAt,
 }: {
   pairs: TradePair[];
   presets: number[];
-  counts: ThresholdCount[];
-  truncated: TruncationInfo | null;
+  bands: BandInfo[];
   computedAt: string;
 }) {
-  const [target, setTarget] = useState<number>(
-    presets.includes(DEFAULT_TARGET) ? DEFAULT_TARGET : presets[0],
+  const [min, setMin] = useState<number>(
+    presets.includes(DEFAULT_MIN) ? DEFAULT_MIN : presets[0],
   );
+  const [max, setMax] = useState<number | null>(null); // null = no cap
 
-  const countAt = (t: number): ThresholdCount | undefined =>
-    counts.find((e) => e.threshold === t);
-  const fmtCount = (e: ThresholdCount | undefined): string =>
-    e ? `${e.saturated ? "≥ " : ""}${e.count.toLocaleString("en-US")}` : "—";
+  const bandList = bands ?? [];
+  const maxOptions: (number | null)[] = [...presets.slice(1), null];
 
-  const floor = presets[0];
-  const atTarget = countAt(target);
-  const atFloor = countAt(floor);
-  const filtered = pairs.filter((p) => p.return_pct >= target);
+  const fmtPct = (p: number): string => `${p}%`;
+  const rangeLabel = max === null ? `${min}%+` : `${min}–${max}%`;
+  const bandLabel = (b: BandInfo): string =>
+    b.hi === null ? `${b.lo}%+` : `${b.lo}–${b.hi}%`;
+
+  const filtered = [...pairs]
+    .filter((p) => p.return_pct >= min && (max === null || p.return_pct < max))
+    .sort((a, b) => b.return_pct - a.return_pct);
   const shown = filtered.slice(0, RENDER_CAP);
 
-  // empty-state honesty: name the deepest preset below the target that still
-  // has pairs ("No pairs clear 10% today — 12 clear 2.5%")
-  const fallback = counts
-    .filter((e) => e.threshold < target && e.count > 0)
-    .sort((a, b) => b.threshold - a.threshold)[0];
+  // inventory over the selected range: min/max are band edges, so the range
+  // is a union of whole bands
+  const inRange = bandList.filter(
+    (b) => b.lo >= min && (max === null || (b.hi !== null && b.hi <= max)),
+  );
+  const invStored = inRange.reduce((n, b) => n + b.stored, 0);
+  const invCount = inRange.reduce((n, b) => n + b.count, 0);
+  const invSat = inRange.some((b) => b.saturated);
+
+  // empty-state honesty: name the nearest band outside the range that still
+  // holds stored pairs (below first, then above)
+  const below = bandList
+    .filter((b) => b.stored > 0 && b.lo < min)
+    .sort((a, b) => b.lo - a.lo)[0];
+  const above = bandList
+    .filter((b) => b.stored > 0 && max !== null && b.lo >= max)
+    .sort((a, b) => a.lo - b.lo)[0];
+  const fallback = below ?? above;
 
   return (
     <div>
       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-        <div
-          role="group"
-          aria-label="Target return"
-          className="inline-flex overflow-hidden rounded-md border border-line"
-        >
-          {presets.map((p) => (
-            <button
-              key={p}
-              type="button"
-              aria-pressed={p === target}
-              onClick={() => setTarget(p)}
-              className={`num px-2.5 py-1 text-[12px] transition-colors ${
-                p === target
-                  ? "bg-sky-deep font-medium text-white"
-                  : "bg-surface text-ink-muted hover:bg-chip"
-              }`}
-            >
-              {p}%
-            </button>
-          ))}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11.5px] text-ink-muted">Min</span>
+          <div
+            role="group"
+            aria-label="Minimum return"
+            className="inline-flex overflow-hidden rounded-md border border-line"
+          >
+            {presets.map((p) => {
+              const invalid = max !== null && p >= max;
+              return (
+                <button
+                  key={p}
+                  type="button"
+                  aria-pressed={p === min}
+                  disabled={invalid}
+                  onClick={() => setMin(p)}
+                  className={`num px-2.5 py-1 text-[12px] transition-colors ${
+                    p === min
+                      ? "bg-sky-deep font-medium text-white"
+                      : invalid
+                        ? "cursor-not-allowed bg-surface text-ink-muted/40"
+                        : "bg-surface text-ink-muted hover:bg-chip"
+                  }`}
+                >
+                  {fmtPct(p)}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11.5px] text-ink-muted">Max</span>
+          <div
+            role="group"
+            aria-label="Maximum return"
+            className="inline-flex overflow-hidden rounded-md border border-line"
+          >
+            {maxOptions.map((m) => {
+              const invalid = m !== null && m <= min;
+              const active = m === max;
+              return (
+                <button
+                  key={m === null ? "nocap" : m}
+                  type="button"
+                  aria-pressed={active}
+                  disabled={invalid}
+                  onClick={() => setMax(m)}
+                  className={`num px-2.5 py-1 text-[12px] transition-colors ${
+                    active
+                      ? "bg-sky-deep font-medium text-white"
+                      : invalid
+                        ? "cursor-not-allowed bg-surface text-ink-muted/40"
+                        : "bg-surface text-ink-muted hover:bg-chip"
+                  }`}
+                >
+                  {m === null ? "No cap" : fmtPct(m)}
+                </button>
+              );
+            })}
+          </div>
         </div>
         <p className="num text-[11.5px] text-ink-muted">
-          {fmtCount(atTarget)} pair{atTarget?.count === 1 && !atTarget.saturated ? "" : "s"} ≥{" "}
-          {target}% (of {fmtCount(atFloor)} ≥ {floor}%) · ranked by return ·
+          {filtered.length.toLocaleString("en-US")} shown in {rangeLabel} ·
+          band inventory: {invStored.toLocaleString("en-US")} stored of{" "}
+          {invSat ? "≥ " : ""}
+          {invCount.toLocaleString("en-US")} legal · ranked by return ·
           computed {fmtDateTime(computedAt)}
         </p>
       </div>
 
-      {truncated ? (
+      {invSat ? (
         <p className="mt-2 text-[11.5px] text-ink-muted">
-          Storage cap: the top {truncated.stored.toLocaleString("en-US")} pairs
-          by return are stored here, of{" "}
-          {truncated.total_saturated ? "at least " : ""}
-          {truncated.total.toLocaleString("en-US")} clearing the {floor}% floor
-          — counts above stay honest; deeper pairs are not listed.
+          Inventory marked ≥ is a verified floor — the legal pair space in
+          this range runs deeper than the collection budget; only each
+          band&apos;s stored top is listed.
         </p>
       ) : null}
 
@@ -94,8 +150,8 @@ export function PairsBoard({
         <>
           {filtered.length > RENDER_CAP ? (
             <p className="mt-2 text-[11.5px] text-ink-muted">
-              Showing the top {RENDER_CAP} of {filtered.length} stored pairs at
-              this target.
+              Showing the top {RENDER_CAP} of {filtered.length} stored pairs in
+              this range.
             </p>
           ) : null}
           <div className="mt-3 space-y-3">
@@ -107,18 +163,21 @@ export function PairsBoard({
       ) : (
         <div className="card mt-3">
           <p className="text-ink-muted">
-            No pairs clear {target}% today
+            No stored pairs in {rangeLabel} today
             {fallback ? (
               <>
                 {" "}
-                — {fmtCount(fallback)} clear {fallback.threshold}%. Drop the
-                dial, or hold.
+                — the {bandLabel(fallback)} band holds{" "}
+                {fallback.stored.toLocaleString("en-US")} (of{" "}
+                {fallback.saturated ? "≥ " : ""}
+                {fallback.count.toLocaleString("en-US")} legal). Widen the
+                range, or hold.
               </>
             ) : (
               <>
                 {" "}
-                — and none clear any lower preset either. Holding is the move;
-                the board recomputes nightly.
+                — and no band holds any stored pairs either. Holding is the
+                move; the board recomputes nightly.
               </>
             )}
           </p>

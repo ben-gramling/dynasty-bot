@@ -12,12 +12,13 @@ Usage (from the repo root, .env required):
   uv run python scripts/score_trade.py score --opponent NAME \
       --give "Mike Evans, Courtland Sutton" --get "2027 R1 (own)" \
       [--alternatives] [--hedge] [--json]
-  uv run python scripts/score_trade.py pairs --target 5 [--json]
+  uv run python scripts/score_trade.py pairs --min 5 --max 10 [--json]
 
-`pairs` computes the full §5 v3.3 pair space (same engine code path as the
-nightly board: enumerate-then-filter, posture as a hard constraint, count-
-neutral pairs ranked by return on inventory deployed) and prints everything
-clearing your target return.
+`pairs` computes the §5 v3.3.1 pair board (same engine code path as the
+nightly run: enumerate-then-filter, posture as a hard constraint, count-
+neutral pairs, STRATIFIED per-band storage) and prints the band inventory
+followed by the stored pairs inside your return range [--min, --max) —
+`--target N` survives as an alias for `--min N`; omit --max for no cap.
 """
 
 from __future__ import annotations
@@ -284,14 +285,23 @@ def main() -> None:
     sc.add_argument("--json", action="store_true")
     pr = sub.add_parser(
         "pairs",
-        help="the §5 v3.3 pair board at your target return (same code path as the nightly board)",
+        help="the §5 v3.3.1 pair board inside your return range (same code path as the nightly board)",
     )
     pr.add_argument(
-        "--target", type=float, default=5.0,
-        help="minimum pair return, percent (dial presets: 1 / 2.5 / 5 / 10 / 20)",
+        "--min", "--target", dest="min_ret", type=float, default=5.0,
+        help="minimum pair return, percent (presets 1 / 2.5 / 5 / 10 / 20; "
+        "--target is the v3.3 alias)",
+    )
+    pr.add_argument(
+        "--max", dest="max_ret", type=float, default=None,
+        help="exclusive upper bound on pair return, percent (presets "
+        "2.5 / 5 / 10 / 20; omit for no cap)",
     )
     pr.add_argument("--json", action="store_true")
     args = ap.parse_args()
+
+    if args.cmd == "pairs" and args.max_ret is not None and args.max_ret <= args.min_ret:
+        sys.exit(f"--max ({args.max_ret:g}) must exceed --min ({args.min_ret:g})")
 
     db = get_db()
     snapshot, fresh = build_snapshot_from_store(db)
@@ -304,12 +314,21 @@ def main() -> None:
         board = tr.trade_board(league)
         if board.get("disabled"):
             sys.exit("trade deadline has passed — the pair board is disabled")
-        hits = [p for p in board["pairs"] if p["return_pct"] >= args.target]
+        lo, hi = args.min_ret, args.max_ret
+        range_label = f"[{lo:g}, {hi:g})%" if hi is not None else f">= {lo:g}%"
+        hits = [
+            p for p in board["pairs"]
+            if p["return_pct"] >= lo and (hi is None or p["return_pct"] < hi)
+        ]
+        hits.sort(key=lambda p: -p["return_pct"])
+        bands = board.get("bands", [])
         if args.json:
             print(json.dumps(
                 {
-                    "target": args.target,
+                    "min": lo,
+                    "max": hi,
                     "presets": board["presets"],
+                    "bands": bands,
                     "counts_by_threshold": board["counts_by_threshold"],
                     "truncated": board["truncated"],
                     "pairs": hits[:15],
@@ -318,41 +337,38 @@ def main() -> None:
                 indent=1, default=str,
             ))
             return
-        print("Pair counts by return threshold (saturated = verified floor; the space is deeper):")
-        target_count = None
-        for e in board["counts_by_threshold"]:
-            mark = ">= " if e["saturated"] else ""
-            print(f"  >= {e['threshold']:g}%: {mark}{e['count']}")
-            if e["threshold"] <= args.target:
-                target_count = e
-        trunc = board["truncated"]
-        if trunc:
-            mark = ">= " if trunc.get("total_saturated") else ""
-            print(
-                f"  stored: top {trunc['stored']} by return, of {mark}{trunc['total']} clearing the floor"
-            )
+
+        def band_name(b: dict) -> str:
+            return f"[{b['lo']:g}, {b['hi']:g})%" if b["hi"] is not None else f"[{b['lo']:g}, inf)%"
+
+        print("Band inventory (stored top-of-band / legal count; '>=' = verified floor — the space runs deeper):")
+        for b in bands:
+            mark = ">= " if b["saturated"] else ""
+            print(f"  {band_name(b):>12}: stored {b['stored']:>3} of {mark}{b['count']}")
         if not hits:
-            lower = [
-                e for e in board["counts_by_threshold"]
-                if e["count"] > 0 and e["threshold"] < args.target
-            ]
-            if lower:
-                best = max(lower, key=lambda e: e["threshold"])
-                mark = ">= " if best["saturated"] else ""
+            fallback = [b for b in bands if b["stored"] > 0]
+            below = [b for b in fallback if b["lo"] < lo]
+            pick = max(below, key=lambda b: b["lo"]) if below else (
+                min(fallback, key=lambda b: b["lo"]) if fallback else None
+            )
+            if pick:
+                mark = ">= " if pick["saturated"] else ""
                 print(
-                    f"\nNo pairs clear {args.target:g}% today — {mark}{best['count']} "
-                    f"clear {best['threshold']:g}%."
+                    f"\nNo stored pairs in {range_label} today — the {band_name(pick)} band "
+                    f"holds {pick['stored']} stored of {mark}{pick['count']} legal. "
+                    "Widen the range, or hold."
                 )
             else:
-                print(f"\nNo pairs clear {args.target:g}% today, and none clear any lower preset.")
+                print(f"\nNo stored pairs in {range_label} today, and no band holds any.")
             return
+        in_range_bands = [
+            b for b in bands
+            if b["lo"] >= lo and (hi is None or (b["hi"] is not None and b["hi"] <= hi))
+        ]
+        deeper = any(b["saturated"] or b["count"] > b["stored"] for b in in_range_bands)
         print(
-            f"\nTop {min(15, len(hits))} of {len(hits)} stored pairs at return >= {args.target:g}%"
-            + (
-                f" (the full space at this target runs deeper — see the counts above)"
-                if target_count and target_count["count"] > len(hits)
-                else ""
-            )
+            f"\nTop {min(15, len(hits))} of {len(hits)} stored pairs in {range_label}"
+            + (" (the legal space in this range runs deeper — see the inventory above)" if deeper else "")
             + ":"
         )
         for p in hits[:15]:

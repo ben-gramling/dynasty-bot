@@ -1,12 +1,13 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * Trades tab against the live seeded DB (scoring v3.3, dial-filtered pairs
- * page): the target-return dial filters the stored count-neutral pairs, the
- * header count line comes from the engine's honest counts_by_threshold
- * (saturated counters render "≥ N"), truncation is disclosed, and NOTHING
- * that isn't a pair renders: no unpaired-legs section, no watch list, no
- * standalone cards. Market map still points into the League tab.
+ * Trades tab against the live seeded DB (scoring v3.3.1, range-filtered pairs
+ * page): min/max target-return range controls filter the stratified stored
+ * pairs, the inventory line comes from the engine's honest per-band `bands`
+ * counts (saturated bands render "≥ N" — verified floors, never estimates),
+ * invalid min/max combos are disabled, and NOTHING that isn't a pair renders:
+ * no unpaired-legs section, no watch list, no standalone cards. Market map
+ * still points into the League tab.
  */
 
 test.beforeEach(async ({ page }) => {
@@ -34,50 +35,99 @@ test("only pairs render — no unpaired legs, no watch list", async ({
   expect(await sections.count()).toBe(2);
 });
 
-test("the return dial is present, defaults to 5%, and drives the count line", async ({
+test("range controls present with defaults: min 5%, max No cap", async ({
   page,
 }) => {
-  const dial = page.getByRole("group", { name: "Target return" });
-  await expect(dial).toBeVisible();
+  const minG = page.getByRole("group", { name: "Minimum return" });
+  const maxG = page.getByRole("group", { name: "Maximum return" });
+  await expect(minG).toBeVisible();
+  await expect(maxG).toBeVisible();
   for (const label of ["1%", "2.5%", "5%", "10%", "20%"]) {
-    await expect(dial.getByRole("button", { name: label, exact: true })).toBeVisible();
+    await expect(minG.getByRole("button", { name: label, exact: true })).toBeVisible();
   }
-  await expect(dial.getByRole("button", { name: "5%", exact: true })).toHaveAttribute(
+  for (const label of ["2.5%", "5%", "10%", "20%", "No cap"]) {
+    await expect(maxG.getByRole("button", { name: label, exact: true })).toBeVisible();
+  }
+  await expect(minG.getByRole("button", { name: "5%", exact: true })).toHaveAttribute(
     "aria-pressed",
     "true",
   );
-  // The count line reads "N pairs ≥ target (of M ≥ 1%)" — honest counts,
-  // "≥ N" when the engine's counter saturated.
-  const countLine = page.getByText(/pairs? ≥ 5% \(of .* ≥ 1%\)/);
-  await expect(countLine).toBeVisible();
-  const before = await countLine.textContent();
-  await dial.getByRole("button", { name: "20%", exact: true }).click();
-  await expect(dial.getByRole("button", { name: "20%", exact: true })).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
-  const after = page.getByText(/pairs? ≥ 20% \(of .* ≥ 1%\)/);
-  await expect(after).toBeVisible();
-  expect(await after.textContent()).not.toBe(before);
+  await expect(
+    maxG.getByRole("button", { name: "No cap", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  // The inventory line reads from the engine's per-band counts.
+  await expect(
+    page.getByText(/shown in 5%\+ · band inventory: [\d,]+ stored of (≥ )?[\d,]+ legal/),
+  ).toBeVisible();
 });
 
-test("pairs render fully at every target or the empty state is honest", async ({
+test("switching max changes the rendered set and the count line", async ({
+  page,
+}) => {
+  const maxG = page.getByRole("group", { name: "Maximum return" });
+  const line = page.getByText(/shown in .* · band inventory:/);
+  const before = await line.textContent();
+  await maxG.getByRole("button", { name: "10%", exact: true }).click();
+  await expect(
+    maxG.getByRole("button", { name: "10%", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  const after = page.getByText(/shown in 5–10% · band inventory:/);
+  await expect(after).toBeVisible();
+  expect(await after.textContent()).not.toBe(before);
+  // Every rendered pair's return respects the cap.
+  const section = page.locator('section[aria-labelledby="pairs"]');
+  const returns = section.locator("article", { hasText: "pair ΔW" });
+  const n = await returns.count();
+  for (let i = 0; i < Math.min(n, 5); i++) {
+    const txt = await returns.nth(i).getByText(/% return/).first().textContent();
+    const val = parseFloat((txt ?? "").replace("% return", "").replace("+", ""));
+    // cards render the return at 1 dp, so a 9.98% pair shows "10.0%" —
+    // assert with rendering-rounding tolerance
+    expect(val).toBeGreaterThanOrEqual(4.95);
+    expect(val).toBeLessThan(10.05);
+  }
+});
+
+test("invalid min/max combos are prevented", async ({ page }) => {
+  const minG = page.getByRole("group", { name: "Minimum return" });
+  const maxG = page.getByRole("group", { name: "Maximum return" });
+  // Default min 5: max 2.5 and max 5 must be disabled.
+  await expect(maxG.getByRole("button", { name: "2.5%", exact: true })).toBeDisabled();
+  await expect(maxG.getByRole("button", { name: "5%", exact: true })).toBeDisabled();
+  await expect(maxG.getByRole("button", { name: "10%", exact: true })).toBeEnabled();
+  // Cap at 10: min 10 and 20 must be disabled; drop min to 1 and 2.5 stays open.
+  await maxG.getByRole("button", { name: "10%", exact: true }).click();
+  await expect(minG.getByRole("button", { name: "10%", exact: true })).toBeDisabled();
+  await expect(minG.getByRole("button", { name: "20%", exact: true })).toBeDisabled();
+  await expect(minG.getByRole("button", { name: "1%", exact: true })).toBeEnabled();
+  await minG.getByRole("button", { name: "1%", exact: true }).click();
+  await expect(maxG.getByRole("button", { name: "2.5%", exact: true })).toBeEnabled();
+});
+
+test("pairs render fully in every range or the empty state is honest", async ({
   page,
 }) => {
   const section = page.locator('section[aria-labelledby="pairs"]');
-  const dial = page.getByRole("group", { name: "Target return" });
-  for (const label of ["1%", "5%", "20%"]) {
-    await dial.getByRole("button", { name: label, exact: true }).click();
+  const minG = page.getByRole("group", { name: "Minimum return" });
+  const maxG = page.getByRole("group", { name: "Maximum return" });
+  const ranges: [string, string][] = [
+    ["1%", "2.5%"],
+    ["5%", "10%"],
+    ["20%", "No cap"],
+  ];
+  for (const [minL, maxL] of ranges) {
+    // Order avoids transient invalid states: open the cap, set min, then cap.
+    await maxG.getByRole("button", { name: "No cap", exact: true }).click();
+    await minG.getByRole("button", { name: minL, exact: true }).click();
+    await maxG.getByRole("button", { name: maxL, exact: true }).click();
     const pairCards = section.locator("article", { hasText: "pair ΔW" });
     const n = await pairCards.count();
     if (n === 0) {
-      // Empty at this target: the message must name a lower preset that still
-      // clears ("No pairs clear 10% today — 12 clear 2.5%") or say none do.
+      // Empty range: the message must name a band that still has inventory
+      // ("the 10–20% band holds 100") or say no band holds any.
       await expect(
         section.getByText(
-          new RegExp(
-            `No pairs clear ${label.replace("%", "")}% today — (.*clear \\d+(\\.\\d+)?%|and none clear any lower preset)`,
-          ),
+          /No stored pairs in .* today — (the [\d.]+(–[\d.]+)?%\+? band holds [\d,]+|and no band holds any stored pairs)/,
         ),
       ).toBeVisible();
       expect(await section.getByText("You send").count()).toBe(0);
@@ -86,7 +136,9 @@ test("pairs render fully at every target or the empty state is honest", async ({
     // Rendered list is capped at 50, with the cap disclosed.
     expect(n).toBeLessThanOrEqual(50);
     if (n === 50) {
-      await expect(section.getByText(/Showing the top 50 of \d+ stored/)).toBeVisible();
+      await expect(
+        section.getByText(/Showing the top 50 of \d+ stored/),
+      ).toBeVisible();
     }
     const first = pairCards.first();
     await expect(first.getByText("pair ΔW")).toBeVisible();
@@ -106,15 +158,18 @@ test("pairs render fully at every target or the empty state is honest", async ({
   }
 });
 
-test("truncation is disclosed honestly when the storage cap binds", async ({
-  page,
-}) => {
-  // Live-data dependent: when the engine truncated, the disclosure names both
-  // the stored cap and the (possibly floor-form) total; when it did not, no
-  // storage-cap line renders at all.
-  const note = page.getByText(/Storage cap: the top [\d,]+ pairs by return/);
-  if ((await note.count()) > 0) {
-    await expect(note).toContainText(/of (at least )?[\d,]+ clearing/);
+test("band inventory floors are disclosed honestly", async ({ page }) => {
+  // Live-data dependent: when any band in the selected range is saturated,
+  // the inventory renders "≥ N" and the verified-floor note appears; when
+  // none is, neither does.
+  const line = page.getByText(/band inventory: [\d,]+ stored of (≥ )?[\d,]+ legal/);
+  await expect(line).toBeVisible();
+  const text = (await line.textContent()) ?? "";
+  const note = page.getByText(/Inventory marked ≥ is a verified floor/);
+  if (text.includes("≥")) {
+    await expect(note).toBeVisible();
+  } else {
+    expect(await note.count()).toBe(0);
   }
 });
 

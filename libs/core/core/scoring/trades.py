@@ -1,7 +1,9 @@
 """§2/§3/§5 trades: ΔW = Σv(in) − Σv(out) at face KTC, the fairness gate,
-enumerate-then-filter pairing behind the user's target-return dial (§3/§5 v3.3),
-posture as a hard pair-pool constraint, fully count-neutral pairs (§5 v3.2:
-a recommended pair nets exactly 0 players AND 0 picks for my side).
+enumerate-then-filter pairing behind the user's target-return RANGE (§3/§5
+v3.3; v3.3.1 turned the min-only dial into min/max over the presets, with
+stratified per-band pair storage so any range has inventory), posture as a
+hard pair-pool constraint, fully count-neutral pairs (§5 v3.2: a recommended
+pair nets exactly 0 players AND 0 picks for my side).
 
 v3.3 replaces v3.1's prune-then-pair (minimal-gap selection starved the
 count-neutral matcher to zero pairs): enumeration now keeps in-band,
@@ -31,6 +33,7 @@ from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
+from heapq import heappush, heappushpop
 from itertools import combinations
 from typing import Any, Sequence
 
@@ -642,18 +645,96 @@ def _tp_estimate(pool: PairPool, r: float) -> int:
 
 
 def _leg_legal(league: md.LeagueState, me_t: md.TeamCtx, pool: PairPool, i: int, cache: dict):
-    """Full §3.3 legality for pool leg i, memoized: verdicts dict when legal,
-    False when not (an illegal leg can never appear in any pair or card)."""
+    """Full §3.3 legality for pool leg i, memoized as a BOOLEAN (an illegal leg
+    can never appear in any pair or card). v3.3.1: the cache holds booleans, not
+    verdict dicts — the collection walks touch hundreds of thousands of legs and
+    the collector Lambda runs at 512MB; card building recomputes full verdicts
+    for the handful of stored legs."""
     v = cache.get(i)
     if v is None:
         leg = pool.legs[i]
-        verdicts = legality(
+        v = legality(
             league, me_t, league.teams[pool.opp_names[leg[L_OPP]]],
             give=leg[L_GIVE], get=leg[L_GET],
-        )
-        v = verdicts if verdicts["legal"] else False
+        )["legal"]
         cache[i] = v
     return v
+
+
+def _tp_estimate_below(pool: PairPool, r: float) -> int:
+    """Mirror of _tp_estimate for the LOW end: uncorrected two-pointer size of
+    the < r pair space (τ_r(leg) = ΔW − r·Σv sent; τ_r(buy) + τ_r(sell) < 0 ⟺
+    pair return < r). Exact on crossings — the visit count of a below-walk at r.
+    Every pool pair clears the return floor by leg construction (the pair
+    return is the sent-weighted mediant of floor-clean leg returns), so this
+    space is bounded below by the floor, never by −∞."""
+    legs = pool.legs
+    total = 0
+    for sig, idxs in pool.buckets.items():
+        if sig[0] <= 0:
+            continue
+        comp = pool.buckets.get((-sig[0], -sig[1]))
+        if not comp:
+            continue
+        bs = sorted(legs[i][L_DW] - r * legs[i][L_SENT] for i in idxs)
+        ss = sorted(legs[i][L_DW] - r * legs[i][L_SENT] for i in comp)
+        for tb in bs:  # ascending τ: the count of complements only shrinks
+            lo = bisect_left(ss, -tb)  # sells with τ_s < −τ_b, strictly
+            if lo == 0:
+                break
+            total += lo
+    return total
+
+
+def _walk_pairs_below(
+    league: md.LeagueState,
+    pool: PairPool,
+    r: float,
+    budget: int,
+    legal: dict,
+    out: list[tuple[float, int, int]],
+) -> tuple[int, bool]:
+    """Enumerate the VALID pair space at return < r — the exact complement of
+    _walk_pairs at r (boundary pairs at exactly r belong to the ≥ walk).
+    Identical constraints and honesty contract; τ_r-ASCENDING crossing with
+    early exit, so the low end of the return space is reachable without
+    sweeping the (much deeper) top. Deterministic throughout."""
+    legs = pool.legs
+    me_t = league.teams[league.me]
+    visits = 0
+    for sig in sorted(pool.buckets):
+        if sig[0] <= 0:
+            continue
+        comp_idx = pool.buckets.get((-sig[0], -sig[1]))
+        if not comp_idx:
+            continue
+        # (τ_r, pool index): ascending sort == lowest pair returns first
+        bs = sorted((legs[i][L_DW] - r * legs[i][L_SENT], i) for i in pool.buckets[sig])
+        ss = sorted((legs[i][L_DW] - r * legs[i][L_SENT], i) for i in comp_idx)
+        ss0 = ss[0][0]
+        for tb, bi in bs:
+            if tb + ss0 >= 0.0:
+                break  # even the lowest sell keeps this (and any later) buy at ≥ r
+            b = legs[bi]
+            b_opp, b_mask, b_dw, b_sent = b[L_OPP], b[L_MASK], b[L_DW], b[L_SENT]
+            vb = None
+            for ts, si in ss:
+                if tb + ts >= 0.0:
+                    break
+                visits += 1
+                if visits > budget:
+                    return visits - 1, False
+                s = legs[si]
+                if s[L_OPP] == b_opp or (s[L_MASK] & b_mask):
+                    continue
+                if vb is None:
+                    vb = _leg_legal(league, me_t, pool, bi, legal)
+                if vb is False:
+                    break  # illegal buy leg: no pair with it exists
+                if _leg_legal(league, me_t, pool, si, legal) is False:
+                    continue
+                out.append(((b_dw + s[L_DW]) / (b_sent + s[L_SENT]), bi, si))
+    return visits, True
 
 
 def _walk_pairs(
@@ -710,17 +791,233 @@ def _walk_pairs(
     return visits, True
 
 
-def _search_cutoff(pool: PairPool, floor: float, hi: float, target: int) -> float:
-    """Highest return cutoff whose uncorrected pair count still reaches `target`
-    — where the stored-pair collection walk starts in a dense market."""
-    lo = floor
-    for _ in range(22):
-        mid = (lo + hi) / 2.0
-        if _tp_estimate(pool, mid) >= target:
-            lo = mid
+def _walk_pairs_range(
+    league: md.LeagueState,
+    pool: PairPool,
+    lo_r: float,
+    hi_r: float,
+    budget: int,
+    scan_cap: int,
+    legal: dict,
+    out,
+) -> tuple[int, bool]:
+    """Enumerate the VALID pair space with lo_r ≤ return < hi_r — the gap left
+    between a complete top-down walk (≥ hi_r) and a complete below-walk
+    (< lo_r). The ≥ lo_r crossings are scanned top-down, but pairs the top walk
+    already owns (return ≥ hi_r) are skipped with one multiply and do NOT
+    consume the visit budget — only in-range pairs do; `scan_cap` bounds the
+    raw scanning time. Same constraints and honesty contract as _walk_pairs;
+    deterministic throughout."""
+    legs = pool.legs
+    me_t = league.teams[league.me]
+    visits = 0
+    scanned = 0
+    for sig in sorted(pool.buckets):
+        if sig[0] <= 0:
+            continue
+        comp_idx = pool.buckets.get((-sig[0], -sig[1]))
+        if not comp_idx:
+            continue
+        bs = sorted((lo_r * legs[i][L_SENT] - legs[i][L_DW], i) for i in pool.buckets[sig])
+        ss = sorted((lo_r * legs[i][L_SENT] - legs[i][L_DW], i) for i in comp_idx)
+        ns0 = ss[0][0]
+        for nb, bi in bs:
+            if nb + ns0 > 0.0:
+                break
+            b = legs[bi]
+            b_opp, b_mask, b_dw, b_sent = b[L_OPP], b[L_MASK], b[L_DW], b[L_SENT]
+            vb = None
+            for ns, si in ss:
+                if nb + ns > 0.0:
+                    break
+                scanned += 1
+                if scanned > scan_cap:
+                    return visits, False
+                s = legs[si]
+                if b_dw + s[L_DW] >= hi_r * (b_sent + s[L_SENT]):
+                    continue  # ≥ hi_r: the top walk owns it — budget-free skip
+                visits += 1
+                if visits > budget:
+                    return visits - 1, False
+                if s[L_OPP] == b_opp or (s[L_MASK] & b_mask):
+                    continue
+                if vb is None:
+                    vb = _leg_legal(league, me_t, pool, bi, legal)
+                if vb is False:
+                    break  # illegal buy leg: no pair with it exists
+                if _leg_legal(league, me_t, pool, si, legal) is False:
+                    continue
+                out.append(((b_dw + s[L_DW]) / (b_sent + s[L_SENT]), bi, si))
+    return visits, True
+
+
+def _walk_pairs_below_range(
+    league: md.LeagueState,
+    pool: PairPool,
+    lo_r: float,
+    hi_r: float,
+    budget: int,
+    scan_cap: int,
+    legal: dict,
+    out,
+) -> tuple[int, bool]:
+    """Enumerate the VALID pair space with lo_r ≤ return < hi_r from BENEATH:
+    τ_{hi_r}-ascending crossing (lowest returns first), pairs the below-walk
+    already owns (return < lo_r) skipped with one multiply and no budget. When
+    the visit budget truncates, the collected set is the RANGE'S BOTTOM — a
+    verified, deterministic partial fill for bands unreachable from the top."""
+    legs = pool.legs
+    me_t = league.teams[league.me]
+    visits = 0
+    scanned = 0
+    for sig in sorted(pool.buckets):
+        if sig[0] <= 0:
+            continue
+        comp_idx = pool.buckets.get((-sig[0], -sig[1]))
+        if not comp_idx:
+            continue
+        bs = sorted((legs[i][L_DW] - hi_r * legs[i][L_SENT], i) for i in pool.buckets[sig])
+        ss = sorted((legs[i][L_DW] - hi_r * legs[i][L_SENT], i) for i in comp_idx)
+        ss0 = ss[0][0]
+        for tb, bi in bs:
+            if tb + ss0 >= 0.0:
+                break
+            b = legs[bi]
+            b_opp, b_mask, b_dw, b_sent = b[L_OPP], b[L_MASK], b[L_DW], b[L_SENT]
+            vb = None
+            for ts, si in ss:
+                if tb + ts >= 0.0:
+                    break
+                scanned += 1
+                if scanned > scan_cap:
+                    return visits, False
+                s = legs[si]
+                if b_dw + s[L_DW] < lo_r * (b_sent + s[L_SENT]):
+                    continue  # < lo_r: the below-walk owns it — budget-free skip
+                visits += 1
+                if visits > budget:
+                    return visits - 1, False
+                if s[L_OPP] == b_opp or (s[L_MASK] & b_mask):
+                    continue
+                if vb is None:
+                    vb = _leg_legal(league, me_t, pool, bi, legal)
+                if vb is False:
+                    break  # illegal buy leg: no pair with it exists
+                if _leg_legal(league, me_t, pool, si, legal) is False:
+                    continue
+                out.append(((b_dw + s[L_DW]) / (b_sent + s[L_SENT]), bi, si))
+    return visits, True
+
+
+class _DropSpans:
+    """append() adapter that drops pairs whose return falls in any span
+    (percent, half-open) — keeps the catch-all sweep disjoint from every walk
+    that came before it, so sink tallies stay exact counts of DISTINCT pairs."""
+
+    __slots__ = ("sink", "spans")
+
+    def __init__(self, sink, spans: list[tuple[float, float]]):
+        self.sink = sink
+        self.spans = spans
+
+    def append(self, t: tuple[float, int, int]) -> None:
+        pct = 100.0 * t[0]
+        for a, b in self.spans:
+            if a <= pct < b:
+                return
+        self.sink.append(t)
+
+
+def _deepest_cut(pool: PairPool, floor: float, hi: float, budget: int) -> float:
+    """Lowest return cutoff in [floor, hi] whose crossing count fits the walk
+    budget. _tp_estimate counts EXACTLY the crossings _walk_pairs visits (it
+    upper-bounds only the VALID pairs), so a walk at the returned cutoff is
+    guaranteed to complete — except when even `hi` does not fit (then `hi` is
+    returned and the walk truncates, disclosed honestly downstream)."""
+    if _tp_estimate(pool, floor) <= budget:
+        return floor
+    if _tp_estimate(pool, hi) > budget:
+        return hi
+    lo_r, hi_r = floor, hi
+    for _ in range(18):
+        mid = (lo_r + hi_r) / 2.0
+        if _tp_estimate(pool, mid) > budget:
+            lo_r = mid
         else:
-            hi = mid
-    return lo
+            hi_r = mid
+    return hi_r
+
+
+def _highest_cut_below(pool: PairPool, floor: float, hi: float, budget: int) -> float:
+    """Highest return cutoff in [floor, hi] whose BELOW-crossing count fits the
+    walk budget — how far up from the floor a complete below-walk can reach.
+    Always ≥ floor (no pool pair returns below the floor, so the below-space at
+    the floor is empty)."""
+    if _tp_estimate_below(pool, hi) <= budget:
+        return hi
+    lo_r, hi_r = floor, hi
+    for _ in range(18):
+        mid = (lo_r + hi_r) / 2.0
+        if _tp_estimate_below(pool, mid) <= budget:
+            lo_r = mid
+        else:
+            hi_r = mid
+    return lo_r
+
+
+def return_bands(presets: Sequence[float]) -> list[tuple[float, float | None]]:
+    """§5 v3.3.1 return bands, percent, derived from the range presets:
+    [p0, p1), [p1, p2), …, [p_last, ∞) — ascending, hi=None on the open top."""
+    ps = sorted(float(p) for p in presets)
+    return [(ps[i], ps[i + 1] if i + 1 < len(ps) else None) for i in range(len(ps))]
+
+
+def band_index(bands: Sequence[tuple[float, float | None]], ret_pct: float) -> int | None:
+    """Index of the half-open band containing ret_pct (percent, the doc's
+    2-dp-rounded return), or None below the lowest band's lo."""
+    idx = None
+    for i, (lo, _hi) in enumerate(bands):
+        if ret_pct >= lo:
+            idx = i
+    return idx
+
+
+class _BandSink:
+    """append()-compatible walk output that stratifies on the fly: per band a
+    bounded min-heap of the top-`quota` pairs (by return desc, deterministic
+    ties) plus an exact tally of every valid pair seen. The collection walks
+    cover DISJOINT return ranges (top ≥ r*, below < u*, range [u*, r*)), so no
+    dedupe structure is needed — and memory stays O(bands · quota) where full
+    lists of the multi-million-pair walked space would blow the collector
+    Lambda's 512MB."""
+
+    __slots__ = ("bands", "quota", "heaps", "counts")
+
+    def __init__(self, bands: Sequence[tuple[float, float | None]], quota: int):
+        self.bands = bands
+        self.quota = quota
+        # heap entries (ret, -bi, -si): lexicographic order on the negated-index
+        # tuple exactly inverts the storage sort key (-ret, bi, si), so the
+        # min-heap root is always the worst kept pair
+        self.heaps: list[list[tuple[float, int, int]]] = [[] for _ in bands]
+        self.counts: list[int] = [0] * len(bands)
+
+    def append(self, t: tuple[float, int, int]) -> None:
+        ret, bi, si = t
+        i = band_index(self.bands, round(100.0 * ret, 2))
+        if i is None:
+            return  # below the lowest preset (non-default floor configs only)
+        self.counts[i] += 1
+        h = self.heaps[i]
+        e = (ret, -bi, -si)
+        if len(h) < self.quota:
+            heappush(h, e)
+        elif e > h[0]:
+            heappushpop(h, e)
+
+    def band_pairs(self, i: int) -> list[tuple[float, int, int]]:
+        """Stored pairs of band i, return-desc with deterministic ties."""
+        return [(e[0], -e[1], -e[2]) for e in sorted(self.heaps[i], reverse=True)]
 
 
 def pair_return_pct(buy_card: dict, sell_card: dict) -> float:
@@ -774,16 +1071,25 @@ def pair_count_deltas(buy_card: dict, sell_card: dict) -> tuple[int, int]:
 
 
 def trade_board(league: md.LeagueState) -> dict:
-    """§5 v3.3: the exhaustively-crossed, dial-filtered PAIR board. `pairs` is
-    the stored top-`max_stored_pairs` by return (each fully count-neutral, both
-    legs gate-PASS, posture-clean, distinct counterparties, no shared assets),
-    `counts_by_threshold` carries honest per-preset counts (exact, or a verified
-    floor flagged `saturated` when the space outruns the counting budget),
-    `truncated` reports the storage cap honestly. `recommendations` (top
+    """§5 v3.3.1: the exhaustively-crossed, range-filtered PAIR board with
+    STRATIFIED storage. `pairs` holds the top-`pairs_per_band` by return WITHIN
+    each return band (bands derived from the presets: [1,2.5), [2.5,5), [5,10),
+    [10,20), [20,∞) percent), bands concatenated return-descending — so any
+    user range [min, max) over the presets has inventory, and the whole list
+    still reads return-desc globally. Every stored pair is fully count-neutral,
+    both legs gate-PASS, posture-clean, distinct counterparties, no shared
+    assets. `bands` carries per-band honest disclosure ({lo, hi|None, stored,
+    count, saturated} — a saturated count is a verified floor, never an
+    estimate); `counts_by_threshold` and `truncated` stay for ≥-style compat
+    reads. Pairs below the lowest preset are never stored (with the default
+    config the return floor IS the lowest preset). `recommendations` (top
     unpaired sell/neutral legs by ΔW) and `watch` (unpaired buys) stay as data
     for the trade-negotiator desk — the web renders pairs only."""
     params = league.params
     presets = sorted(float(p) for p in params.return_presets)
+    bands = return_bands(presets)
+    nb = len(bands)
+    quota = params.pairs_per_band
     if not league.offseason and league.snapshot.week > params.trade_deadline_week:
         return {
             "disabled": True,
@@ -791,6 +1097,10 @@ def trade_board(league: md.LeagueState) -> dict:
             "presets": presets,
             "counts_by_threshold": [
                 {"threshold": p, "count": 0, "saturated": False} for p in presets
+            ],
+            "bands": [
+                {"lo": lo, "hi": hi, "stored": 0, "count": 0, "saturated": False}
+                for lo, hi in bands
             ],
             "truncated": None,
             "recommendations": [],
@@ -805,17 +1115,35 @@ def trade_board(league: md.LeagueState) -> dict:
     legal: dict[int, Any] = {}
     counts: dict[float, tuple[int, bool]] = {}
 
-    stored_complete = True
+    # ---- collection (v3.3.1 stratified): fill every band toward its quota ----
+    # _tp_estimate / _tp_estimate_below count EXACTLY the crossings the walks
+    # visit, so completability is predictable without walking: a walk at r
+    # completes iff its crossing count fits the budget. The saturating-budget
+    # approach, extended per band, over DISJOINT return ranges:
+    #   1. top-down at the deepest affordable cutoff r* — everything ≥ r* exact;
+    #   2. bottom-up below-walk at the highest affordable u* — everything < u*
+    #      exact (every pool pair clears the floor by leg construction, so the
+    #      low end is small enough to own outright in most markets);
+    #   3. per band still touching the gap [u*, r*): the deepest COMPLETE range
+    #      walk under the band's hi (out-of-range crossings cost one multiply
+    #      and no budget) — the stored pairs become the band's TRUE top even
+    #      where its total count stays a verified floor.
+    # Output streams into per-band bounded heaps (_BandSink): exact tallies plus
+    # the top-quota pairs per band, O(bands · quota) memory (512MB Lambda).
+    collect_budget = max(params.pair_collect_budget, budget)
+    sink = _BandSink(bands, quota)
+    covered: list[tuple[float, float]] = []  # completely-walked intervals, percent
+    INF = float("inf")
     tp_floor = _tp_estimate(pool, floor)
     if tp_floor <= budget:
-        # sparse market: the whole ≥floor space fits the budget — everything exact
+        # sparse market: the whole ≥floor space fits the counting budget
         out: list[tuple[float, int, int]] = []
         _walk_pairs(league, pool, floor, budget, legal, out)
-        all_pairs = sorted(out, key=lambda x: (-x[0], x[1], x[2]))
+        for t in out:
+            sink.append(t)
+        covered.append((0.0, INF))
         for p in presets:
-            counts[p] = (sum(1 for ret, _, _ in all_pairs if 100.0 * ret >= p), False)
-        stored = all_pairs[: params.max_stored_pairs]
-        total, total_sat = len(all_pairs), False
+            counts[p] = (sum(1 for ret, _, _ in out if 100.0 * ret >= p), False)
     else:
         # dense market: exact counts preset-by-preset (descending) until a pass
         # saturates the budget; lower presets inherit that verified floor
@@ -832,50 +1160,142 @@ def trade_board(league: md.LeagueState) -> dict:
             best_floor = max(best_floor, n)
             if not done:
                 sat = counts[p]
-        # stored pairs: adaptive cutoff — the highest return whose uncorrected
-        # pair count still covers the storage cap with correction headroom. The
-        # very top of the space can be almost entirely correction losses (a
-        # single dominant leg crossed against colliding partners — collisions
-        # cost sub-microsecond visits, hence the deeper collection budget), so
-        # the ladder rescales on VALID yield, ending at the full budget.
-        collect_budget = max(params.pair_collect_budget, budget)
-        stored: list[tuple[float, int, int]] = []
-        stored_complete = True
-        for target in (
-            max(2000, 4 * params.max_stored_pairs),
-            max(40_000, 80 * params.max_stored_pairs),
-            collect_budget,
-        ):
-            target = min(target, collect_budget)
-            r_star = (
-                floor
-                if _tp_estimate(pool, floor) <= target
-                else _search_cutoff(pool, floor, hi_edge, target)
+        r_star = _deepest_cut(pool, floor, hi_edge, collect_budget)
+        _, done = _walk_pairs(league, pool, r_star, collect_budget, legal, sink)
+        if done:
+            covered.append((100.0 * r_star, INF))
+        if r_star > floor + 1e-12:
+            u_star = _highest_cut_below(pool, floor, r_star, collect_budget)
+            _, done = _walk_pairs_below(league, pool, u_star, collect_budget, legal, sink)
+            if done:
+                covered.append((0.0, 100.0 * u_star))
+            # per-band slices of the surviving gap [u*, r*), descending. Two
+            # feasibility-checked entries per slice (skipped crossings cost one
+            # multiply, so the scan cap runs wider than the visit budget):
+            #   (a) top segment — complete scan from above; the stored pairs
+            #       are the band's TRUE top;
+            #   (b) below segment — complete scan from beneath; bottom-up fill
+            #       as far as the visit budget carries.
+            # Every slice is disjoint from the edge walks and from each other;
+            # the catch-all sweep afterward drops anything a slice touched, so
+            # tallies stay exact counts of distinct pairs.
+            seg_cap = 4 * collect_budget
+            blocked: list[tuple[float, float]] = []
+            for lo, hi in reversed(bands):
+                lo_f = max(lo / 100.0, u_star)
+                hi_f = min(hi / 100.0 if hi is not None else hi_edge, r_star)
+                if hi_f <= lo_f + 1e-12:
+                    continue  # the edge walks already own this band's range
+                tp_hi = _tp_estimate(pool, hi_f)
+                if tp_hi <= seg_cap:
+                    x_b = _deepest_cut(
+                        pool, lo_f, hi_f, min(seg_cap, tp_hi + collect_budget)
+                    )
+                    if x_b < hi_f - 1e-12:
+                        _, done = _walk_pairs_range(
+                            league, pool, x_b, hi_f, collect_budget, seg_cap,
+                            legal, sink,
+                        )
+                        blocked.append((100.0 * x_b, 100.0 * hi_f))
+                        if done:
+                            covered.append((100.0 * x_b, 100.0 * hi_f))
+                elif _tp_estimate_below(pool, lo_f) <= seg_cap:
+                    y_b = _highest_cut_below(pool, lo_f, hi_f, seg_cap)
+                    if y_b > lo_f + 1e-12:
+                        _, done = _walk_pairs_below_range(
+                            league, pool, lo_f, y_b, collect_budget, seg_cap,
+                            legal, sink,
+                        )
+                        blocked.append((100.0 * lo_f, 100.0 * y_b))
+                        if done:
+                            covered.append((100.0 * lo_f, 100.0 * y_b))
+            # catch-all: one truncated top-range sweep over the gap for the
+            # slices no complete walk could enter — best found within budget,
+            # verified floors, never estimates
+            _walk_pairs_range(
+                league, pool, u_star, r_star, collect_budget, seg_cap,
+                legal, _DropSpans(sink, blocked),
             )
-            out = []
-            _, done = _walk_pairs(league, pool, r_star, collect_budget, legal, out)
-            stored = sorted(out, key=lambda x: (-x[0], x[1], x[2]))
-            stored_complete = done
-            if len(stored) >= params.max_stored_pairs or r_star <= floor or not done:
-                break
-        stored = stored[: params.max_stored_pairs]
-        lowest = presets[0]
-        if abs(lowest / 100.0 - floor) < 1e-9:
-            total, total_sat = counts[lowest]
-        else:  # non-default config: the floor sits below the lowest preset
-            out = []
-            _, done = _walk_pairs(league, pool, floor, budget, legal, out)
-            total, total_sat = max(len(out), counts[lowest][0]), not done
 
-    # per-preset honesty: stored pairs are themselves verified floors
+    # merge the covered intervals; a band is fully enumerated iff its range —
+    # widened by the 2-dp rounding window its membership is judged on — sits
+    # inside the union
+    covered.sort()
+    merged: list[list[float]] = []
+    for a, b in covered:
+        if merged and a <= merged[-1][1] + 1e-12:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+
+    def _band_exact(lo: float, hi: float | None) -> bool:
+        # membership is judged on the 2-dp-rounded percent, so the band's RAW
+        # preimage is ~[lo−0.005, hi−0.005); the extra ±0.001 absorbs float
+        # noise at the rounding boundary — conservative in both directions
+        a = lo - 0.006
+        b = (hi - 0.004) if hi is not None else INF
+        return any(x <= a and b <= y for x, y in merged)
+
+    # per-band counts: exact when the band is fully enumerated; otherwise the
+    # collected pairs are a verified floor. The first non-exact band from the
+    # top gets a sharper floor: the counting floor at its lo minus the EXACT
+    # space above it (raw-cutoff counts undercount the rounded semantics, so
+    # the subtraction stays a valid floor).
+    band_counts: list[tuple[int, bool]] = []
+    exact_above, cum_above = True, 0
+    tmp: list[tuple[int, bool]] = []
+    for i in range(nb - 1, -1, -1):
+        lo, hi = bands[i]
+        n_coll = sink.counts[i]
+        if _band_exact(lo, hi):
+            tmp.append((n_coll, False))
+            if exact_above:
+                cum_above += n_coll
+        elif exact_above:
+            c_lo = counts[lo][0]
+            tmp.append((max(n_coll, c_lo - cum_above), True))
+            exact_above = False
+        else:
+            tmp.append((n_coll, True))
+    band_counts = list(reversed(tmp))
+
+    # ---- stored pairs: top-quota per band, return-desc within band, bands
+    # concatenated desc (bands partition the range, so the whole list is also
+    # globally return-desc) ----
+    band_top = [sink.band_pairs(i) for i in range(nb)]
+    stored: list[tuple[float, int, int]] = []
+    for i in range(nb - 1, -1, -1):
+        stored.extend(band_top[i])
+
+    bands_doc = [
+        {
+            "lo": lo,
+            "hi": hi,
+            "stored": len(band_top[i]),
+            "count": band_counts[i][0],
+            "saturated": band_counts[i][1],
+        }
+        for i, (lo, hi) in enumerate(bands)
+    ]
+
+    # per-preset honesty (compat): presets coincide with band los, so exact band
+    # sums upgrade a saturated pass, and stored pairs / band floors are floors
     counts_by_threshold = []
-    for p in presets:
+    for k, p in enumerate(presets):
         c, s = counts[p]
-        n_stored = sum(1 for ret, _, _ in stored if 100.0 * ret >= p)
+        n_stored = sum(1 for ret, _, _ in stored if round(100.0 * ret, 2) >= p)
+        band_sum = sum(band_counts[j][0] for j in range(k, nb))
+        bands_exact = all(not band_counts[j][1] for j in range(k, nb))
         counts_by_threshold.append(
-            {"threshold": p, "count": max(c, n_stored), "saturated": s}
+            {
+                "threshold": p,
+                "count": max(c, n_stored, band_sum),
+                "saturated": s and not bands_exact,
+            }
         )
 
+    total = counts_by_threshold[0]["count"]
+    total_sat = counts_by_threshold[0]["saturated"]
     truncated = None
     if total_sat or total > len(stored):
         truncated = {
@@ -897,8 +1317,11 @@ def trade_board(league: md.LeagueState) -> dict:
         if ck not in ceil_cache:
             vsums, pkgs = pool.opp_pkgs[opp_name]
             ceil_cache[ck] = _ceiling_from(params, give, vsums, pkgs)
+        # leg=None: build_card recomputes the full legality verdicts — the walk
+        # cache holds booleans only (v3.3.1 memory bound), and only the stored
+        # legs ever reach a card
         card = build_card(
-            league, opp_name, give, get, leg=legal[i], ceiling=ceil_cache[ck]
+            league, opp_name, give, get, ceiling=ceil_cache[ck]
         )
         card["gate"]["verdict"] = "PASS"
         card["id"] = leg_id
@@ -1020,8 +1443,13 @@ def trade_board(league: md.LeagueState) -> dict:
 
     notes = [
         "v3.3 enumerate-then-filter: the board is the legal PAIR space behind your "
-        "target-return dial — every stored pair nets exactly 0 players / 0 picks for "
-        "you, ranked by return on inventory deployed (combined ΔW ÷ Σv you send)",
+        "target-return range (v3.3.1: min/max over the presets) — every stored pair "
+        "nets exactly 0 players / 0 picks for you, ranked by return on inventory "
+        "deployed (combined ΔW ÷ Σv you send)",
+        f"stratified storage (v3.3.1): up to {quota} pairs kept per return band "
+        "(bands derived from the presets), return-desc within band — bands marked "
+        "saturated carry verified-floor counts; their space runs deeper than the "
+        "collection budget",
         "posture is a hard engine constraint (§5 v3.3): BUYERs only receive "
         "players-majority packages, SELLERs picks-majority, NEUTRAL either; "
         "overrides apply first",
@@ -1042,14 +1470,9 @@ def trade_board(league: md.LeagueState) -> dict:
     if truncated:
         notes.insert(
             1,
-            f"storage cap: top {truncated['stored']} pairs by return stored, of "
+            f"storage cap: {truncated['stored']} pairs stored across the bands "
+            f"(top of each band by return), of "
             f"{'at least ' if total_sat else ''}{truncated['total']} clearing the floor",
-        )
-    if not stored_complete:
-        notes.insert(
-            1,
-            "stored pairs are the best found within the enumeration budget — the "
-            "space above the collection cutoff outran a full sweep",
         )
 
     return {
@@ -1057,6 +1480,7 @@ def trade_board(league: md.LeagueState) -> dict:
         "pairs": pairs_docs,
         "presets": presets,
         "counts_by_threshold": counts_by_threshold,
+        "bands": bands_doc,
         "truncated": truncated,
         "recommendations": recommendations,
         "watch": watch,

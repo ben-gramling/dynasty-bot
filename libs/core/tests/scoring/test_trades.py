@@ -195,6 +195,9 @@ def test_trade_board_disabled_after_deadline(snapshot, params):
     assert board["recommendations"] == [] and board["pairs"] == [] and board["watch"] == []
     assert board["truncated"] is None
     assert [e["count"] for e in board["counts_by_threshold"]] == [0] * len(board["presets"])
+    assert [(b["stored"], b["count"], b["saturated"]) for b in board["bands"]] == [
+        (0, 0, False)
+    ] * len(board["presets"])
 
 
 def test_below_noise_floor_note(league):
@@ -353,14 +356,28 @@ def test_posture_is_a_hard_pair_pool_constraint(league, result):
 
 
 def test_board_pairs_dense_and_honest_on_fixture(result, params):
-    """§5 v3.3 on the committed fixture: the pair space is deep — the board
-    stores exactly max_stored_pairs by return, reports the cap via `truncated`,
-    and every counter is a saturated verified floor. The v3.2 starvation
-    (zero pairs) is the pinned regression this replaces."""
+    """§5 v3.3.1 on the committed fixture: the pair space is deep — EVERY band
+    fills to its quota (the v3.3 top-500-overall storage put all 500 pairs at
+    ~31%, unable to serve a range query — the pinned regression this replaces),
+    the cap is reported via `truncated`, and unfinished bands carry saturated
+    verified floors. The [1,2.5) band is fully enumerated (exact) because the
+    low end of the space is owned outright by the below-walk."""
     doc = result["trade_recs"]
-    assert len(doc["pairs"]) == params.max_stored_pairs == 500
+    bands = doc["bands"]
     assert doc["presets"] == [1.0, 2.5, 5.0, 10.0, 20.0]
-    assert doc["pairs"][0]["return_pct"] == 31.72  # fixture pin
+    assert doc["pairs"][0]["return_pct"] == 31.72  # fixture pin: global top
+    assert len(doc["pairs"]) == sum(b["stored"] for b in bands) == 500
+    for b in bands:
+        assert b["stored"] == params.pairs_per_band == 100  # every band at quota
+        assert b["count"] >= b["stored"]
+    assert bands[0]["saturated"] is False  # [1,2.5) fully enumerated
+    assert bands[-1]["saturated"] is True  # [20,∞) runs deeper than any budget
+    # the flagship range query has real inventory: the [5,10) stored top sits
+    # near the band's top edge, not at its floor
+    b510 = next(b for b in bands if b["lo"] == 5.0)
+    in_range = [p for p in doc["pairs"] if 5.0 <= p["return_pct"] < 10.0]
+    assert len(in_range) == b510["stored"] == 100
+    assert in_range[0]["return_pct"] > 9.0
     t = doc["truncated"]
     assert t is not None and t["stored"] == 500
     assert t["total"] >= 500 and t["total_saturated"] is True
@@ -377,6 +394,49 @@ def test_board_pairs_dense_and_honest_on_fixture(result, params):
     for w in doc["watch"]:
         assert "no clean exit" in w["blocker"]
         assert "players" in w["blocker"] and "picks" in w["blocker"]
+
+
+def test_return_bands_and_membership_math():
+    """v3.3.1 range-filter math pinned: bands derive from the presets as
+    half-open [lo, hi) intervals with an open top; membership at the edges is
+    exact. The fixture pair at 20.63% (§10.2 buy + its complement) lives in
+    [20, ∞); the 9.34% ronak leg return lives in [5, 10)."""
+    bands = tr.return_bands((1.0, 2.5, 5.0, 10.0, 20.0))
+    assert bands == [(1.0, 2.5), (2.5, 5.0), (5.0, 10.0), (10.0, 20.0), (20.0, None)]
+    assert tr.band_index(bands, 20.63) == 4  # pinned fixture pair return
+    assert tr.band_index(bands, 9.34) == 2  # pinned fixture leg return
+    assert tr.band_index(bands, 5.0) == 2 and tr.band_index(bands, 4.99) == 1
+    assert tr.band_index(bands, 2.5) == 1 and tr.band_index(bands, 10.0) == 3
+    assert tr.band_index(bands, 20.0) == 4 and tr.band_index(bands, 31.72) == 4
+    assert tr.band_index(bands, 1.0) == 0
+    assert tr.band_index(bands, 0.99) is None  # below the lowest preset: no band
+
+
+def test_stratified_band_storage_invariant(result, params):
+    """v3.3.1 stratification: every stored pair's return sits inside its band,
+    per-band storage is capped at the quota and return-desc within the band,
+    bands concatenate descending (so the whole list reads return-desc), and an
+    unsaturated band stores exactly min(quota, count)."""
+    doc = result["trade_recs"]
+    bands = doc["bands"]
+    edges = [(b["lo"], b["hi"]) for b in bands]
+    by_band: dict[int, list[float]] = {i: [] for i in range(len(bands))}
+    for p in doc["pairs"]:
+        i = tr.band_index(edges, p["return_pct"])
+        assert i is not None
+        by_band[i].append(p["return_pct"])
+    for i, b in enumerate(bands):
+        got = by_band[i]
+        assert len(got) == b["stored"] <= params.pairs_per_band
+        assert got == sorted(got, reverse=True)  # return-desc within band
+        for r in got:
+            assert r >= b["lo"] and (b["hi"] is None or r < b["hi"])
+        assert b["count"] >= b["stored"]
+        if not b["saturated"]:
+            assert b["stored"] == min(params.pairs_per_band, b["count"])
+    rets = [p["return_pct"] for p in doc["pairs"]]
+    assert rets == sorted(rets, reverse=True)  # bands concatenated desc
+    assert len(doc["pairs"]) == sum(b["stored"] for b in bands)
 
 
 def test_counts_by_threshold_consistency(result):
@@ -396,21 +456,57 @@ def test_counts_by_threshold_consistency(result):
         assert e["count"] >= n_stored
 
 
-def test_truncation_honesty_with_tiny_cap(snapshot):
-    """Force truncation with a tiny max_stored_pairs: the board stores exactly
-    that many (top by return, sequential ids) and `truncated` reports the full
-    depth honestly."""
+def test_counts_by_band_consistent_with_thresholds(result):
+    """v3.3.1: presets coincide with band los, so bands ≥ a threshold tile its
+    ≥-space exactly. Every threshold count dominates the sum of its bands'
+    (floor) counts, equality holds when nothing involved is saturated, a
+    saturated threshold implies a saturated band above it, and an exact
+    threshold with exact bands is exactly their sum."""
+    doc = result["trade_recs"]
+    bands = doc["bands"]
+    for e in doc["counts_by_threshold"]:
+        above = [b for b in bands if b["lo"] >= e["threshold"]]
+        assert e["count"] >= sum(b["count"] for b in above)
+        assert e["count"] >= sum(b["stored"] for b in above)
+        if e["saturated"]:
+            assert any(b["saturated"] for b in above)
+        if all(not b["saturated"] for b in above):
+            assert e["saturated"] is False
+            assert e["count"] == sum(b["count"] for b in above)
+
+
+def test_forced_per_band_truncation_honesty(snapshot):
+    """Force per-band truncation with a tiny quota and tiny budgets: every
+    non-empty band stores up to the quota, counts stay verified floors at or
+    above stored, unsaturated bands store exactly min(quota, count), ids stay
+    sequential, ordering stays return-desc, and the compat `truncated` block
+    plus the storage-cap note disclose the depth honestly."""
     from core.scoring import model as md
 
-    small = Params(max_stored_pairs=5, pair_scan_budget=2000, pair_collect_budget=60_000)
+    small = Params(pairs_per_band=2, pair_scan_budget=2000, pair_collect_budget=60_000)
     board = tr.trade_board(md.build_league(snapshot, small))
-    assert len(board["pairs"]) == 5
-    assert [p["id"] for p in board["pairs"]] == ["P1", "P2", "P3", "P4", "P5"]
+    bands = board["bands"]
+    assert any(b["saturated"] for b in bands)  # the fixture space is deep
+    for b in bands:
+        assert b["stored"] <= 2
+        assert b["count"] >= b["stored"]
+        if not b["saturated"]:
+            assert b["stored"] == min(2, b["count"])
+    assert len(board["pairs"]) == sum(b["stored"] for b in bands) > 0
+    assert [p["id"] for p in board["pairs"]] == [
+        f"P{i + 1}" for i in range(len(board["pairs"]))
+    ]
     rets = [p["return_pct"] for p in board["pairs"]]
     assert rets == sorted(rets, reverse=True)
+    edges = [(b["lo"], b["hi"]) for b in bands]
+    for p in board["pairs"]:
+        i = tr.band_index(edges, p["return_pct"])
+        assert i is not None and bands[i]["stored"] > 0
     t = board["truncated"]
-    assert t is not None and t["stored"] == 5 and t["total"] > 5
+    assert t is not None and t["stored"] == len(board["pairs"])
+    assert t["total"] > t["stored"]
     assert any("storage cap" in n for n in board["notes"])
+    assert any("stratified storage" in n for n in board["notes"])
 
 
 def test_count_deltas_track_taxi_and_negate_exactly(result, league):

@@ -127,9 +127,10 @@ def test_pairs_v33_contract(result, params):
     0 players AND 0 picks (plus the carried Δ(active roster) ≤ 0), with honest
     combined ΔW and a return_pct that recomputes exactly from the embedded
     cards; pairs are unique by their asset multisets. The fixture board is
-    dense (500 stored pairs) — the v3.2 zero-pair starvation is retired."""
+    dense (every band at its v3.3.1 quota) — the v3.2 zero-pair starvation is
+    retired."""
     pairs = result["trade_recs"]["pairs"]
-    assert 0 < len(pairs) <= params.max_stored_pairs
+    assert 0 < len(pairs) <= params.pairs_per_band * len(params.return_presets)
     keys = lambda c: {a["key"] for a in c["give"] + c["get"]}
     seen_multisets = set()
     for pair in pairs:

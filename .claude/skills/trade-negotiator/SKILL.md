@@ -15,13 +15,16 @@ Division of labor (spec v3.3, `docs/scoring-system.md`):
   one gate — the league's observed fairness norms (AdjV band w/ 1.00/0.90/0.80
   coefficients, gap ≤ max(500, 20%), ratio ≤ 1.35, legal rosters). Never estimate
   a value from memory; run the tools.
-- **The user supplies the target return (v3.3).** The engine enumerates the
-  full legal pair space (no pre-pairing pruning; W_min retired as a gate — it
-  survives only as a display noise note) and filters by
-  `return = combined ΔW ÷ Σv we send` — the dial presets are 1 / 2.5 / 5 / 10
-  / 20%. In the engine, posture is a HARD pair constraint (BUYERs receive
-  players-majority, SELLERs picks-majority, NEUTRAL either). At this desk the
-  same constraints are qualitative — see the pairs playbook.
+- **The user supplies the target-return RANGE (v3.3.1).** The engine
+  enumerates the full legal pair space (no pre-pairing pruning; W_min retired
+  as a gate — it survives only as a display noise note) and filters by
+  `return = combined ΔW ÷ Σv we send` over a min/max window — presets 1 / 2.5
+  / 5 / 10 / 20% for the min, 2.5 / 5 / 10 / 20 / no-cap for the max. Storage
+  is stratified: the top ~100 pairs per return band ([1,2.5), [2.5,5),
+  [5,10), [10,20), [20,∞)), each band with an honest count (saturated =
+  verified floor). In the engine, posture is a HARD pair constraint (BUYERs
+  receive players-majority, SELLERs picks-majority, NEUTRAL either). At this
+  desk the same constraints are qualitative — see the pairs playbook.
 - **You read the market.** Posture labels (observed trades) + the user's intel
   decide WHO to approach and WHAT shape to offer. Qualitative only: intel and
   posture NEVER change ΔW or the gate — they change what you propose.
@@ -71,13 +74,15 @@ The user will feed you color like: *"trdouglas is hunting draft capital"* ·
 2. **Load the desk view**:
    - `uv run python scripts/score_trade.py teams` — L/F, posture + evidence, FAAB.
    - Active intel: `... get_db()['market-intel'].find({'active': True})` (sort by team).
-   - The nightly board: `trade-recs` doc (v3.3: `pairs` is the stored top of
-     the pair space by `return_pct` — count-neutral buy+sell with embedded
-     cards; `counts_by_threshold` gives honest per-preset depth (`saturated:
-     true` means a verified floor — read it as "≥ N"); `truncated` discloses
-     the storage cap; `recommendations` is unpaired sell/neutral legs —
-     building blocks carrying `net_players`/`net_picks`, pair before
-     executing; `watch` is blocked buys with the exit each needs; `notes`).
+   - The nightly board: `trade-recs` doc (v3.3.1: `pairs` is the stratified
+     stored pair space — count-neutral buy+sell with embedded cards, top of
+     each return band by `return_pct`, bands concatenated descending; `bands`
+     gives per-band inventory {lo, hi, stored, count, saturated} (`saturated:
+     true` means a verified floor — read the count as "≥ N");
+     `counts_by_threshold` keeps ≥-style depth; `truncated` discloses the
+     storage cap; `recommendations` is unpaired sell/neutral legs — building
+     blocks carrying `net_players`/`net_picks`, pair before executing;
+     `watch` is blocked buys with the exit each needs; `notes`).
 3. **Open with a desk brief**: per-team one-liners merging posture (+evidence
    count), active intel, visible holes, pick inventory — then the board's top
    legs and any intel-driven opportunities the board can't see.
@@ -89,12 +94,14 @@ uv run python scripts/score_trade.py teams
 uv run python scripts/score_trade.py list-assets [team]          # exact asset names
 uv run python scripts/score_trade.py score --opponent X \
     --give "A, B" --get "C" [--alternatives] [--hedge] [--json]
-uv run python scripts/score_trade.py pairs --target 5 [--json]   # the v3.3 dial
+uv run python scripts/score_trade.py pairs --min 5 --max 10 [--json]  # the v3.3.1 range
 ```
 
-- `pairs --target R`: computes the full pair space from the store (the same
-  engine code path as the nightly board) and prints counts per preset plus the
-  top pairs clearing R% — each line a buy leg, a sell leg, the pair return.
+- `pairs --min LO --max HI`: computes the pair board from the store (the same
+  engine code path as the nightly run) and prints the band inventory summary,
+  then the stored pairs with return in [LO, HI)% — each line a buy leg, a
+  sell leg, the pair return. Omit `--max` for no cap; `--target N` is the
+  v3.3 alias for `--min N`.
 - `--alternatives`: single-tweak variants, gate-passers ranked by our ΔW — the
   counter-offer generator.
 - `--hedge`: for any non-count-neutral leg, gate-passing legs elsewhere (≤2
@@ -110,12 +117,15 @@ uv run python scripts/score_trade.py pairs --target 5 [--json]   # the v3.3 dial
 
 ## Playbooks
 
-- **"Show me 5% pairs" / "what clears N%?" (the v3.3 target-return dial)** →
-  run `pairs --target 5` (or the user's number; presets 1 / 2.5 / 5 / 10 / 20).
-  Read the counts honestly: `saturated` counters are verified floors — say
-  "at least N", never a point estimate. Then curate, don't just paste: the
-  engine's constraints are HARD in the pair space but QUALITATIVE at this
-  desk —
+- **"Show me trades between 5 and 10 percent" / "show me 5% pairs" / "what
+  clears N%?" (the v3.3.1 target-return range)** → run `pairs --min 5 --max
+  10` (or the user's numbers; min presets 1 / 2.5 / 5 / 10 / 20, max presets
+  2.5 / 5 / 10 / 20 or omitted for no cap; a bare "show me 5% pairs" is
+  `pairs --min 5` — no cap). Read the band inventory honestly: `saturated`
+  bands are verified floors — say "at least N", never a point estimate — and
+  a band whose count exceeds its stored quota runs deeper than what's listed.
+  Then curate, don't just paste: the engine's constraints are HARD in the
+  pair space but QUALITATIVE at this desk —
   - **Intel can promote/demote an effective posture.** The engine only sells
     players to BUYERs and buys from SELLERs (NEUTRAL takes either). If intel
     says a NEUTRAL-labeled team is hunting picks, treat them as a SELLER

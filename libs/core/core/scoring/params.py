@@ -28,12 +28,15 @@ class Params:
     posture_window_days: int = 365
     posture_min_trades: int = 2
 
-    # §5 v3.3 target-return dial + enumerate-then-filter bounds
+    # §5 v3.3 target-return range + enumerate-then-filter bounds
     max_package: int = 3
     give_list_protect_top: int = 2  # cornerstones never enter the give-list
-    return_floor: float = 0.01  # lowest dial preset: every leg must return ≥ 1% on Σv sent
-    return_presets: tuple[float, ...] = (1.0, 2.5, 5.0, 10.0, 20.0)  # dial presets, percent
-    max_stored_pairs: int = 500  # stored pair cap; overflow reported via `truncated`
+    return_floor: float = 0.01  # lowest range preset: every leg must return ≥ 1% on Σv sent
+    return_presets: tuple[float, ...] = (1.0, 2.5, 5.0, 10.0, 20.0)  # range presets, percent
+    # v3.3.1 stratified storage: top-N pairs kept PER return band ([1,2.5), [2.5,5),
+    # [5,10), [10,20), [20,∞) percent — bands derived from return_presets), so a
+    # min/max range query always has inventory; per-band honesty via `bands`
+    pairs_per_band: int = 100
     variants_per_signature: int = 2  # in-band gets kept per (opponent, give, count-signature), ΔW desc
     pair_scan_budget: int = 40_000  # pair visits per COUNTING pass; counters saturate honestly
     pair_collect_budget: int = 2_000_000  # pair visits for the stored-pair collection walk

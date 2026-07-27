@@ -154,6 +154,16 @@ def collect(dry_run: bool = False) -> dict:
             " (truncated: %s)" % outputs["trade_recs"]["truncated"]
             if outputs["trade_recs"]["truncated"] else "",
         )
+        # §5 v3.3.1 stratified storage visibility: stored/count per return band
+        # (saturated counts are verified floors, marked with a trailing +)
+        logger.info(
+            "trade pairs by band (stored/count): %s",
+            {
+                (f"[{b['lo']:g},{b['hi']:g})" if b["hi"] is not None else f"[{b['lo']:g},inf)"):
+                f"{b['stored']}/{b['count']}{'+' if b['saturated'] else ''}"
+                for b in outputs["trade_recs"]["bands"]
+            },
+        )
 
         if not dry_run:
             store.upsert_league(league)

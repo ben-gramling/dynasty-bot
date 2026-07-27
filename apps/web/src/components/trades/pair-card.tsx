@@ -28,7 +28,7 @@ export function PairCard({ pair }: { pair: TradePair }) {
         <span className="ml-auto flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <span
             className="num text-[13px] font-medium text-sky-deep"
-            title="Return on inventory deployed (§5 v3.3): combined ΔW(you) ÷ Σv of every asset you send across both legs — the dial's ranking metric"
+            title="Return on inventory deployed (§5 v3.3): combined ΔW(you) ÷ Σv of every asset you send across both legs — the range filter's ranking metric"
           >
             {fmtPct(pair.return_pct, 1)} return
           </span>
