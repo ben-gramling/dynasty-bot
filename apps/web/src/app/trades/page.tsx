@@ -2,9 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import type { LeagueTableDoc, TradeRecsDoc } from "@/lib/queries";
 import { getLeagueTable, getTradeRecs } from "@/lib/queries";
-import { fmtDateTime, fmtSigned, fmtValue } from "@/lib/format";
+import { fmtDateTime, fmtValue } from "@/lib/format";
 import { PairCard } from "@/components/trades/pair-card";
-import { TradeCard } from "@/components/trades/trade-card";
 import { marketStrip } from "@/components/trades/derive";
 
 export const metadata: Metadata = {
@@ -12,11 +11,11 @@ export const metadata: Metadata = {
 };
 
 /**
- * Trades tab (scoring-system.md v3.2): the count-neutral hedged PAIRS first
- * (the §5 v3.2 recommendation unit — exactly 0 players / 0 picks net for our
- * side; a buy never goes out without its exit), then the unpaired legs as
- * labeled building blocks with their count deltas, the watch list of blocked
- * buys, and a pointer into the League tab's market map (§7 targeting console).
+ * Trades tab (scoring-system.md v3.2): count-neutral hedged PAIRS only —
+ * the §5 v3.2 recommendation unit (exactly 0 players / 0 picks net for our
+ * side; a buy never goes out without its exit) — plus the market-map strip.
+ * Unpaired legs and blocked buys stay in Mongo for the trade-negotiator desk
+ * but do not render here (user: nothing without an associated hedge).
  * Reads Mongo only — every number is the engine's, never recomputed here.
  */
 export default async function TradesPage() {
@@ -55,7 +54,6 @@ export default async function TradesPage() {
     );
   }
 
-  const recs = doc.recommendations;
   const strip = marketStrip(league?.rows ?? [], doc.meta.my_team);
 
   return (
@@ -93,8 +91,8 @@ export default async function TradesPage() {
               No count-neutral pair clears today — no buy on the board has an
               exit that offsets it to exactly 0 players / 0 picks inside the
               fairness band above the {fmtValue(doc.meta.w_min)} noise floor.
-              Holding is the move; the building blocks below change your
-              counts and only execute paired.
+              Holding is the move. Candidate legs waiting for a complement
+              are visible to the trade-negotiator desk, not listed here.
             </p>
           </div>
         )}
@@ -106,55 +104,6 @@ export default async function TradesPage() {
           </ul>
         ) : null}
       </section>
-
-      <section aria-labelledby="sell-legs">
-        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-          <h2 id="sell-legs" className="display text-[22px]">
-            Unpaired legs — building blocks (change your counts; pair before
-            executing)
-          </h2>
-          <p className="text-[11.5px] text-ink-muted">
-            Sell and neutral legs with their player/pick deltas — not
-            executable recommendations alone (§5 v3.2); never a standalone buy
-          </p>
-        </div>
-        {recs.length ? (
-          <div className="mt-3 space-y-3">
-            {recs.map((rec) => (
-              <TradeCard key={rec.id} rec={rec} />
-            ))}
-          </div>
-        ) : (
-          <div className="card mt-3">
-            <p className="text-ink-muted">
-              No unpaired legs today — the pairs above carry the whole board.
-            </p>
-          </div>
-        )}
-      </section>
-
-      {doc.watch.length ? (
-        <section aria-labelledby="watch" className="card">
-          <h2 id="watch" className="display text-[17px]">
-            Watch — buys with no clean exit
-          </h2>
-          <p className="mt-1 text-[12.5px] text-ink-muted">
-            Worth wanting, not worth proposing (§5 v3.2): a buy without a
-            count-complementary exit never goes out — each blocker names the
-            sell it needs.
-          </p>
-          <ul className="mt-2 space-y-1 text-[12.5px]">
-            {doc.watch.map((w) => (
-              <li key={`${w.counterparty}-${w.get.join("+")}`}>
-                <span className="font-medium">{w.counterparty}</span>:{" "}
-                {w.get.join(", ")} for {w.give.join(", ")}{" "}
-                <span className="num">({fmtSigned(w.dW)})</span>{" "}
-                <span className="text-ink-muted">— {w.blocker}</span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
 
       <section aria-labelledby="market-map" className="card">
         <h2 id="market-map" className="display text-[17px]">
