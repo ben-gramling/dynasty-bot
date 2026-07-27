@@ -157,6 +157,42 @@ def alternatives(
     }
 
 
+def find_hedges(
+    league, opp_name: str, give: list, get: list, needed: int
+) -> list[dict]:
+    """Gate-passing sell-legs against OTHER counterparties that restore roster
+    neutrality for a +needed buy leg (§5: every buy pairs with a sell). Assets in
+    the proposal are excluded; the proposal's counterparty is excluded (unrelated
+    hedge parties leak less)."""
+    me_t = league.teams[league.me]
+    used = {a.key for a in give} | {a.key for a in get}
+    my_assets = [a for a in tr.give_list(league, me_t) if a.key not in used]
+    # a hedge is a clean exit, not a blockbuster: at most 2 assets out
+    my_pkgs = [p for p in tr._packages(league, my_assets) if len(p.assets) <= 2]
+    cands: list[tuple] = []
+    for opp in league.opponents:
+        if opp == opp_name:
+            continue
+        cands.extend(tr._enumerate_opponent(league, my_pkgs, opp))
+    cands.sort(key=lambda c: (-c[0], c[1]))
+    out: list[dict] = []
+    seen_core: set[tuple] = set()
+    for _dw, _shape, opp, g, t in cands[:80]:
+        core = (opp, max(g.assets, key=lambda a: a.v).key)
+        if core in seen_core:
+            continue
+        card = tr.propose(league, opp, list(g.assets), list(t.assets))
+        if not card["gate"]["verdict"].startswith("PASS"):
+            continue
+        if card["net_roster"]["me"] > -needed:
+            continue
+        seen_core.add(core)
+        out.append(card)
+        if len(out) >= 3:
+            break
+    return out
+
+
 def fmt_asset(a: dict) -> str:
     tag = f"{a['name']} ({a['v']}"
     if a.get("concrete") is not None:
@@ -209,6 +245,11 @@ def main() -> None:
     sc.add_argument("--give", required=True, help="comma-separated asset names you send")
     sc.add_argument("--get", required=True, help="comma-separated asset names you receive")
     sc.add_argument("--alternatives", action="store_true")
+    sc.add_argument(
+        "--hedge",
+        action="store_true",
+        help="for a buy leg: find gate-passing sell-legs elsewhere that restore roster neutrality",
+    )
     sc.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
@@ -262,15 +303,41 @@ def main() -> None:
 
     card = tr.propose(league, opp_name, give, get)
     alts = alternatives(league, opp_name, give, get, card) if args.alternatives else None
+    hedges = None
+    if args.hedge:
+        needed = card["net_roster"]["me"]
+        if needed > 0:
+            hedges = find_hedges(league, opp_name, give, get, needed)
+        else:
+            hedges = []
 
     if args.json:
         out = {"proposal": card}
         if alts:
             out["alternatives"] = alts
+        if hedges is not None:
+            out["hedges"] = hedges
         print(json.dumps(out, indent=1, default=str))
         return
 
     print(fmt_card(card))
+    if hedges is not None:
+        needed = card["net_roster"]["me"]
+        if needed <= 0:
+            print("\nHedge: not needed — this leg is roster-neutral or a net sell.")
+        elif not hedges:
+            print(f"\nHedge: no gate-passing sell-leg found that frees {needed} spot(s) — "
+                  "this buy has no clean exit today; treat it as blocked.")
+        else:
+            print(f"\nHedges (sell-legs elsewhere freeing ≥{needed} spot(s); pair nets roster-neutral):")
+            for h in hedges:
+                pair_dw = card["dW"]["me"] + h["dW"]["me"]
+                print()
+                print(fmt_card(
+                    h,
+                    header=f"Hedge — sell to {h['counterparty']}: pair ΔW {pair_dw:+.0f} "
+                    f"(this leg {h['dW']['me']:+.0f}) · execute this sell FIRST",
+                ))
     if alts:
         print(f"\nAlternatives ({alts['variants_scored']} single-tweak variants scored; "
               f"gate-passers ranked by your ΔW):")
