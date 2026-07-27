@@ -1,10 +1,11 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * Trades tab against the live seeded DB (scoring v3.1): the hedged-pair
- * section renders FIRST (embedded buy+sell leg cards with the combined ΔW),
- * the labeled sell-side section follows with no standalone buy card anywhere,
- * and the market map points into the League tab.
+ * Trades tab against the live seeded DB (scoring v3.2): the count-neutral
+ * hedged-pair section renders FIRST (embedded buy+sell leg cards, combined ΔW,
+ * the "0 players / 0 picks net" neutrality badge), the unpaired-legs section
+ * follows as labeled building blocks showing per-leg count deltas with no
+ * standalone buy card anywhere, and the market map points into the League tab.
  */
 
 test.beforeEach(async ({ page }) => {
@@ -23,13 +24,19 @@ test("recommended trades (hedged pairs) render first with combined ΔW", async (
   const section = page.locator('section[aria-labelledby="pairs"]');
   const pairCards = section.locator("article", { hasText: "pair ΔW" });
   if ((await pairCards.count()) === 0) {
-    // No pairs in today's data — the section must say so honestly.
-    await expect(section.getByText(/No hedged pair clears today/)).toBeVisible();
+    // No count-neutral pair in today's data — the section must say so honestly
+    // (§5 v3.2 strict: scarcity is correct, never relaxed).
+    await expect(
+      section.getByText(/No count-neutral pair clears today/),
+    ).toBeVisible();
     return;
   }
   const first = pairCards.first();
-  // Combined ΔW chip, net-roster line, and BOTH embedded leg cards.
+  // Combined ΔW chip, the v3.2 neutrality badge, and BOTH embedded leg cards.
   await expect(first.getByText("pair ΔW")).toBeVisible();
+  await expect(
+    first.getByText("0 players / 0 picks net", { exact: true }),
+  ).toBeVisible();
   await expect(first.getByText(/net roster/)).toBeVisible();
   await expect(first.getByText("buy leg", { exact: true })).toBeVisible();
   await expect(first.getByText("sell leg", { exact: true })).toBeVisible();
@@ -51,22 +58,31 @@ test("leg cards carry the v3.1 band ceiling and posture/sequencing notes", async
   await expect(anyCard.getByText(/Sequencing:/)).toBeVisible();
 });
 
-test("sell-side section is labeled and carries no standalone buy card", async ({
+test("unpaired legs retitle as building blocks with count deltas, no standalone buy", async ({
   page,
 }) => {
   await expect(
-    page.getByRole("heading", { name: "Sell-side legs (no hedge needed)" }),
+    page.getByRole("heading", {
+      name: /Unpaired legs — building blocks \(change your counts; pair before executing\)/,
+    }),
   ).toBeVisible();
   const section = page.locator('section[aria-labelledby="sell-legs"]');
   // Never a standalone buy: no buy-leg badge outside the pairs section.
   expect(await section.getByText("buy leg", { exact: true }).count()).toBe(0);
   const cards = section.locator("article", { hasText: "You send" });
   if ((await cards.count()) === 0) {
-    await expect(section.getByText(/No standalone sell clears today/)).toBeVisible();
+    await expect(section.getByText(/No unpaired legs today/)).toBeVisible();
     return;
   }
   const first = cards.first();
   await expect(first.getByText("ΔW you")).toBeVisible();
+  // §5 v3.2: every row shows its player/pick count deltas (signed, e.g. "+0
+  // players / +1 picks" — fmtSigned uses the true minus sign for negatives).
+  // The pattern can also appear in the engine's building-block sequencing
+  // note, so assert the first match (the header chip).
+  await expect(
+    first.getByText(/[+−]\d+ players \/ [+−]\d+ picks/).first(),
+  ).toBeVisible();
   const themLine = first.locator('[title*="zero-sum"]');
   await expect(themLine).toBeVisible();
   await expect(themLine).toHaveText(/them/);

@@ -67,7 +67,15 @@ def test_worked_example_1_sell_leg(league):
     assert g["verdict"] == "PASS"
     assert card["leg_type"] == "sell"
     assert card["net_roster"] == {"me": -2, "them": 2}
-    assert card["sequencing"] == "standalone sell-leg — no pairing needed"
+    # §5 v3.2 count deltas: 2 players out, 2 picks in — a building block, not
+    # count-neutral alone
+    assert card["net_players"] == {"me": -2, "them": 2}
+    assert card["net_picks"] == {"me": 2, "them": -2}
+    assert card["standalone"] is False
+    assert card["sequencing"] == (
+        "building block — nets -2 players / +2 picks for you; "
+        "not count-neutral alone — pair before executing"
+    )
     # aimed at a visible hole: jaketoppen's WR room ranks 10th of 12
     assert card["holes"] == [{"pos": "WR", "their_rank": 10}]
     # anchor-ask note: open 8% above the target package
@@ -92,6 +100,10 @@ def test_worked_example_2_buy_pair_shape(league):
     assert card["posture"]["shape"] == "picks" and card["posture"]["fit"] is True
     # buy at the cap: sequencing points at the paired sell (§5)
     assert "sell-leg first" in card["sequencing"]
+    # §5 v3.2: +1 player / −1 pick — needs a −1 player / +1 pick exit to execute
+    assert card["net_players"] == {"me": 1, "them": -1}
+    assert card["net_picks"] == {"me": -1, "them": 1}
+    assert card["standalone"] is False
 
 
 def test_worked_example_3_fleece_rejected(league):
@@ -272,6 +284,123 @@ def test_ceiling_is_band_edge_info(result, league, params):
         assert best is not None, card["id"]
         assert round(best[0]) == card["ceiling"]["value"], card["id"]
         assert best[1]["band_ok"] and best[1]["ratio_ok"], card["id"]
+
+
+# ------------------------------------------------- §5 v3.2 strict count-neutrality
+
+
+def _with_build_fields(card: dict, tag: str) -> dict:
+    """Give a propose()-built card the _keys/_core/_sort fields trade_board
+    attaches before pair selection, so _select_pairs accepts it verbatim."""
+    card["_keys"] = {a["key"] for a in card["give"] + card["get"]}
+    card["_core"] = (card["counterparty"], tag)
+    card["_sort"] = (0, -card["dW"]["me"], card["counterparty"], tag)
+    return card
+
+
+def _v32_buy(league) -> dict:
+    """§10.2 buy from the fixtures: Jauan Jennings for my 2028 3rd (+1P / −1pk)."""
+    return _with_build_fields(
+        tr.propose_by_names(league, "millj", ["2028 R3 (own)"], ["Jauan Jennings"]),
+        "buy",
+    )
+
+
+def test_pair_count_deltas_both_currencies(league):
+    buy = _v32_buy(league)
+    sell = tr.propose_by_names(league, "cmgaither43", ["Sam LaPorta"], ["2026 1.04"])
+    assert buy["gate"]["verdict"] == "PASS" and sell["gate"]["verdict"] == "PASS"
+    assert (buy["net_players"]["me"], buy["net_picks"]["me"]) == (1, -1)
+    assert (sell["net_players"]["me"], sell["net_picks"]["me"]) == (-1, 1)
+    assert tr.pair_count_deltas(buy, sell) == (0, 0)
+
+
+def test_select_pairs_keeps_only_exact_count_neutral(league):
+    """§5 v3.2 contract on fixture-built gate-PASS cards: the complementary
+    sell (−1P/+1pk) pairs with the +1P/−1pk buy; the pick-inflating sell does not."""
+    buy = _v32_buy(league)
+    sell_ok = _with_build_fields(
+        tr.propose_by_names(league, "cmgaither43", ["Sam LaPorta"], ["2026 1.04"]),
+        "sell-ok",
+    )
+    kept, cores = tr._select_pairs([buy], [sell_ok], max_pairs=8)
+    assert kept == [(buy, sell_ok)]
+    assert buy["_core"] in cores
+    assert tr.pair_count_deltas(buy, sell_ok) == (0, 0)
+
+
+def test_pinned_negative_player_neutral_pick_inflating_pair(league):
+    """v3.2 pinned must-never-pair: a gate-PASS sell of 1 player for 2 picks
+    (−1P/+2pk) is player-neutral against the §10.2 buy but nets +1 pick — the
+    pair must NOT be emitted (picks count as picks regardless of year)."""
+    buy = _v32_buy(league)
+    sell_inflating = _with_build_fields(
+        tr.propose_by_names(
+            league, "cmgaither43", ["Kenneth Walker III"], ["2026 1.04", "2028 R4 (own)"]
+        ),
+        "sell-picks",
+    )
+    # both legs individually clear the gate — only the combined count fails
+    assert sell_inflating["gate"]["verdict"] == "PASS"
+    assert (sell_inflating["net_players"]["me"], sell_inflating["net_picks"]["me"]) == (-1, 2)
+    assert tr.pair_count_deltas(buy, sell_inflating) == (0, 1)  # player-neutral, +1 pick
+    kept, cores = tr._select_pairs([buy], [sell_inflating], max_pairs=8)
+    assert kept == [] and cores == set()  # v3.1 (net roster ≤ 0) would have paired it
+
+
+def test_board_pairs_scarce_but_honest_on_fixture(result):
+    """§5 v3.2 strict: on the committed fixture no emitted sell-leg exactly
+    complements any buy-leg on both currencies — the board honestly shows zero
+    pairs rather than relaxing the constraint; every unpaired leg is a labeled
+    building block and every blocked buy names the exit it needs."""
+    doc = result["trade_recs"]
+    assert doc["pairs"] == []
+    for pair in doc["pairs"]:  # live boards: every pair is exactly (0, 0)
+        assert tr.pair_count_deltas(pair["buy"], pair["sell"]) == (0, 0)
+    assert doc["recommendations"], "building blocks still list"
+    for card in doc["recommendations"]:
+        assert card["leg_type"] in ("sell", "neutral")
+        if card["standalone"]:
+            assert (card["net_players"]["me"], card["net_picks"]["me"]) == (0, 0)
+            assert "count-neutral" in card["sequencing"]
+        else:
+            assert "pair before executing" in card["sequencing"]
+    for w in doc["watch"]:
+        assert "no clean exit" in w["blocker"]
+        assert "players" in w["blocker"] and "picks" in w["blocker"]
+
+
+def test_count_deltas_track_taxi_and_negate_exactly(result, league):
+    """§5 v3.2: net_players/net_picks are asset-count arithmetic on the card
+    itself (players wherever they land — taxi-routed arrivals included; picks
+    regardless of year) and exactly negate across sides."""
+    from .conftest import board_legs
+
+    for card in board_legs(result["trade_recs"]):
+        np_me = sum(1 for a in card["get"] if a["type"] == "player") - sum(
+            1 for a in card["give"] if a["type"] == "player"
+        )
+        nk_me = sum(1 for a in card["get"] if a["type"] == "pick") - sum(
+            1 for a in card["give"] if a["type"] == "pick"
+        )
+        assert card["net_players"] == {"me": np_me, "them": -np_me}
+        assert card["net_picks"] == {"me": nk_me, "them": -nk_me}
+        assert card["standalone"] == (np_me == 0 and nk_me == 0)
+        assert card["leg_type"] == (
+            "buy" if np_me > 0 else "sell" if np_me < 0 else "neutral"
+        )
+    # taxi routing never hides a count: sending my taxi-stashed Arroyo is −1
+    # player for me / +1 for them even though neither active roster changes
+    my_assets = tr.team_assets(league, league.teams[league.me])
+    jake_assets = tr.team_assets(league, league.teams["jaketoppen"])
+    card = tr.propose(
+        league, "jaketoppen", [my_assets["Elijah Arroyo"]], [jake_assets["2028 R4 (own)"]]
+    )
+    assert card["taxi_stashed"]["them"] == ["Elijah Arroyo"]
+    assert card["net_roster"] == {"me": 0, "them": 0}
+    assert card["net_players"] == {"me": -1, "them": 1}
+    assert card["net_picks"] == {"me": 1, "them": -1}
+    assert card["leg_type"] == "sell"
 
 
 def test_unvalued_flagged_in_propose(league):

@@ -143,7 +143,20 @@ export interface TradeRec {
   posture: TradePosture;
   /** Their league rank at each position I send — "aim at visible holes". */
   holes: { pos: string; their_rank: number }[];
+  /** Δ(active roster) — sequencing only; taxi-routed arrivals excluded. */
   net_roster: { me: number; them: number };
+  /**
+   * §5 v3.2 count delta: players received − sent, counted wherever they land
+   * (active or taxi-routed). Exact negation across sides.
+   */
+  net_players: { me: number; them: number };
+  /** §5 v3.2 count delta: picks received − sent, regardless of year. */
+  net_picks: { me: number; them: number };
+  /**
+   * True iff this leg alone nets 0 players AND 0 picks for me — executable
+   * without pairing. Everything else is a building block (§5 v3.2).
+   */
+  standalone: boolean;
   sequencing: string;
   taxi_stashed: { me: string[]; them: string[] };
   anchor_ask: { pct: number; ask: number; note: string };
@@ -157,20 +170,27 @@ export interface TradeRec {
 }
 
 /**
- * §5 v3.1 hedged pair — the PRIMARY recommendation unit: a buy side and a sell
- * side (full embedded cards) sharing no assets, netting Δ(roster) ≤ 0.
+ * §5 v3.2 count-neutral hedged pair — the PRIMARY recommendation unit: a buy
+ * side and a sell side (full embedded cards) sharing no assets, netting for my
+ * side EXACTLY 0 players AND 0 picks (players count wherever they land; picks
+ * regardless of year).
  */
 export interface TradePair {
   id: string;
   buy: TradeRec;
   sell: TradeRec;
   dW_combined: number;
+  /** Combined Δ(active roster) — sequencing context only. */
   net_roster: number;
+  /** Combined Δ(player count) for my side — exactly 0 by construction. */
+  net_players: number;
+  /** Combined Δ(pick count) for my side — exactly 0 by construction. */
+  net_picks: number;
   fit_summary: string;
   sequencing: string;
 }
 
-/** Unpaired buy — never a recommendation (§5 v3.1); one-line blocker only. */
+/** Unpaired buy — never a recommendation (§5 v3.2); one-line blocker only. */
 export interface WatchEntry {
   counterparty: string;
   give: string[];
@@ -183,9 +203,12 @@ export interface TradeRecsDoc {
   computed_at: string;
   meta: ScoringMeta;
   disabled: boolean;
-  /** Primary: hedged pairs, ranked posture-fit first then combined ΔW. */
+  /** Primary: count-neutral hedged pairs, ranked posture-fit first then combined ΔW. */
   pairs: TradePair[];
-  /** Secondary: standalone sell-side legs (plus neutral legs) — never buys. */
+  /**
+   * Secondary: unpaired sell/neutral legs — building blocks with their count
+   * deltas, never executable recommendations alone (§5 v3.2); never buys.
+   */
   recommendations: TradeRec[];
   watch: WatchEntry[];
   notes: string[];

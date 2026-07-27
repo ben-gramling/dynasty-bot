@@ -27,6 +27,13 @@ export function TradeCard({ rec, compact = false }: { rec: TradeRec; compact?: b
           <span className="text-ink-muted">With</span> {rec.counterparty}
         </h3>
         <LegBadge rec={rec} />
+        <span
+          className="num text-[11px] text-ink-muted"
+          title="Your count deltas (§5 v3.2): players count wherever they land — active or taxi; picks count as picks regardless of year"
+        >
+          {fmtSigned(rec.net_players.me)} players / {fmtSigned(rec.net_picks.me)}{" "}
+          picks
+        </span>
         <span className="num text-[11px] text-ink-muted">{rec.id}</span>
         <span className="ml-auto flex flex-wrap items-baseline gap-x-2 gap-y-1">
           <ValueChip label="ΔW you" value={rec.dW.me} emphasis />
@@ -126,10 +133,10 @@ function LegBadge({ rec }: { rec: TradeRec }) {
       className={`rounded border bg-surface px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] ${tone}`}
       title={
         rec.leg_type === "buy"
-          ? "Adds a body — pairs with a sell-leg for roster neutrality (§5)"
+          ? "Adds player(s) — executes only inside a pair netting 0 players / 0 picks (§5 v3.2)"
           : rec.leg_type === "sell"
-            ? "Sheds a body — needs no pairing (§5)"
-            : "Bodies in = bodies out — order free (§5)"
+            ? "Sheds player(s) — a building block; pair before executing (§5 v3.2)"
+            : "Players in = players out — check the pick delta; only 0 players / 0 picks executes alone (§5 v3.2)"
       }
     >
       {legLabel(rec)}

@@ -1,5 +1,6 @@
 """§2/§3/§5 trades: ΔW = Σv(in) − Σv(out) at face KTC, the fairness gate,
-posture-shaped ranking, roster-neutral pairing.
+posture-shaped ranking, fully count-neutral pairing (§5 v3.2: a recommended
+pair nets exactly 0 players AND 0 picks for my side).
 
 The scoring path is pure face-value arithmetic — this module imports NOTHING
 from the lineup solver (§11.2; enforced by an import-graph test). Roster
@@ -96,6 +97,11 @@ class Package:
     @property
     def keys(self) -> tuple[str, ...]:
         return tuple(sorted(a.key for a in self.assets))
+
+    @property
+    def n_picks(self) -> int:
+        """Picks count as picks regardless of year (§5 v3.2)."""
+        return len(self.assets) - self.n_players
 
 
 def package_of(league: md.LeagueState, assets: Sequence[Asset]) -> Package:
@@ -305,7 +311,13 @@ def build_card(
     shape = offer_shape(give)
     fit = _shape_rank(shape, posture["label"]) == 0
     net_me = verdicts["me"]["net_roster"]
-    leg_type = "buy" if net_me > 0 else "sell" if net_me < 0 else "neutral"
+    # §5 v3.2 count deltas, my side: players count wherever they land (active or
+    # taxi-routed); picks count as picks regardless of year. Counts are conserved,
+    # so "them" is the exact negation on both currencies.
+    np_me = get.n_players - give.n_players
+    nk_me = get.n_picks - give.n_picks
+    standalone = np_me == 0 and nk_me == 0
+    leg_type = "buy" if np_me > 0 else "sell" if np_me < 0 else "neutral"
     if leg_type == "buy":
         if verdicts["me"]["overflow"] > 0:
             sequencing = (
@@ -314,10 +326,13 @@ def build_card(
             )
         else:
             sequencing = "roster space available: buy may execute before its paired sell"
-    elif leg_type == "sell":
-        sequencing = "standalone sell-leg — no pairing needed"
+    elif standalone:
+        sequencing = "fully count-neutral (0 players / 0 picks net) — executable alone, order free"
     else:
-        sequencing = "roster-neutral leg — order free"
+        sequencing = (
+            f"building block — nets {np_me:+d} players / {nk_me:+d} picks for you; "
+            "not count-neutral alone — pair before executing"
+        )
     unvalued = sorted(
         a.name for pkg in (give, get) for a in pkg.assets if a.unvalued
     )
@@ -337,6 +352,9 @@ def build_card(
         },
         "holes": _holes(league, opp_name, give),
         "net_roster": {"me": net_me, "them": verdicts["them"]["net_roster"]},
+        "net_players": {"me": np_me, "them": -np_me},
+        "net_picks": {"me": nk_me, "them": -nk_me},
+        "standalone": standalone,
         "leg_type": leg_type,
         "sequencing": sequencing,
         "taxi_stashed": {
@@ -499,11 +517,65 @@ def _enumerate_opponent(
     return out
 
 
+def pair_count_deltas(buy_card: dict, sell_card: dict) -> tuple[int, int]:
+    """Combined (Δplayers, Δpicks) for MY side across a candidate pair.
+    §5 v3.2 strict: a recommended pair requires exactly (0, 0) — the same number
+    of players and picks after execution as before."""
+    return (
+        buy_card["net_players"]["me"] + sell_card["net_players"]["me"],
+        buy_card["net_picks"]["me"] + sell_card["net_picks"]["me"],
+    )
+
+
+def _select_pairs(
+    buys: list[dict], sells: list[dict], max_pairs: int
+) -> tuple[list[tuple[dict, dict]], set[tuple]]:
+    """§5 v3.2 pair selection over emitted gate-PASS legs (cards still carrying
+    their _keys/_core/_sort build fields): asset-disjoint buy × sell combinations
+    netting EXACTLY 0 players AND 0 picks for my side. Ranking unchanged from
+    v3.1 — posture-fit count desc, then combined ΔW desc; different
+    counterparties preferred (same-counterparty only when that buy has no other
+    exit); each buy/sell core used at most once. Returns (kept pairs, paired buy
+    cores) — the watch list skips cores that found an exit."""
+    pair_cands: list[tuple[bool, int, float, dict, dict]] = []
+    diff_cp_buys: set[int] = set()
+    for b in buys:
+        for s in sells:
+            if b["_keys"] & s["_keys"]:
+                continue
+            if pair_count_deltas(b, s) != (0, 0):
+                continue
+            fits = int(b["posture"]["fit"]) + int(s["posture"]["fit"])
+            dwc = round(b["dW"]["me"] + s["dW"]["me"], 1)
+            same_cp = b["counterparty"] == s["counterparty"]
+            if not same_cp:
+                diff_cp_buys.add(id(b))
+            pair_cands.append((same_cp, fits, dwc, b, s))
+    kept_pairs: list[tuple[dict, dict]] = []
+    used_buy_cores: set[tuple] = set()
+    used_sell_cores: set[tuple] = set()
+    for same_cp, fits, dwc, b, s in sorted(
+        pair_cands, key=lambda pc: (-pc[1], -pc[2], pc[3]["_sort"], pc[4]["_sort"])
+    ):
+        if same_cp and id(b) in diff_cp_buys:
+            continue  # a different-counterparty exit exists — prefer it
+        if b["_core"] in used_buy_cores or s["_core"] in used_sell_cores:
+            continue  # dedup by buy-core / sell-core
+        used_buy_cores.add(b["_core"])
+        used_sell_cores.add(s["_core"])
+        kept_pairs.append((b, s))
+        if len(kept_pairs) >= max_pairs:
+            break
+    return kept_pairs, used_buy_cores
+
+
 def trade_board(league: md.LeagueState) -> dict:
-    """§5 v3.1: the recommendation unit is the hedged PAIR (buy side + sell side,
-    embedded full cards). `recommendations` is the labeled secondary list of
-    sell-side legs (plus neutral legs) — standalone buys never surface; unpaired
-    buys land on the `watch` list with their blocker."""
+    """§5 v3.2: the recommendation unit is the fully count-neutral PAIR (buy side
+    + sell side, embedded full cards) netting exactly 0 players AND 0 picks for
+    my side. `recommendations` is the labeled secondary list of sell/neutral legs
+    — building blocks with their count deltas, not executable recommendations;
+    standalone buys never surface; unpaired buys land on the `watch` list with
+    their blocker."""
     params = league.params
     if not league.offseason and league.snapshot.week > params.trade_deadline_week:
         return {
@@ -535,8 +607,8 @@ def trade_board(league: md.LeagueState) -> dict:
     seen_cores: dict[tuple[str, str, str], int] = {}
     budget = params.legality_budget
     # per-side quotas: the pair board needs BOTH buy-legs and sell-legs even when
-    # the fit-first ordering front-loads one side (predicted by net bodies; the
-    # emitted card's actual leg_type fills the quota)
+    # the fit-first ordering front-loads one side (predicted by net player count,
+    # which since v3.2 IS the leg_type sign; the emitted card fills the quota)
     want_buy = 2 * params.max_pairs
     want_sell = params.top_league_wide + params.max_pairs
     n_buy = n_sell = 0
@@ -579,37 +651,10 @@ def trade_board(league: md.LeagueState) -> dict:
     sells = [c for c in cards if c["leg_type"] == "sell"]
     neutrals = [c for c in cards if c["leg_type"] == "neutral"]
 
-    # PAIRS (§5 v3.1): buy-leg × sell-leg, no shared assets, combined net roster
-    # ≤ 0; different counterparties required unless a buy has no other exit
-    pair_cands: list[tuple[int, float, tuple, tuple, dict, dict]] = []
-    diff_cp_buys: set[int] = set()
-    for b in buys:
-        for s in sells:
-            if b["_keys"] & s["_keys"]:
-                continue
-            if b["net_roster"]["me"] + s["net_roster"]["me"] > 0:
-                continue
-            fits = int(b["posture"]["fit"]) + int(s["posture"]["fit"])
-            dwc = round(b["dW"]["me"] + s["dW"]["me"], 1)
-            same_cp = b["counterparty"] == s["counterparty"]
-            if not same_cp:
-                diff_cp_buys.add(id(b))
-            pair_cands.append((same_cp, fits, dwc, b, s))
-    kept_pairs: list[tuple[dict, dict]] = []
-    used_buy_cores: set[tuple] = set()
-    used_sell_cores: set[tuple] = set()
-    for same_cp, fits, dwc, b, s in sorted(
-        pair_cands, key=lambda pc: (-pc[1], -pc[2], pc[3]["_sort"], pc[4]["_sort"])
-    ):
-        if same_cp and id(b) in diff_cp_buys:
-            continue  # a different-counterparty exit exists — prefer it
-        if b["_core"] in used_buy_cores or s["_core"] in used_sell_cores:
-            continue  # dedup by buy-core / sell-core
-        used_buy_cores.add(b["_core"])
-        used_sell_cores.add(s["_core"])
-        kept_pairs.append((b, s))
-        if len(kept_pairs) >= params.max_pairs:
-            break
+    # PAIRS (§5 v3.2, strict): buy-leg × sell-leg, no shared assets, combined
+    # counts exactly Δ(players) = 0 AND Δ(picks) = 0 for my side; different
+    # counterparties required unless a buy has no other exit
+    kept_pairs, used_buy_cores = _select_pairs(buys, sells, params.max_pairs)
 
     pairs: list[dict] = []
     for n, (b, s) in enumerate(kept_pairs, 1):
@@ -625,6 +670,7 @@ def trade_board(league: md.LeagueState) -> dict:
                 "buy leg fits posture" if b["posture"]["fit"] else "sell leg fits posture"
             )
         at_cap = b["sequencing"].startswith("at the roster cap")
+        np_pair, nk_pair = pair_count_deltas(b, s)
         pairs.append(
             {
                 "id": f"P{n}",
@@ -632,6 +678,8 @@ def trade_board(league: md.LeagueState) -> dict:
                 "sell": s,
                 "dW_combined": round(b["dW"]["me"] + s["dW"]["me"], 1),
                 "net_roster": b["net_roster"]["me"] + s["net_roster"]["me"],
+                "net_players": np_pair,  # exactly 0 by construction (§5 v3.2)
+                "net_picks": nk_pair,  # exactly 0 by construction (§5 v3.2)
                 "fit_summary": fit_summary,
                 "sequencing": (
                     "at the roster cap: agreement-first — verbal yes on the buy, "
@@ -643,8 +691,10 @@ def trade_board(league: md.LeagueState) -> dict:
             }
         )
 
-    # secondary list: standalone SELL-legs (no hedge needed) + neutral legs,
-    # ranked posture-fit first then ΔW (§5 v3.1); never a standalone buy
+    # secondary list (§5 v3.2): unpaired SELL-legs + neutral legs — building
+    # blocks that change my counts (each card carries net_players/net_picks and
+    # a pair-before-executing sequencing note unless fully count-neutral),
+    # ranked posture-fit first then ΔW; never a standalone buy
     paired = {id(b) for b, _ in kept_pairs} | {id(s) for _, s in kept_pairs}
     seconds = sorted(
         (c for c in sells + neutrals if id(c) not in paired), key=lambda c: c["_sort"]
@@ -655,7 +705,7 @@ def trade_board(league: md.LeagueState) -> dict:
         card["rank"] = i + 1
 
     # unpaired buys: watch list only — a buy with no identified exit is not a
-    # recommendation (§5 v3.1); one-line blocker, no card
+    # recommendation (§5 v3.2); one-line blocker naming the counts it needs
     watch: list[dict] = []
     watch_cores: set[tuple] = set()
     for b in sorted((c for c in buys if id(c) not in paired), key=lambda c: c["_sort"]):
@@ -668,7 +718,11 @@ def trade_board(league: md.LeagueState) -> dict:
                 "give": [a["name"] for a in b["give"]],
                 "get": [a["name"] for a in b["get"]],
                 "dW": b["dW"]["me"],
-                "blocker": "no clean exit — no non-conflicting sell-leg on today's board",
+                "blocker": (
+                    "no clean exit — needs a non-conflicting sell netting "
+                    f"{-b['net_players']['me']:+d} players / {-b['net_picks']['me']:+d} picks; "
+                    "none on today's board"
+                ),
             }
         )
         if len(watch) >= params.watch_max:
@@ -687,7 +741,8 @@ def trade_board(league: md.LeagueState) -> dict:
         del c["_sort"]
 
     notes = [
-        "the recommendation unit is the hedged pair (§5 v3.1) — buys never go out without an exit",
+        "the recommendation unit is the count-neutral hedged pair (§5 v3.2) — nets exactly 0 players / 0 picks for you; buys never go out without an exit",
+        "unpaired legs are building blocks — they change your player/pick counts; pair before executing",
         "proposals sit at the smallest in-band gap clearing W_min (§3 v3.1); each card's band ceiling is negotiating room, not the opener",
         "book recomputes from fresh rosters after any executed trade",
         "don't publicly fire-sale before making buy-side asks (§5 execution protocol)",

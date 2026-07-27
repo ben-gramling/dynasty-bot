@@ -121,23 +121,54 @@ def test_trade_and_posture_import_no_lineup():
 # ------------------------------------------------------- 5. bundles + exclusivity
 
 
-def test_pairs_v31_contract(result, params):
-    """§11.5 / §5 v3.1 invariant 3: every pair embeds a gate-PASS buy and sell
-    sharing no assets, netting Δ(roster) ≤ 0, with honest combined ΔW; pairs are
-    the primary unit and each buy/sell core appears at most once."""
+def test_pairs_v32_contract(result, params, league):
+    """§11.5 / §5 v3.2 strict: every pair embeds a gate-PASS buy and sell sharing
+    no assets, netting for my side EXACTLY 0 players AND 0 picks (plus the carried
+    Δ(active roster) ≤ 0), with honest combined ΔW; each buy/sell core appears at
+    most once. The committed fixture yields zero pairs under strict count
+    neutrality (pinned in test_trades) — the per-pair contract is exercised on a
+    fixture-built pair through the same selection code."""
     pairs = result["trade_recs"]["pairs"]
-    assert 1 <= len(pairs) <= params.max_pairs
+    assert 0 <= len(pairs) <= params.max_pairs
     keys = lambda c: {a["key"] for a in c["give"] + c["get"]}
+    # exercise the contract even when the board is honestly empty: run a real
+    # gate-PASS complementary buy/sell through _select_pairs and wrap like the board
+    from .test_trades import _v32_buy, _with_build_fields
+
+    if not pairs:
+        buy = _v32_buy(league)
+        sell = _with_build_fields(
+            tr.propose_by_names(league, "cmgaither43", ["Sam LaPorta"], ["2026 1.04"]),
+            "sell",
+        )
+        kept, _ = tr._select_pairs([buy], [sell], params.max_pairs)
+        assert kept
+        pairs = [
+            {
+                "buy": b,
+                "sell": s,
+                "dW_combined": round(b["dW"]["me"] + s["dW"]["me"], 1),
+                "net_roster": b["net_roster"]["me"] + s["net_roster"]["me"],
+                "net_players": tr.pair_count_deltas(b, s)[0],
+                "net_picks": tr.pair_count_deltas(b, s)[1],
+                "fit_summary": "buy leg fits posture",
+                "sequencing": "roster space available: the buy may execute first",
+            }
+            for b, s in kept
+        ]
     for pair in pairs:
         buy, sell = pair["buy"], pair["sell"]
         assert buy["leg_type"] == "buy" and sell["leg_type"] == "sell"
         assert buy["gate"]["verdict"] == "PASS" and sell["gate"]["verdict"] == "PASS"
         assert not keys(buy) & keys(sell)  # invariant 3: no shared assets
+        # §5 v3.2: both currencies zero, exactly — players wherever they land,
+        # picks regardless of year
+        assert tr.pair_count_deltas(buy, sell) == (0, 0)
+        assert pair["net_players"] == 0 and pair["net_picks"] == 0
         assert pair["net_roster"] <= 0
         assert pair["net_roster"] == buy["net_roster"]["me"] + sell["net_roster"]["me"]
         assert pair["dW_combined"] == round(buy["dW"]["me"] + sell["dW"]["me"], 1)
-        # different counterparties (required unless a buy has no other exit —
-        # the fixture board always finds one; pin it as a regression)
+        # different counterparties (required unless a buy has no other exit)
         assert buy["counterparty"] != sell["counterparty"]
         assert pair["fit_summary"] in (
             "both legs fit posture",

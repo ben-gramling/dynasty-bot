@@ -158,10 +158,11 @@ def alternatives(
 
 
 def find_hedges(
-    league, opp_name: str, give: list, get: list, needed: int
+    league, opp_name: str, give: list, get: list, net_players: int, net_picks: int
 ) -> list[dict]:
-    """Gate-passing sell-legs against OTHER counterparties that restore roster
-    neutrality for a +needed buy leg (§5: every buy pairs with a sell). Assets in
+    """Gate-passing legs against OTHER counterparties that offset BOTH of the
+    proposal's count deltas EXACTLY — the pair nets 0 players / 0 picks for me
+    (§5 v3.2 strict count-neutrality, not just freed roster spots). Assets in
     the proposal are excluded; the proposal's counterparty is excluded (unrelated
     hedge parties leak less)."""
     me_t = league.teams[league.me]
@@ -173,7 +174,15 @@ def find_hedges(
     for opp in league.opponents:
         if opp == opp_name:
             continue
-        cands.extend(tr._enumerate_opponent(league, my_pkgs, opp))
+        for cand in tr._enumerate_opponent(league, my_pkgs, opp):
+            g, t = cand[3], cand[4]
+            # exact complement on both currencies BEFORE ranking, so the ΔW
+            # ordering never starves a count-matching hedge out of the window
+            if t.n_players - g.n_players != -net_players:
+                continue
+            if t.n_picks - g.n_picks != -net_picks:
+                continue
+            cands.append(cand)
     cands.sort(key=lambda c: (-c[0], c[1]))
     out: list[dict] = []
     seen_core: set[tuple] = set()
@@ -183,8 +192,6 @@ def find_hedges(
             continue
         card = tr.propose(league, opp, list(g.assets), list(t.assets))
         if not card["gate"]["verdict"].startswith("PASS"):
-            continue
-        if card["net_roster"]["me"] > -needed:
             continue
         seen_core.add(core)
         out.append(card)
@@ -215,8 +222,10 @@ def fmt_card(card: dict, header: str = "") -> str:
         f"  Posture: {card['counterparty']} is {p['label']}"
         + (f" (override)" if p["source"] == "override" else f" ({p['evidence_count']} classifying trades)")
         + f" · offer shape {p['shape']} ({'fits' if p['fit'] else 'does not fit'})",
-        f"  Leg: {card['leg_type']} (net roster {card['net_roster']['me']:+d} you / "
-        f"{card['net_roster']['them']:+d} them) · {card['sequencing']}",
+        f"  Leg: {card['leg_type']} · counts you: {card['net_players']['me']:+d} players / "
+        f"{card['net_picks']['me']:+d} picks (§5 v3.2; net active roster "
+        f"{card['net_roster']['me']:+d} you / {card['net_roster']['them']:+d} them)",
+        f"  Sequencing: {card['sequencing']}",
         f"  Anchor ask: open at ≈{card['anchor_ask']['ask']} ({card['anchor_ask']['note']})",
     ]
     if card.get("ceiling"):
@@ -253,7 +262,8 @@ def main() -> None:
     sc.add_argument(
         "--hedge",
         action="store_true",
-        help="for a buy leg: find gate-passing sell-legs elsewhere that restore roster neutrality",
+        help="find gate-passing legs elsewhere that exactly offset this proposal's "
+        "player AND pick count deltas (the pair nets 0 players / 0 picks for you)",
     )
     sc.add_argument("--json", action="store_true")
     args = ap.parse_args()
@@ -310,11 +320,11 @@ def main() -> None:
     alts = alternatives(league, opp_name, give, get, card) if args.alternatives else None
     hedges = None
     if args.hedge:
-        needed = card["net_roster"]["me"]
-        if needed > 0:
-            hedges = find_hedges(league, opp_name, give, get, needed)
+        np_me, nk_me = card["net_players"]["me"], card["net_picks"]["me"]
+        if np_me == 0 and nk_me == 0:
+            hedges = []  # already count-neutral — nothing to offset
         else:
-            hedges = []
+            hedges = find_hedges(league, opp_name, give, get, np_me, nk_me)
 
     if args.json:
         out = {"proposal": card}
@@ -327,21 +337,29 @@ def main() -> None:
 
     print(fmt_card(card))
     if hedges is not None:
-        needed = card["net_roster"]["me"]
-        if needed <= 0:
-            print("\nHedge: not needed — this leg is roster-neutral or a net sell.")
+        np_me, nk_me = card["net_players"]["me"], card["net_picks"]["me"]
+        if np_me == 0 and nk_me == 0:
+            print("\nHedge: not needed — this leg is already count-neutral "
+                  "(0 players / 0 picks net).")
         elif not hedges:
-            print(f"\nHedge: no gate-passing sell-leg found that frees {needed} spot(s) — "
-                  "this buy has no clean exit today; treat it as blocked.")
+            print(f"\nHedge: no gate-passing leg found netting {-np_me:+d} players / "
+                  f"{-nk_me:+d} picks — this proposal has no count-complementary exit "
+                  "today; treat it as blocked (§5 v3.2).")
         else:
-            print(f"\nHedges (sell-legs elsewhere freeing ≥{needed} spot(s); pair nets roster-neutral):")
+            print(f"\nHedges (legs elsewhere offsetting {np_me:+d} players / {nk_me:+d} picks "
+                  "exactly; pair nets 0 players / 0 picks):")
             for h in hedges:
                 pair_dw = card["dW"]["me"] + h["dW"]["me"]
+                order = (
+                    "execute this sell FIRST"
+                    if h["net_players"]["me"] < 0
+                    else "agreement-first on both legs"
+                )
                 print()
                 print(fmt_card(
                     h,
-                    header=f"Hedge — sell to {h['counterparty']}: pair ΔW {pair_dw:+.0f} "
-                    f"(this leg {h['dW']['me']:+.0f}) · execute this sell FIRST",
+                    header=f"Hedge — with {h['counterparty']}: pair ΔW {pair_dw:+.0f} "
+                    f"(this leg {h['dW']['me']:+.0f}) · {order}",
                 ))
     if alts:
         print(f"\nAlternatives ({alts['variants_scored']} single-tweak variants scored; "

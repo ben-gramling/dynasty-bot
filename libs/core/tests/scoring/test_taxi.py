@@ -117,6 +117,9 @@ class TestErratum10Routing:
         )
         assert card["taxi_stashed"]["them"] == ["Elijah Arroyo"]
         assert card["net_roster"]["them"] == 0  # stashed, no active spot consumed
+        # §5 v3.2: the COUNT still moves — players count wherever they land
+        assert card["net_players"]["them"] == 1
+        assert card["net_players"]["me"] == -1
 
 
 class TestErratum11InsuranceShadows:

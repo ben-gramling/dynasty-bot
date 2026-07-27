@@ -28,13 +28,17 @@ def test_top_level_shape(result):
     tr = result["trade_recs"]
     assert set(tr) == {"disabled", "pairs", "recommendations", "watch", "notes"}
     assert tr["disabled"] is False
-    assert 1 <= len(tr["pairs"]) <= 8  # the PRIMARY list (§5 v3.1)
-    assert 0 <= len(tr["recommendations"]) <= 10  # secondary: sell/neutral legs
+    # the PRIMARY list (§5 v3.2): strict count-neutrality leaves this fixture
+    # with zero pairs — honest scarcity, pinned in test_trades
+    assert 0 <= len(tr["pairs"]) <= 8
+    assert 0 <= len(tr["recommendations"]) <= 10  # secondary: building blocks
     assert isinstance(tr["watch"], list) and isinstance(tr["notes"], list)
     for pair in tr["pairs"]:
         assert set(pair) == {
-            "id", "buy", "sell", "dW_combined", "net_roster", "fit_summary", "sequencing",
+            "id", "buy", "sell", "dW_combined", "net_roster", "net_players",
+            "net_picks", "fit_summary", "sequencing",
         }
+        assert pair["net_players"] == 0 and pair["net_picks"] == 0  # §5 v3.2
 
 
 def test_card_schema_matches_contract(result):
@@ -42,13 +46,17 @@ def test_card_schema_matches_contract(result):
     for card in board_legs(result["trade_recs"]):
         for key in (
             "id", "action", "counterparty", "give", "get", "dW", "gate",
-            "posture", "holes", "net_roster", "leg_type", "sequencing", "ceiling",
+            "posture", "holes", "net_roster", "net_players", "net_picks",
+            "standalone", "leg_type", "sequencing", "ceiling",
             "taxi_stashed", "anchor_ask", "dip_notes", "unvalued", "exclusive_with",
         ):
             assert key in card, key
         assert card["action"] == "TRADE"
         assert card["leg_type"] in ("buy", "sell", "neutral")
         assert set(card["dW"]) == {"me", "them"}
+        assert set(card["net_players"]) == {"me", "them"}  # §5 v3.2 count deltas
+        assert set(card["net_picks"]) == {"me", "them"}
+        assert isinstance(card["standalone"], bool)
         assert set(card["ceiling"]) == {"value", "note"}  # §3 v3.1 negotiating room
         g = card["gate"]
         for key in (

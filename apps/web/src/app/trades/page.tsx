@@ -12,11 +12,12 @@ export const metadata: Metadata = {
 };
 
 /**
- * Trades tab (scoring-system.md v3.1): the hedged PAIRS first (the §5 v3.1
- * recommendation unit — a buy never goes out without its exit), then the
- * labeled sell-side legs, the watch list of blocked buys, and a pointer into
- * the League tab's market map (§7 targeting console). Reads Mongo only —
- * every number is the engine's, never recomputed here.
+ * Trades tab (scoring-system.md v3.2): the count-neutral hedged PAIRS first
+ * (the §5 v3.2 recommendation unit — exactly 0 players / 0 picks net for our
+ * side; a buy never goes out without its exit), then the unpaired legs as
+ * labeled building blocks with their count deltas, the watch list of blocked
+ * buys, and a pointer into the League tab's market map (§7 targeting console).
+ * Reads Mongo only — every number is the engine's, never recomputed here.
  */
 export default async function TradesPage() {
   let doc: TradeRecsDoc | null;
@@ -73,10 +74,12 @@ export default async function TradesPage() {
           </p>
         </div>
         <p className="mt-1 text-[12.5px] text-ink-muted">
-          The recommendation unit is the hedged pair (§5 v3.1): a buy and its
-          exit, no shared assets, net Δ(roster) ≤ 0. Every leg passes the
-          fairness gate at the smallest in-band gap clearing the floor — the
-          band ceiling on each card is negotiating room, not the opener.
+          The recommendation unit is the count-neutral hedged pair (§5 v3.2): a
+          buy and its exit, no shared assets, netting exactly 0 players and 0
+          picks for your side — players count wherever they land, picks
+          regardless of year. Every leg passes the fairness gate at the
+          smallest in-band gap clearing the floor — the band ceiling on each
+          card is negotiating room, not the opener.
         </p>
         {doc.pairs.length ? (
           <div className="mt-3 space-y-3">
@@ -87,9 +90,11 @@ export default async function TradesPage() {
         ) : (
           <div className="card mt-3">
             <p className="text-ink-muted">
-              No hedged pair clears today — nothing beats the{" "}
-              {fmtValue(doc.meta.w_min)} noise floor inside the fairness band
-              with a clean exit attached. Holding is the move.
+              No count-neutral pair clears today — no buy on the board has an
+              exit that offsets it to exactly 0 players / 0 picks inside the
+              fairness band above the {fmtValue(doc.meta.w_min)} noise floor.
+              Holding is the move; the building blocks below change your
+              counts and only execute paired.
             </p>
           </div>
         )}
@@ -105,11 +110,12 @@ export default async function TradesPage() {
       <section aria-labelledby="sell-legs">
         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
           <h2 id="sell-legs" className="display text-[22px]">
-            Sell-side legs (no hedge needed)
+            Unpaired legs — building blocks (change your counts; pair before
+            executing)
           </h2>
           <p className="text-[11.5px] text-ink-muted">
-            Standalone sells and roster-neutral legs — they free space; never a
-            standalone buy
+            Sell and neutral legs with their player/pick deltas — not
+            executable recommendations alone (§5 v3.2); never a standalone buy
           </p>
         </div>
         {recs.length ? (
@@ -121,8 +127,7 @@ export default async function TradesPage() {
         ) : (
           <div className="card mt-3">
             <p className="text-ink-muted">
-              No standalone sell clears today — the pairs above carry the whole
-              board.
+              No unpaired legs today — the pairs above carry the whole board.
             </p>
           </div>
         )}
@@ -134,8 +139,9 @@ export default async function TradesPage() {
             Watch — buys with no clean exit
           </h2>
           <p className="mt-1 text-[12.5px] text-ink-muted">
-            Worth wanting, not worth proposing (§5 v3.1): a buy without an
-            identified exit never goes out.
+            Worth wanting, not worth proposing (§5 v3.2): a buy without a
+            count-complementary exit never goes out — each blocker names the
+            sell it needs.
           </p>
           <ul className="mt-2 space-y-1 text-[12.5px]">
             {doc.watch.map((w) => (

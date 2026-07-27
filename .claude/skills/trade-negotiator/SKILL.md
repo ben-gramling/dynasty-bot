@@ -18,7 +18,11 @@ Division of labor (spec v3, `docs/scoring-system.md`):
 - **You read the market.** Posture labels (observed trades) + the user's intel
   decide WHO to approach and WHAT shape to offer. Qualitative only: intel and
   posture NEVER change ΔW or the gate — they change what you propose.
-- **Every buy has an exit.** Plans net roster-neutral; sell-side executes first.
+- **Every executed plan is fully count-neutral (§5 v3.2).** A recommended pair
+  nets EXACTLY 0 players AND 0 picks for our side — players count wherever they
+  land (active or taxi-routed), picks count as picks regardless of year. Any
+  unpaired leg is a building block, never an executable recommendation;
+  sell-side executes first at the cap.
 
 ## Market intel — the core of this skill
 
@@ -60,9 +64,11 @@ The user will feed you color like: *"trdouglas is hunting draft capital"* ·
 2. **Load the desk view**:
    - `uv run python scripts/score_trade.py teams` — L/F, posture + evidence, FAAB.
    - Active intel: `... get_db()['market-intel'].find({'active': True})` (sort by team).
-   - The nightly board: `trade-recs` doc (v3.1: `pairs` is the primary list —
-     hedged buy+sell with embedded cards; `recommendations` is sell/neutral legs
-     only; `watch` is blocked buys; `notes`).
+   - The nightly board: `trade-recs` doc (v3.2: `pairs` is the primary list —
+     count-neutral buy+sell netting exactly 0 players / 0 picks for us, with
+     embedded cards; `recommendations` is unpaired sell/neutral legs — building
+     blocks carrying `net_players`/`net_picks`, pair before executing; `watch`
+     is blocked buys with the exit each needs; `notes`).
 3. **Open with a desk brief**: per-team one-liners merging posture (+evidence
    count), active intel, visible holes, pick inventory — then the board's top
    legs and any intel-driven opportunities the board can't see.
@@ -78,8 +84,9 @@ uv run python scripts/score_trade.py score --opponent X \
 
 - `--alternatives`: single-tweak variants, gate-passers ranked by our ΔW — the
   counter-offer generator.
-- `--hedge`: for a buy leg, gate-passing sell-legs elsewhere (≤2 assets out,
-  proposal counterparty excluded) that restore roster neutrality, with pair ΔW.
+- `--hedge`: for any non-count-neutral leg, gate-passing legs elsewhere (≤2
+  assets out, proposal counterparty excluded) that offset BOTH of its deltas
+  exactly — the pair nets 0 players / 0 picks for us (§5 v3.2), with pair ΔW.
   The engine ranks hedges by ΔW alone — apply desk judgment before presenting:
   flag any hedge that ships a starter or a cornerstone-adjacent asset, and prefer
   hedge counterparties with matching intel.
