@@ -21,21 +21,25 @@ Chicago Dynasty (Sleeper league `1312124603224555520`, 12-team 1QB dynasty, full
 
 ## 2. The score
 
-Wealth is the two stores the user actually plays for — starters and picks (v3.4: "as long as our total STARTER KTC / FUTURE PICKS KTC is increasing, we dont care how that wealth is distributed (studs / lots of solid players)"):
+Wealth is what you can field, plus a discounted claim on everything you're storing (v3.4: "as long as our total STARTER KTC / FUTURE PICKS KTC is increasing, we dont care how that wealth is distributed"; v3.5 adds the stored term so bench trades still count):
 
 ```
-W(side) = S + P
+W(side) = S + δ · T
 S = Σ v over the max-Σv legal starting lineup (QB / 2 RB / 3 WR / TE / 2 FLEX),
     solved over active + taxi players at raw KTC v
-    (taxi counts — promotion is always legal, §8; bench, IR, and empty slots = 0)
-P = Σ v over owned picks at tranche value
+    (taxi counts — promotion is always legal, §8; IR and empty slots = 0)
+T = Σ v over ALL stored value — non-starting players (bench + taxi) at face v,
+    plus owned picks at tranche value
+δ = 0.25   (the stored-value discount, §9; a strategy dial, not an estimate)
 ΔW(side) = W(side, after) − W(side, before)
 ```
 
 - **Raw v only.** The S-solve is the greedy per-slot fill (exact for raw Σv), deterministic ties by KTC playerID asc. None of the league-tab lineup machinery — q insurance weights, availability multipliers, replacement values — enters the trade path (§11.2).
-- **Bench players are trade currency, not wealth.** They enter packages at face v, because face v is what the market prices (§3), but they hold a ledger value of 0. A pair that only upgrades bench value scores 0.
+- **Stored value is one class, priced one way (v3.5).** A bench player and a draft pick are the same kind of asset: value you cannot field today but can convert. Pricing one at 0 and the other at face was an accounting seam, not a real distinction, and it made "sell a non-starter for a pick of equal value" pay ≈ +4,116 for nothing (the observed 40%-return pairs). Both now count at `δ` of face, so a pure conversion between them scores ≈ 0 and only genuine upgrades score.
+- **Why δ = 0.25, and what pins it (user-locked, 2026-07-28).** Two worked cases fix the range. A swap of an 8,000 starter + 4,000 backup for a 7,000 + 6,000 pair must score NEGATIVE ("my total KTC has gone up but I can only start one QB") ⇒ `−1000 + 2000δ < 0` ⇒ `δ < 0.5`. A swap of a 5,000 backup for a 6,000 backup, starters untouched, must score POSITIVE ("a trade that upgrades my bench without decreasing my starters or my picks can still be a good trade") ⇒ `1000δ > 0` ⇒ `δ > 0`. δ = 0.25 sits mid-range: a starter point is worth four stored points, so a 1,000 starter downgrade needs a 4,000 stored gain to clear. Retuning δ is a one-line change; nothing else in the model depends on its value.
+- **Picks are not special-cased.** They are stored value like any bench player — no separate P column, no startability test, no projection of future lineups (which would need exactly the estimated inputs §0.2 forbids). A pick's face value is the market's own price for the player it becomes; δ discounts it for not being deployable today, identically to a benched veteran.
 - **ΔW is per-side, not zero-sum (v3.4).** My starter gain is not their starter loss; a good pair can be positive for BOTH ledgers — that is what arbitrage between postures means. What stays conserved is the face-KTC transfer itself: on every leg, Σv leaving one side arrives at the other exactly (§11.1).
-- **Pair ΔW is combined, not summed.** The two legs interact through the lineup (the buy's new starter benches the player the sell leg ships out), so pair `ΔW(me) = W(after BOTH legs) − W(before)`. Leg cards additionally show each leg's isolation ΔW, labeled as such — a pair's buy leg alone is usually negative (picks out, starter in); the sell leg recoups.
+- **Pair ΔW is combined, not summed.** The two legs interact through the lineup (the buy's new starter benches the player the sell leg ships out, demoting his value from S to δ·face), so pair `ΔW(me) = W(after BOTH legs) − W(before)`. Leg cards additionally show each leg's isolation ΔW, labeled as such.
 - **Nothing else moves the score.** Not roster counts, not pending cuts, not deadlines, not probabilities, not the counterparty's internal valuation, and not KTC's consolidation adjustment — the market's stud premium prices trades (§3), but distribution of wealth across studs vs solid starters is deliberately not scored. §11's regression invariants enforce each exclusion explicitly.
 - A trade with `0 < ΔW(me) < W_min = 150` carries a display-level noise note (inside KTC's own error bars), never hidden.
 
@@ -96,6 +100,7 @@ Taxi errata 9–12 semantics (1st/2nd-year only, week-4 lock, promote-anytime, s
 | Parameter | Value | Origin |
 |---|---|---|
 | `W_min` | 150 | Noise floor inside KTC error bars |
+| Stored discount `δ` | 0.25 | v3.5 strategy dial; bracketed to (0, 0.5) by the two §2 worked QB cases, midpoint chosen |
 | Fairness band | 20% relative, 500 floor | Measured from league trades |
 | KTC adjustment | exact port, zero free parameters | Reverse-engineered from keeptradecut.com `site.min.js`; 13/13 live calculator trades integer-exact (2026-07-27). Supersedes fitted consolidation `c` |
 | Fleece cap | 1.35 | Measured (max observed cleared ratio) |
@@ -121,13 +126,15 @@ Nothing else. Posture labels are user-overridable; every parameter above is re-d
 5. Recommended pairs net exactly zero players AND zero picks for my side (v3.2); a player-neutral but pick-inflating pair is a pinned must-never-emit; `exclusive_with` fires on shared assets.
 6. Waiver backtests (Waller/Kyler) keep passing verbatim.
 7. Zero-value (`unvalued`) players never contribute to `ΔW` silently — cards flag them.
-8. Taxi/IR/deadline legality rules (§8) enforced on both rosters of every recommendation; taxi players COUNT in `S` (promote-anytime), IR players do not.
+8. Taxi/IR/deadline legality rules (§8) enforced on both rosters of every recommendation; taxi players are startable in `S` (promote-anytime) and otherwise count in `T`, IR players in neither.
+8b. **v3.5 stored-value pins:** (a) the two §2 worked QB cases score negative and positive respectively at δ = 0.25; (b) a pure conversion between stored classes — a non-starting player for a pick of equal face — scores `≈ 0` (`|ΔW| ≤ δ · |Δface|`), the pinned death of the v3.4 reclassification loop; (c) δ = 0 reproduces the v3.4 ledger and δ = 1 reproduces the v3.3 face ledger, so the parameter's endpoints are regression-checked.
 9. Determinism: identical snapshot ⇒ identical board, byte-for-byte.
 10. Full nightly recompute within the v1 Lambda budget — the raw starter-sum solve enters the trade path (v3.4) via an incremental exact evaluator (asserted equal to a full re-solve over the fixture rosters and seeded random deltas), and the exact KTC gate runs behind a necessary-condition screen; the budgeted walks still saturate honestly, and under v3.4 every band count is a verified floor (§5).
 11. **KTC-adjust port regression:** the 13 captured calculator trades (2026-07-27 values, pinned as fixtures) reproduce integer-exact through `core.scoring.ktc_adjust`; a zero raw-adjustment gap short-circuits to S = 0.
 
 ## 12. Changelog
 
+- **v3.5 (2026-07-28):** bench players and picks were unified into one **stored-value** class counted at `δ = 0.25` of face, replacing v3.4's split of bench = 0 / picks = 100%. That seam was farmable: selling a non-starter for a pick of equal value paid ≈ +4,116 of pure reclassification and produced the board's 40%-return pairs, while count-neutrality was the only thing fencing it in. The fix came from the user's two QB cases — "I can only start one QB" (8,000 + 4,000 → 7,000 + 6,000 must be bad) and "a trade that upgrades my bench without decreasing my starters or my picks can still be a good trade" (8,000 + 5,000 → 8,000 + 6,000 must be good) — which bracket δ to (0, 0.5); the midpoint was chosen. Pure deployability (δ = 0) was rejected because it scored the second case at exactly 0.
 - **v3.4.1 (2026-07-27):** the board filter's max dial changed dimensions — from a cap on total pair return to a cap on EACH leg's market return (face skim off that counterparty), with the list always sorted by total return desc; storage re-stratified by max-leg bucket with a bucket × total-band honest count grid. User: "filter based on max return for individual trades in a pair. If I set a cap at 5%, this means that the individual return for either of the two legs cannot be greater than 5%, however I want to see these in descending order by total return (not per-leg return)."
 - **v3.4 (2026-07-27):** (a) The wealth ledger became STARTER KTC + PICKS KTC: `W = S + P` with `S` the max-Σv starting lineup at raw KTC over active + taxi (bench/IR = 0) and `P` picks at tranche; `ΔW` is per-side and zero-sum is retired (both ledgers can gain — that IS the arbitrage); pair `ΔW` is computed on the combined legs; the per-leg return floor is retired (buy legs are legitimately negative alone). User: "as long as our total STARTER KTC / FUTURE PICKS KTC is increasing, we dont care how that wealth is distributed (studs / lots of solid players). Lets make sure that our trade logic encodes this." (b) The fairness gate's fitted consolidation coefficients were replaced by the exact reverse-engineered KTC calculator adjustment (13/13 live calculator trades integer-exact; the adjustment provably does not cancel across roster-neutral pairs — user: "Value adjustments dont cancel out"). Face KTC remains the market-pricing layer (gate + return denominator); the ledger is what we optimize. Measured at implementation: the exact gate is materially STRICTER than the fitted band it replaces on asymmetric-shape trades (both of §10's old worked examples now fail it — KTC's concentration premium is real and large), and because the pair walk must order legs by their isolation ΔWs while pricing pairs by the non-additive combined ledger, every band count became a verified floor (§5).
 - **v1 (2026-07-26):** ω-blended lineup+wealth+crunch score. Superseded: crunch mis-modeled as a per-transaction cost; recommendations were sell-only.
