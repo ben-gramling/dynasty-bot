@@ -40,10 +40,17 @@ class Params:
     # negative in isolation, so legs are no longer required to earn on their own.
     max_package: int = 3
     give_list_protect_top: int = 2  # cornerstones never enter the give-list
-    return_presets: tuple[float, ...] = (1.0, 2.5, 5.0, 10.0, 20.0)  # range presets, percent
-    # v3.3.1 stratified storage: top-N pairs kept PER return band ([1,2.5), [2.5,5),
-    # [5,10), [10,20), [20,∞) percent — bands derived from return_presets), so a
-    # min/max range query always has inventory; per-band honesty via `bands`
+    # total-return floor presets, percent (the min dial + the by_total grid bands)
+    return_presets: tuple[float, ...] = (1.0, 2.5, 5.0, 10.0, 20.0)
+    # v3.4.1 per-leg market-return cap presets, percent (the max dial): buckets
+    # (−∞,2.5), [2.5,5), [5,10), [10,20), [20,∞) on max(r(buy), r(sell)) where
+    # r(leg) = face ΔW(me) ÷ Σ face v sent on that leg
+    leg_cap_presets: tuple[float, ...] = (2.5, 5.0, 10.0, 20.0)
+    # v3.4.1 stratified storage: top-N pairs kept PER max-leg bucket, sorted by
+    # TOTAL return desc, so any (total floor, leg cap) query has whatever
+    # inventory exists; per-bucket honesty + the bucket × total-band grid via
+    # `bands`. (v3.3.1 stratified by total-return band; a leg-cap query cannot
+    # be served from that — high totals concentrate lopsidedness in one leg.)
     pairs_per_band: int = 100
     variants_per_signature: int = 2  # gets kept per (opponent, give, count-signature), ledger ΔW desc
     # v3.4 scan bound: gate-passers evaluated per (opponent, give, count-signature)

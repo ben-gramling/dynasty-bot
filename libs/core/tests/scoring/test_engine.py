@@ -27,32 +27,37 @@ def test_top_level_shape(result):
     assert meta["w_min"] == 150.0
     tr = result["trade_recs"]
     assert set(tr) == {
-        "disabled", "pairs", "presets", "counts_by_threshold", "bands",
-        "truncated", "recommendations", "watch", "notes",
+        "disabled", "pairs", "presets", "leg_cap_presets", "counts_by_threshold",
+        "bands", "truncated", "recommendations", "watch", "notes",
     }
     assert tr["disabled"] is False
-    # the PRIMARY list (§5 v3.3.1): stratified per-band storage behind the
-    # return RANGE — dense on this fixture (every band at quota, honest floors)
+    # the PRIMARY list (§5 v3.4.1): stratified per-MAX-LEG-BUCKET storage
+    # behind the two dials — dense on this fixture (every bucket at quota)
     assert 0 < len(tr["pairs"]) <= 500
     assert tr["presets"] == [1.0, 2.5, 5.0, 10.0, 20.0]
+    assert tr["leg_cap_presets"] == [2.5, 5.0, 10.0, 20.0]
     assert {e["threshold"] for e in tr["counts_by_threshold"]} == set(tr["presets"])
-    # v3.3.1 band inventory: one entry per band, derived from the presets
+    # v3.4.1 bucket inventory: one entry per max-leg bucket, open at both ends
     assert [set(b) for b in tr["bands"]] == [
-        {"lo", "hi", "stored", "count", "saturated"}
-    ] * len(tr["presets"])
-    assert [b["lo"] for b in tr["bands"]] == tr["presets"]
-    assert [b["hi"] for b in tr["bands"]] == tr["presets"][1:] + [None]
+        {"lo", "hi", "stored", "count", "saturated", "by_total"}
+    ] * (len(tr["leg_cap_presets"]) + 1)
+    assert [b["lo"] for b in tr["bands"]] == [None] + tr["leg_cap_presets"]
+    assert [b["hi"] for b in tr["bands"]] == tr["leg_cap_presets"] + [None]
+    for b in tr["bands"]:
+        assert len(b["by_total"]) == len(tr["presets"])
     assert 0 <= len(tr["recommendations"]) <= 10  # secondary: building blocks
     assert isinstance(tr["watch"], list) and isinstance(tr["notes"], list)
     for pair in tr["pairs"]:
         # v3.4 adds the ledger split of the combined ΔW and the legs' isolation
-        # sum alongside it (the two differ wherever the legs share a lineup)
+        # sum; v3.4.1 adds each leg's market return and their max (the cap key)
         assert set(pair) == {
-            "id", "buy", "sell", "return_pct", "dW_combined", "dW_combined_parts",
-            "dW_legs_isolated", "net_roster", "net_players", "net_picks",
-            "fit_summary", "sequencing", "overlaps",
+            "id", "buy", "sell", "return_pct", "leg_returns", "max_leg_return_pct",
+            "dW_combined", "dW_combined_parts", "dW_legs_isolated", "net_roster",
+            "net_players", "net_picks", "fit_summary", "sequencing", "overlaps",
         }
         assert set(pair["dW_combined_parts"]) == {"dS", "dP"}
+        assert set(pair["leg_returns"]) == {"buy", "sell"}
+        assert pair["max_leg_return_pct"] == max(pair["leg_returns"].values())
         assert pair["net_players"] == 0 and pair["net_picks"] == 0  # §5 v3.2
 
 
@@ -61,9 +66,10 @@ def test_card_schema_matches_contract(result):
     for card in board_legs(result["trade_recs"]):
         for key in (
             "id", "action", "counterparty", "give", "get", "dW", "dW_parts",
-            "dW_basis", "gate", "posture", "holes", "net_roster", "net_players",
-            "net_picks", "standalone", "leg_type", "sequencing", "ceiling",
-            "taxi_stashed", "anchor_ask", "dip_notes", "unvalued", "exclusive_with",
+            "dW_basis", "market_return_pct", "gate", "posture", "holes",
+            "net_roster", "net_players", "net_picks", "standalone", "leg_type",
+            "sequencing", "ceiling", "taxi_stashed", "anchor_ask", "dip_notes",
+            "unvalued", "exclusive_with",
         ):
             assert key in card, key
         assert card["action"] == "TRADE"
@@ -102,8 +108,8 @@ def test_notes_mention_execution_protocol(result):
     assert any("recomputes" in n for n in notes)
     assert any("fire-sale" in n for n in notes)
     assert any("0 players / 0 picks" in n for n in notes)  # §5 pair unit
-    assert any("target-return range" in n for n in notes)  # §5 v3.3.1 selectivity
-    assert any("stratified storage" in n for n in notes)  # v3.3.1 per-band quota
+    assert any("two dials" in n for n in notes)  # §5 v3.4.1 floor + leg cap
+    assert any("stratified storage" in n for n in notes)  # v3.4.1 per-bucket quota
     assert any("posture is a hard engine constraint" in n for n in notes)
     assert any("saturated" in n for n in notes)  # honest-counter semantics
     # truncation is reported in the notes whenever the doc carries the flag

@@ -10,14 +10,15 @@ export const metadata: Metadata = {
 };
 
 /**
- * Trades tab (scoring-system.md v3.4): the stratified stored PAIR space
- * behind the target-return RANGE, priced by the wealth ledger (starters +
- * picks, per side, never zero-sum). Pairs stay fully count-neutral (exactly
- * 0 players / 0 picks net for our side; a buy never goes out without its
- * exit); the range controls (min presets 1 / 2.5 / 5 / 10 / 20, default 5;
- * max presets 2.5 / 5 / 10 / 20 / no cap, default no cap) filter the stored
+ * Trades tab (scoring-system.md v3.4.1): the stratified stored PAIR space
+ * behind TWO independent dials — a floor on total pair return (the wealth
+ * ledger: starters + picks, per side, never zero-sum) and a cap on each leg's
+ * market return. Pairs stay fully count-neutral (exactly 0 players / 0 picks
+ * net for our side; a buy never goes out without its exit); the dials (floor
+ * presets 1 / 2.5 / 5 / 10 / 20, default 5; leg-cap presets 2.5 / 5 / 10 /
+ * 20 / no cap, default no cap — no combination is invalid) filter the stored
  * list client-side while the inventory line comes from the engine's honest
- * per-band `bands` counts. Unpaired legs and blocked buys stay in Mongo for
+ * per-bucket `bands` grid. Unpaired legs and blocked buys stay in Mongo for
  * the trade-negotiator desk but do not render here (user: nothing without an
  * associated hedge). Reads Mongo only — every number is the engine's, never
  * recomputed here.
@@ -79,8 +80,12 @@ export default async function TradesPage() {
           is normally negative; the pair number is both legs together. Every
           leg passes the fairness gate — literally the totals their KTC
           calculator shows — and respects posture (BUYERs receive players,
-          SELLERs picks); the range sets the return window, on the inventory
-          you send. Band ceilings on cards are negotiating room, not the opener.
+          SELLERs picks). Two independent dials (§5 v3.4.1): the floor is on
+          the TOTAL pair return, the cap is on EACH leg&apos;s market return
+          (the face skim that leg&apos;s counterparty sees) — a low cap with a
+          high floor finds even-looking legs that add up. The list always
+          sorts by total return. Band ceilings on cards are negotiating room,
+          not the opener.
         </p>
         <PairsBoard
           pairs={doc.pairs}

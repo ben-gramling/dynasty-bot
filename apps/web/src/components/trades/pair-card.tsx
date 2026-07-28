@@ -9,9 +9,10 @@ import { pairLegs } from "./derive";
  * side and its hedge sell side as full embedded leg cards, listed in execution
  * order (sell first at the roster cap), with the pair ΔW (v3.4: the EXACT
  * combined ledger, both legs applied together — not the sum of the legs'
- * isolation ΔWs, which is why a negative buy leg is normal), the neutrality
- * badge (exactly 0 players / 0 picks net for you), the posture-fit summary,
- * and the agreement-first sequencing note.
+ * isolation ΔWs, which is why a negative buy leg is normal), each leg's
+ * market return (v3.4.1 — the leg-cap dial's input), the neutrality badge
+ * (exactly 0 players / 0 picks net for you), the posture-fit summary, and the
+ * agreement-first sequencing note.
  */
 export function PairCard({ pair }: { pair: TradePair }) {
   const legs = pairLegs(pair);
@@ -30,10 +31,20 @@ export function PairCard({ pair }: { pair: TradePair }) {
         <span className="ml-auto flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <span
             className="num text-[13px] font-medium text-sky-deep"
-            title="Return on inventory deployed (§5): the pair's exact combined ΔW(you) ÷ Σ face v of every asset you send across both legs — the range filter's ranking metric"
+            title="TOTAL return on inventory deployed (§5): the pair's exact combined ΔW(you) ÷ Σ face v of every asset you send across both legs — the floor dial's key and the only sort key"
           >
             {fmtPct(pair.return_pct, 1)} return
           </span>
+          {pair.leg_returns ? (
+            <span
+              className="text-[11.5px] text-ink-muted"
+              title="Each leg's market return (§5 v3.4.1): face ΔW(you) ÷ face Σv you send on that leg — the skim that leg's counterparty sees; the leg-cap dial filters on the larger of the two"
+            >
+              legs: buy <span className="num">{fmtSigned(pair.leg_returns.buy, 1)}%</span>{" "}
+              · sell <span className="num">{fmtSigned(pair.leg_returns.sell, 1)}%</span>{" "}
+              market
+            </span>
+          ) : null}
           <ValueChip label="pair ΔW" value={pair.dW_combined} emphasis />
           {pair.dW_combined_parts ? (
             <span

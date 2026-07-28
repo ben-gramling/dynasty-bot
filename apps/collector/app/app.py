@@ -154,13 +154,17 @@ def collect(dry_run: bool = False) -> dict:
             " (truncated: %s)" % outputs["trade_recs"]["truncated"]
             if outputs["trade_recs"]["truncated"] else "",
         )
-        # §5 v3.3.1 stratified storage visibility: stored/count per return band
-        # (saturated counts are verified floors, marked with a trailing +)
+        # §5 v3.4.1 stratified storage visibility: stored/count per MAX-LEG
+        # bucket (saturated counts are verified floors, marked with a trailing
+        # +; the bottom bucket is open — buy legs run negative in market terms)
         logger.info(
-            "trade pairs by band (stored/count): %s",
+            "trade pairs by max-leg bucket (stored/count): %s",
             {
-                (f"[{b['lo']:g},{b['hi']:g})" if b["hi"] is not None else f"[{b['lo']:g},inf)"):
-                f"{b['stored']}/{b['count']}{'+' if b['saturated'] else ''}"
+                (
+                    f"[{b['lo']:g},{b['hi']:g})" if b["lo"] is not None and b["hi"] is not None
+                    else f"(-inf,{b['hi']:g})" if b["lo"] is None
+                    else f"[{b['lo']:g},inf)"
+                ): f"{b['stored']}/{b['count']}{'+' if b['saturated'] else ''}"
                 for b in outputs["trade_recs"]["bands"]
             },
         )

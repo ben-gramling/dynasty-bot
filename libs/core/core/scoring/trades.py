@@ -1,9 +1,10 @@
 """§2/§3/§5 trades: the v3.4 WEALTH LEDGER (W = starters + picks), the exact
 KTC-calculator fairness gate, enumerate-then-filter pairing behind the user's
-target-return RANGE (§3/§5 v3.3; v3.3.1 turned the min-only dial into min/max
-over the presets, with stratified per-band pair storage so any range has
-inventory), posture as a hard pair-pool constraint, fully count-neutral pairs
-(§5 v3.2: a recommended pair nets exactly 0 players AND 0 picks for my side).
+TWO dials (§5 v3.4.1: a floor on TOTAL pair return plus a cap on EACH leg's
+market return — independent dimensions, storage stratified by max-leg bucket
+so any (floor, cap) query has whatever inventory exists), posture as a hard
+pair-pool constraint, fully count-neutral pairs (§5 v3.2: a recommended pair
+nets exactly 0 players AND 0 picks for my side).
 
 v3.4 changed what the score IS (§2):
 
@@ -508,6 +509,14 @@ def build_card(
         "dW_basis": "isolation",  # this leg alone; pairs carry the combined ΔW
         # §5 leg return on inventory deployed: isolation ΔW(me) ÷ Σv sent, percent
         "return_pct": round(100 * dw_me / give.v_sum, 2) if give.v_sum > 0 else None,
+        # §5 v3.4.1 leg MARKET return: face ΔW(me) ÷ face Σv sent — the skim the
+        # counterparty's own KTC math sees on this single trade; the leg-cap
+        # dial's input (the ledger never enters it)
+        "market_return_pct": (
+            round(100 * (get.v_sum - give.v_sum) / give.v_sum, 2)
+            if give.v_sum > 0
+            else None
+        ),
         "gate": gate,
         "posture": {
             "label": posture["label"],
@@ -619,9 +628,10 @@ _POS4 = ("QB", "RB", "WR", "TE")
 _MIN4 = tuple(MIN_POS[p] for p in _POS4)
 
 # leg tuple layout inside PairPool.legs (indices 0-8 are the v3.3 contract and
-# stay put; v3.4 appends the ledger inputs the pair walk needs)
+# stay put; v3.4 appends the ledger inputs the pair walk needs; v3.4.1 appends
+# the leg's MARKET return — face ΔW(me) ÷ face Σv sent, the §5 leg-cap input)
 L_RET, L_DW, L_SENT, L_NP, L_NK, L_OPP, L_MASK, L_GIVE, L_GET = range(9)
-L_OUT4, L_IN4, L_DP = 9, 10, 11
+L_OUT4, L_IN4, L_DP, L_MKT = 9, 10, 11, 12
 
 
 @dataclass(slots=True)
@@ -861,7 +871,11 @@ def build_pair_pool(league: md.LeagueState, enforce_posture: bool = True) -> Pai
                     dw = -_neg_dw
                     buckets.setdefault((np_, nk), []).append(len(legs))
                     legs.append(
-                        (dw / gv, dw, gv, np_, nk, oi, mask, g, t, g.cols, t.cols, d_p)
+                        (
+                            dw / gv, dw, gv, np_, nk, oi, mask, g, t,
+                            g.cols, t.cols, d_p,
+                            (t.v_sum - gv) / gv,  # market return (§5 v3.4.1)
+                        )
                     )
     return PairPool(
         opp_names=list(league.opponents),
@@ -949,7 +963,7 @@ def _walk_pairs_below(
     r: float,
     budget: int,
     legal: dict,
-    out: list[tuple[float, int, int]],
+    out: list[tuple[float, float, int, int]],
 ) -> tuple[int, bool]:
     """Enumerate the VALID pair space at return < r — the exact complement of
     _walk_pairs at r (boundary pairs at exactly r belong to the ≥ walk).
@@ -1010,13 +1024,14 @@ def _walk_pairs(
     r: float,
     budget: int,
     legal: dict,
-    out: list[tuple[float, int, int]],
+    out: list[tuple[float, float, int, int]],
 ) -> tuple[int, bool]:
     """Enumerate the VALID pair space at return ≥ r: complementary
     count-signature buckets crossed in σ_r-descending order with early exit;
     constraints per §5 v3.3 — distinct counterparties, disjoint assets (my-give
     masks; get-sides cannot collide across distinct counterparties), both legs
-    full-legality PASS (memoized in `legal`). Appends (return, buy_i, sell_i)
+    full-legality PASS (memoized in `legal`). Appends (exact combined return,
+    heuristic crossing return, buy_i, sell_i)
     to `out`. Returns (pairs_visited, completed) — completed=False means the
     visit budget truncated the walk and `out` is a verified floor, not the
     whole space. Deterministic throughout."""
@@ -1264,8 +1279,10 @@ def _highest_cut_below(pool: PairPool, floor: float, hi: float, budget: int) -> 
 
 
 def return_bands(presets: Sequence[float]) -> list[tuple[float, float | None]]:
-    """§5 v3.3.1 return bands, percent, derived from the range presets:
-    [p0, p1), [p1, p2), …, [p_last, ∞) — ascending, hi=None on the open top."""
+    """§5 total-return bands, percent, derived from the floor presets:
+    [p0, p1), [p1, p2), …, [p_last, ∞) — ascending, hi=None on the open top.
+    v3.4.1: these are the `by_total` grid columns; storage strata are the
+    max-leg BUCKETS (leg_buckets)."""
     ps = sorted(float(p) for p in presets)
     return [(ps[i], ps[i + 1] if i + 1 < len(ps) else None) for i in range(len(ps))]
 
@@ -1280,32 +1297,71 @@ def band_index(bands: Sequence[tuple[float, float | None]], ret_pct: float) -> i
     return idx
 
 
-class _BandSink:
-    """append()-compatible walk output that stratifies on the fly: per band a
-    bounded min-heap of the top-`quota` pairs (by EXACT combined return desc,
-    deterministic ties) plus an exact tally of every valid pair seen. The
-    collection walks cover DISJOINT HEURISTIC return ranges (top ≥ r*, below
-    < u*, range [u*, r*)), so no pair is ever offered twice and no dedupe
-    structure is needed — and memory stays O(bands · quota) where full lists of
-    the walked space would blow the collector Lambda's 512MB."""
+def leg_buckets(cap_presets: Sequence[float]) -> list[tuple[float | None, float | None]]:
+    """§5 v3.4.1 max-leg buckets, percent, derived from the leg-cap presets:
+    (−∞, c0), [c0, c1), …, [c_last, ∞) — half-open, lo=None on the open bottom
+    (buy legs are normally negative in market return, §5 v3.4), hi=None on the
+    open top. A cap preset `c` selects exactly the buckets with hi ≤ c."""
+    cs = sorted(float(c) for c in cap_presets)
+    out: list[tuple[float | None, float | None]] = [(None, cs[0])]
+    out += [(cs[i], cs[i + 1] if i + 1 < len(cs) else None) for i in range(len(cs))]
+    return out
 
-    __slots__ = ("bands", "quota", "heaps", "counts")
 
-    def __init__(self, bands: Sequence[tuple[float, float | None]], quota: int):
-        self.bands = bands
+def bucket_index(
+    buckets: Sequence[tuple[float | None, float | None]], max_leg_pct: float
+) -> int:
+    """Index of the half-open bucket containing max_leg_pct (percent, the doc's
+    2-dp-rounded max leg market return). Total: every value has a bucket."""
+    idx = 0
+    for i, (lo, _hi) in enumerate(buckets):
+        if lo is not None and max_leg_pct >= lo:
+            idx = i
+    return idx
+
+
+class _BucketSink:
+    """append()-compatible walk output that stratifies on the fly (§5 v3.4.1):
+    per MAX-LEG BUCKET a bounded min-heap of the top-`quota` pairs by EXACT
+    combined TOTAL return (deterministic ties), a tally of every valid pair
+    seen, and the bucket × total-return-band count grid the inventory line is
+    served from. Pairs with total return below the lowest floor preset are
+    outside the stored universe — never stored, never counted. The collection
+    walks cover DISJOINT HEURISTIC return ranges, so no pair is ever offered
+    twice and no dedupe structure is needed — and memory stays
+    O(buckets · quota) where full lists would blow the collector's 512MB."""
+
+    __slots__ = ("buckets", "tbands", "quota", "legs", "heaps", "counts", "grid")
+
+    def __init__(
+        self,
+        buckets: Sequence[tuple[float | None, float | None]],
+        tbands: Sequence[tuple[float, float | None]],
+        quota: int,
+        legs: Sequence[tuple],
+    ):
+        self.buckets = buckets
+        self.tbands = tbands
         self.quota = quota
+        self.legs = legs
         # heap entries (ret, -bi, -si): lexicographic order on the negated-index
         # tuple exactly inverts the storage sort key (-ret, bi, si), so the
         # min-heap root is always the worst kept pair
-        self.heaps: list[list[tuple[float, int, int]]] = [[] for _ in bands]
-        self.counts: list[int] = [0] * len(bands)
+        self.heaps: list[list[tuple[float, int, int]]] = [[] for _ in buckets]
+        self.counts: list[int] = [0] * len(buckets)
+        self.grid: list[list[int]] = [[0] * len(tbands) for _ in buckets]
 
     def append(self, t: tuple[float, float, int, int]) -> None:
         ret, _heur, bi, si = t
-        i = band_index(self.bands, round(100.0 * ret, 2))
-        if i is None:
-            return  # below the lowest preset: never stored, never counted
+        ti = band_index(self.tbands, round(100.0 * ret, 2))
+        if ti is None:
+            return  # total below the lowest floor preset: outside the universe
+        legs = self.legs
+        mb = legs[bi][L_MKT]
+        ms = legs[si][L_MKT]
+        i = bucket_index(self.buckets, round(100.0 * (mb if mb > ms else ms), 2))
         self.counts[i] += 1
+        self.grid[i][ti] += 1
         h = self.heaps[i]
         e = (ret, -bi, -si)
         if len(h) < self.quota:
@@ -1313,8 +1369,8 @@ class _BandSink:
         elif e > h[0]:
             heappushpop(h, e)
 
-    def band_pairs(self, i: int) -> list[tuple[float, int, int]]:
-        """Stored pairs of band i, return-desc with deterministic ties."""
+    def bucket_pairs(self, i: int) -> list[tuple[float, int, int]]:
+        """Stored pairs of bucket i, TOTAL-return-desc with deterministic ties."""
         return [(e[0], -e[1], -e[2]) for e in sorted(self.heaps[i], reverse=True)]
 
 
@@ -1361,36 +1417,49 @@ def pair_count_deltas(buy_card: dict, sell_card: dict) -> tuple[int, int]:
 
 
 def trade_board(league: md.LeagueState) -> dict:
-    """§5 v3.3.1: the exhaustively-crossed, range-filtered PAIR board with
-    STRATIFIED storage. `pairs` holds the top-`pairs_per_band` by return WITHIN
-    each return band (bands derived from the presets: [1,2.5), [2.5,5), [5,10),
-    [10,20), [20,∞) percent), bands concatenated return-descending — so any
-    user range [min, max) over the presets has inventory, and the whole list
-    still reads return-desc globally. Every stored pair is fully count-neutral,
-    both legs gate-PASS, posture-clean, distinct counterparties, no shared
-    assets. `bands` carries per-band honest disclosure ({lo, hi|None, stored,
-    count, saturated} — a saturated count is a verified floor, never an
-    estimate); `counts_by_threshold` and `truncated` stay for ≥-style compat
-    reads. Pairs below the lowest preset are never stored (with the default
-    config the return floor IS the lowest preset). `recommendations` (top
-    unpaired sell/neutral legs by ΔW) and `watch` (unpaired buys) stay as data
-    for the trade-negotiator desk — the web renders pairs only."""
+    """§5 v3.4.1: the exhaustively-crossed PAIR board behind the user's TWO
+    independent dials — a floor on TOTAL pair return (combined ledger ÷ face Σv
+    sent, §2/§5 v3.4) and a cap on EACH leg's MARKET return (face skim off that
+    leg's counterparty). Storage is STRATIFIED BY MAX-LEG BUCKET: pairs bucket
+    on max(r(buy), r(sell)) over (−∞,2.5), [2.5,5), [5,10), [10,20), [20,∞)
+    percent, the top `pairs_per_band` per bucket kept by TOTAL return desc, and
+    `pairs` lists every stored pair sorted by total return desc globally (the
+    sort is ALWAYS total-desc; the cap only filters). Every stored pair is
+    fully count-neutral, both legs gate-PASS, posture-clean, distinct
+    counterparties, no shared assets, total return ≥ the lowest floor preset.
+    `bands` carries per-BUCKET honest disclosure ({lo|None, hi|None, stored,
+    count, saturated, by_total} — by_total is the bucket's count per
+    total-return band, so the inventory line is honest for any (floor, cap)
+    combination; every count is a verified floor, v3.4). `counts_by_threshold`
+    and `truncated` stay for ≥-style compat reads on total return.
+    `recommendations` (top unpaired sell/neutral legs by ΔW) and `watch`
+    (unpaired buys) stay as data for the trade-negotiator desk — the web
+    renders pairs only."""
     params = league.params
     presets = sorted(float(p) for p in params.return_presets)
-    bands = return_bands(presets)
-    nb = len(bands)
+    tbands = return_bands(presets)
+    buckets = leg_buckets(params.leg_cap_presets)
+    nb = len(buckets)
     quota = params.pairs_per_band
     if not league.offseason and league.snapshot.week > params.trade_deadline_week:
         return {
             "disabled": True,
             "pairs": [],
             "presets": presets,
+            "leg_cap_presets": [float(c) for c in params.leg_cap_presets],
             "counts_by_threshold": [
                 {"threshold": p, "count": 0, "saturated": False} for p in presets
             ],
             "bands": [
-                {"lo": lo, "hi": hi, "stored": 0, "count": 0, "saturated": False}
-                for lo, hi in bands
+                {
+                    "lo": lo,
+                    "hi": hi,
+                    "stored": 0,
+                    "count": 0,
+                    "saturated": False,
+                    "by_total": [0] * len(tbands),
+                }
+                for lo, hi in buckets
             ],
             "truncated": None,
             "recommendations": [],
@@ -1421,17 +1490,22 @@ def trade_board(league: md.LeagueState) -> dict:
     #      per-leg return floor, so that space is no longer empty);
     #   3. per band still touching the gap [floor, r*): the deepest COMPLETE
     #      range walk under the band's hi (out-of-range crossings cost one
-    #      multiply and no budget) — the stored pairs become the band's TRUE top
-    #      within the heuristic ordering.
-    # Output streams into per-band bounded heaps (_BandSink): tallies plus the
-    # top-quota pairs per band, O(bands · quota) memory (512MB Lambda).
+    #      multiply and no budget). v3.4.1: the STORAGE strata are max-leg
+    #      buckets — a dimension the walks cannot target (a leg's face skim is
+    #      uncorrelated with the heuristic ordering) — so the total-band slices
+    #      serve purely as coverage spreading across the total dimension; every
+    #      visited valid pair lands in its bucket and grid cell.
+    # Output streams into per-bucket bounded heaps (_BucketSink): tallies, the
+    # bucket × total-band grid, and the top-quota pairs per bucket by TOTAL
+    # return — O(buckets · quota) memory (512MB Lambda).
     #
     # HONESTY (v3.4): the walks are ordered by the legs' ISOLATION ΔWs while
     # every pair is priced by its EXACT combined ledger. The two orderings do
     # not agree (lineup interactions), so outside branch 0 no cutoff can prove
-    # a band was fully enumerated — every band count is a VERIFIED FLOOR.
+    # a bucket or grid cell was fully enumerated — every count is a VERIFIED
+    # FLOOR.
     collect_budget = max(params.pair_collect_budget, budget)
-    sink = _BandSink(bands, quota)
+    sink = _BucketSink(buckets, tbands, quota, pool.legs)
     ALL_R = -1e9  # below every crossing: σ_r > 0 for all legs, nothing prunes
     exact_all = False
     if _tp_estimate(pool, ALL_R) <= collect_budget:
@@ -1459,7 +1533,7 @@ def trade_board(league: md.LeagueState) -> dict:
                 if u_star > floor + 1e-12:
                     _walk_pairs_below(league, pool, u_star, collect_budget, legal, sink)
                     blocked.append((0.0, 100.0 * u_star))
-            for lo, hi in reversed(bands):
+            for lo, hi in reversed(tbands):
                 lo_f = max(lo / 100.0, floor)
                 hi_f = min(hi / 100.0 if hi is not None else hi_edge, r_star)
                 if hi_f <= lo_f + 1e-12:
@@ -1491,40 +1565,46 @@ def trade_board(league: md.LeagueState) -> dict:
                 legal, _DropSpans(sink, blocked),
             )
 
-    # per-band counts. Only the whole-space walk (branch 0) certifies an exact
-    # tally; every other branch leaves each band a verified floor (v3.4).
-    band_counts = [(sink.counts[i], not exact_all) for i in range(nb)]
+    # per-bucket counts. Only the whole-space walk (branch 0) certifies an
+    # exact tally; every other branch leaves every count a verified floor.
+    saturated = not exact_all
 
-    # ---- stored pairs: top-quota per band, return-desc within band, bands
-    # concatenated desc (bands partition the range, so the whole list is also
-    # globally return-desc) ----
-    band_top = [sink.band_pairs(i) for i in range(nb)]
-    stored: list[tuple[float, int, int]] = []
-    for i in range(nb - 1, -1, -1):
-        stored.extend(band_top[i])
+    # ---- stored pairs: top-quota per bucket by total return; the flat list is
+    # sorted by TOTAL return desc GLOBALLY (§5 v3.4.1: the sort is always
+    # total-desc — the leg-cap dial only filters, it never re-orders) ----
+    bucket_top = [sink.bucket_pairs(i) for i in range(nb)]
+    stored: list[tuple[float, int, int]] = sorted(
+        (t for top in bucket_top for t in top),
+        key=lambda t: (-t[0], t[1], t[2]),
+    )
 
     bands_doc = [
         {
             "lo": lo,
             "hi": hi,
-            "stored": len(band_top[i]),
-            "count": band_counts[i][0],
-            "saturated": band_counts[i][1],
+            "stored": len(bucket_top[i]),
+            "count": sink.counts[i],
+            "saturated": saturated,
+            # the bucket's counts per total-return band ([1,2.5), [2.5,5),
+            # [5,10), [10,20), [20,∞) — aligned with `presets`): the grid any
+            # (floor, cap) inventory line is served from
+            "by_total": list(sink.grid[i]),
         }
-        for i, (lo, hi) in enumerate(bands)
+        for i, (lo, hi) in enumerate(buckets)
     ]
 
-    # per-preset honesty (compat): presets coincide with band los, so the bands
-    # at or above a threshold tile its ≥-space exactly
+    # per-preset honesty (compat, TOTAL return): the grid columns at or above a
+    # threshold tile its ≥-space exactly, summed across every bucket
     counts_by_threshold = []
+    ntb = len(tbands)
     for k, p in enumerate(presets):
         n_stored = sum(1 for ret, _, _ in stored if round(100.0 * ret, 2) >= p)
-        band_sum = sum(band_counts[j][0] for j in range(k, nb))
+        grid_sum = sum(sink.grid[b][j] for b in range(nb) for j in range(k, ntb))
         counts_by_threshold.append(
             {
                 "threshold": p,
-                "count": max(n_stored, band_sum),
-                "saturated": any(band_counts[j][1] for j in range(k, nb)),
+                "count": max(n_stored, grid_sum),
+                "saturated": saturated,
             }
         )
 
@@ -1596,12 +1676,19 @@ def trade_board(league: md.LeagueState) -> dict:
             league,
             [(legs[bi][L_GIVE], legs[bi][L_GET]), (legs[si][L_GIVE], legs[si][L_GET])],
         )
+        # §5 v3.4.1: each leg's MARKET return (face skim off its counterparty)
+        # and their max — the leg-cap dial's filter key; the bucket this pair
+        # was stored under is bucket_index(max_leg_return_pct)
+        mkt_b = round(100.0 * legs[bi][L_MKT], 2)
+        mkt_s = round(100.0 * legs[si][L_MKT], 2)
         pairs_docs.append(
             {
                 "id": f"P{n}",
                 "buy": b,
                 "sell": s,
                 "return_pct": round(100.0 * ret, 2),
+                "leg_returns": {"buy": mkt_b, "sell": mkt_s},
+                "max_leg_return_pct": mkt_b if mkt_b > mkt_s else mkt_s,
                 "dW_combined": combined["dW"],
                 "dW_combined_parts": {"dS": combined["dS"], "dP": combined["dP"]},
                 "dW_legs_isolated": round(b["dW"]["me"] + s["dW"]["me"], 1),
@@ -1685,22 +1772,26 @@ def trade_board(league: md.LeagueState) -> dict:
 
     notes = [
         "v3.3 enumerate-then-filter: the board is the legal PAIR space behind your "
-        "target-return range (v3.3.1: min/max over the presets) — every stored pair "
-        "nets exactly 0 players / 0 picks for you, ranked by return on inventory "
-        "deployed (combined ΔW ÷ Σv you send)",
+        "two dials (v3.4.1): a FLOOR on total pair return (combined ledger ΔW ÷ Σv "
+        "you send across both legs) and a CAP on each leg's market return (face "
+        "skim off that leg's counterparty) — independent dimensions; every stored "
+        "pair nets exactly 0 players / 0 picks for you, always sorted by total "
+        "return desc",
         "ΔW is the v3.4 wealth ledger (starters at raw KTC over active+taxi, plus "
         "picks at tranche) and is PER SIDE — a good pair can lift both ledgers. A "
         "pair's ΔW is the two legs applied TOGETHER; each leg card also shows its "
         "isolation ΔW, and a buy leg alone is normally negative",
-        f"stratified storage (v3.3.1): up to {quota} pairs kept per return band "
-        "(bands derived from the presets), return-desc within band — bands marked "
-        "saturated carry verified-floor counts; their space runs deeper than the "
-        "collection budget",
+        f"stratified storage (v3.4.1): up to {quota} pairs kept per MAX-LEG bucket "
+        "(buckets on max(r(buy), r(sell)) at the cap presets), each bucket's top "
+        "by TOTAL return — `by_total` on each bucket is its count per total-return "
+        "band, so any (floor, cap) inventory read is honest",
         "posture is a hard engine constraint (§5 v3.3): BUYERs only receive "
         "players-majority packages, SELLERs picks-majority, NEUTRAL either; "
         "overrides apply first",
-        "the per-leg return floor is retired (v3.4): legs may lose value on their "
-        "own and be recouped by their partner — only the PAIR has to clear the dial",
+        "the per-leg return FLOOR is retired (v3.4): legs may lose value on their "
+        "own and be recouped by their partner — only the PAIR has to clear the "
+        "floor dial; the v3.4.1 leg CAP is the opposite guard, against any single "
+        "counterparty giving up too much face value on their leg",
         f"per (counterparty, give-package, count-signature) the top "
         f"{params.variants_per_signature} gets by ISOLATION ledger ΔW are pooled, "
         f"chosen among the first {params.variant_scan_cap} gate-passers in Σv-desc "
@@ -1720,8 +1811,8 @@ def trade_board(league: md.LeagueState) -> dict:
     if truncated:
         notes.insert(
             1,
-            f"storage cap: {truncated['stored']} pairs stored across the bands "
-            f"(top of each band by return), of "
+            f"storage cap: {truncated['stored']} pairs stored across the max-leg "
+            f"buckets (top of each bucket by total return), of "
             f"{'at least ' if total_sat else ''}{truncated['total']} found in the "
             "collection walk",
         )
@@ -1730,6 +1821,7 @@ def trade_board(league: md.LeagueState) -> dict:
         "disabled": False,
         "pairs": pairs_docs,
         "presets": presets,
+        "leg_cap_presets": [float(c) for c in params.leg_cap_presets],
         "counts_by_threshold": counts_by_threshold,
         "bands": bands_doc,
         "truncated": truncated,

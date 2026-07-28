@@ -38,15 +38,21 @@ Division of labor (spec v3.4, `docs/scoring-system.md`):
   (~+3,377 on {8000,2000} vs {5000,5000}). Two-mid-players-for-one-stud shapes
   that used to clear the old fitted band now fail — check, never assume. Never
   estimate a value from memory; run the tools.
-- **The user supplies the target-return RANGE (v3.3.1).** The engine
+- **The user supplies TWO independent dials (v3.4.1).** The engine
   enumerates the legal pair space (no pre-pairing pruning; W_min retired
   as a gate — it survives only as a display noise note; v3.4 also retired the
-  per-leg return floor, so negative buy legs stay in) and filters by
-  `return = combined ledger ΔW ÷ Σ face v we send` over a min/max window — presets 1 / 2.5
-  / 5 / 10 / 20% for the min, 2.5 / 5 / 10 / 20 / no-cap for the max. Storage
-  is stratified: the top ~100 pairs per return band ([1,2.5), [2.5,5),
-  [5,10), [10,20), [20,∞)), each band with an honest count. Under v3.4 EVERY
-  band count is a saturated verified floor — the walk orders legs by their
+  per-leg return floor, so negative buy legs stay in) and filters by a FLOOR
+  on total return (`combined ledger ΔW ÷ Σ face v we send`) plus a CAP on
+  each leg's MARKET return (`face ΔW ÷ face Σv sent on that leg` — the skim
+  that leg's counterparty sees). The dials are different dimensions: floor 5%
+  under a 2.5% leg cap is the flagship query (legs look nearly even, the pair
+  total is large). The list always sorts by total return desc — presets 1 / 2.5
+  / 5 / 10 / 20% for the floor, 2.5 / 5 / 10 / 20 / no-cap for the leg cap. Storage
+  is stratified by MAX-LEG bucket ((−∞,2.5), [2.5,5), [5,10), [10,20),
+  [20,∞) on max(r(buy), r(sell))): the top ~100 pairs per bucket by TOTAL
+  return, each bucket with an honest count plus a `by_total` grid (counts per
+  total-return band) so any (floor, cap) read is honest. Under v3.4 EVERY
+  count is a saturated verified floor — the walk orders legs by their
   isolation ΔW while pairs are priced by the exact combined ledger, so no
   cutoff can certify completeness. Say "at least N", never a point estimate.
   In the engine, posture is a HARD pair constraint (BUYERs
@@ -101,15 +107,17 @@ The user will feed you color like: *"trdouglas is hunting draft capital"* ·
 2. **Load the desk view**:
    - `uv run python scripts/score_trade.py teams` — L/F, posture + evidence, FAAB.
    - Active intel: `... get_db()['market-intel'].find({'active': True})` (sort by team).
-   - The nightly board: `trade-recs` doc (v3.3.1: `pairs` is the stratified
-     stored pair space — count-neutral buy+sell with embedded cards, top of
-     each return band by `return_pct`, bands concatenated descending; `bands`
-     gives per-band inventory {lo, hi, stored, count, saturated} (`saturated:
-     true` means a verified floor — read the count as "≥ N");
-     `counts_by_threshold` keeps ≥-style depth; `truncated` discloses the
-     storage cap; `recommendations` is unpaired sell/neutral legs — building
-     blocks carrying `net_players`/`net_picks`, pair before executing;
-     `watch` is blocked buys with the exit each needs; `notes`).
+   - The nightly board: `trade-recs` doc (v3.4.1: `pairs` is the stratified
+     stored pair space — count-neutral buy+sell with embedded cards, each
+     pair carrying `return_pct` (total), `leg_returns` + `max_leg_return_pct`
+     (market skims, the leg-cap keys), the whole list sorted total-desc;
+     `bands` gives per-MAX-LEG-BUCKET inventory {lo, hi, stored, count,
+     saturated, by_total} (`saturated: true` means a verified floor — read
+     the count as "≥ N"; `by_total` is the bucket's counts per total band);
+     `counts_by_threshold` keeps ≥-style depth on total return; `truncated`
+     discloses the storage cap; `recommendations` is unpaired sell/neutral
+     legs — building blocks carrying `net_players`/`net_picks`, pair before
+     executing; `watch` is blocked buys with the exit each needs; `notes`).
 3. **Open with a desk brief**: per-team one-liners merging posture (+evidence
    count), active intel, visible holes, pick inventory — then the board's top
    legs and any intel-driven opportunities the board can't see.
@@ -121,14 +129,16 @@ uv run python scripts/score_trade.py teams
 uv run python scripts/score_trade.py list-assets [team]          # exact asset names
 uv run python scripts/score_trade.py score --opponent X \
     --give "A, B" --get "C" [--alternatives] [--hedge] [--json]
-uv run python scripts/score_trade.py pairs --min 5 --max 10 [--json]  # the v3.3.1 range
+uv run python scripts/score_trade.py pairs --min 5 --max 2.5 [--json]  # v3.4.1: total floor + leg cap
 ```
 
-- `pairs --min LO --max HI`: computes the pair board from the store (the same
-  engine code path as the nightly run) and prints the band inventory summary,
-  then the stored pairs with return in [LO, HI)% — each line a buy leg, a
-  sell leg, the pair return. Omit `--max` for no cap; `--target N` is the
-  v3.3 alias for `--min N`.
+- `pairs --min FLOOR --max CAP`: computes the pair board from the store (the
+  same engine code path as the nightly run) and prints the bucket inventory,
+  then the stored pairs with TOTAL return ≥ FLOOR and EVERY leg's market
+  return < CAP (v3.4.1 — independent dials; `--min 5 --max 2.5` is the
+  balanced-legs query), sorted by total return desc — each line a buy leg, a
+  sell leg, the pair's total and per-leg market returns. Omit `--max` for no
+  cap; `--target N` is the v3.3 alias for `--min N`.
 - `--alternatives`: single-tweak variants, gate-passers ranked by our ledger
   ΔW — the counter-offer generator.
 - `--hedge`: for any non-count-neutral leg, gate-passing legs elsewhere (≤2
@@ -145,13 +155,16 @@ uv run python scripts/score_trade.py pairs --min 5 --max 10 [--json]  # the v3.3
 
 ## Playbooks
 
-- **"Show me trades between 5 and 10 percent" / "show me 5% pairs" / "what
-  clears N%?" (the v3.3.1 target-return range)** → run `pairs --min 5 --max
-  10` (or the user's numbers; min presets 1 / 2.5 / 5 / 10 / 20, max presets
-  2.5 / 5 / 10 / 20 or omitted for no cap; a bare "show me 5% pairs" is
-  `pairs --min 5` — no cap). Read the band inventory honestly: `saturated`
-  bands are verified floors — say "at least N", never a point estimate — and
-  a band whose count exceeds its stored quota runs deeper than what's listed.
+- **"Show me 5% pairs" / "cap the legs at 2.5" / "what clears N%?" (the
+  v3.4.1 dials)** → run `pairs --min 5 --max 2.5` (or the user's numbers;
+  floor presets 1 / 2.5 / 5 / 10 / 20 on TOTAL return, cap presets 2.5 / 5 /
+  10 / 20 or omitted for no cap on EACH LEG's market return; a bare "show me
+  5% pairs" is `pairs --min 5` — no cap). A cap query reads "no single
+  counterparty gives up more than C% of face on their leg" — the polite-book
+  filter; the sort is always total return desc. Read the bucket inventory
+  honestly: counts are verified floors — say "at least N", never a point
+  estimate — and a bucket whose count exceeds its stored quota runs deeper
+  than what's listed.
   Then curate, don't just paste: the engine's constraints are HARD in the
   pair space but QUALITATIVE at this desk —
   - **Intel can promote/demote an effective posture.** The engine only sells

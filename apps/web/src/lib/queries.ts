@@ -166,6 +166,12 @@ export interface TradeRec {
   dW_basis?: string;
   /** §5 v3.3 leg return on inventory deployed: ΔW(me) ÷ Σv sent, percent. */
   return_pct: number | null;
+  /**
+   * §5 v3.4.1 leg MARKET return, percent: face ΔW(me) ÷ face Σv sent on this
+   * leg — the skim this leg's counterparty sees; the leg-cap dial's input.
+   * Optional: docs written before v3.4.1 omit it.
+   */
+  market_return_pct?: number | null;
   gate: TradeGate;
   posture: TradePosture;
   /** Their league rank at each position I send — "aim at visible holes". */
@@ -207,10 +213,18 @@ export interface TradePair {
   buy: TradeRec;
   sell: TradeRec;
   /**
-   * §5 v3.3 return on inventory deployed, percent: combined ΔW(me) ÷ Σv of
-   * every asset I send across both legs — the range filter's ranking metric.
+   * §5 v3.3 TOTAL return on inventory deployed, percent: combined ΔW(me) ÷ Σv
+   * of every asset I send across both legs — the floor dial's filter key and
+   * the ONLY sort key (v3.4.1: the board always sorts by total return desc).
    */
   return_pct: number;
+  /**
+   * §5 v3.4.1: each leg's market return, percent (face skim off that leg's
+   * counterparty), and their max — the leg-cap dial's filter key. Optional:
+   * docs written before v3.4.1 omit them.
+   */
+  leg_returns?: { buy: number; sell: number };
+  max_leg_return_pct?: number;
   /**
    * §5 v3.4: my ledger delta with BOTH legs applied together. Not the sum of
    * the legs' isolation ΔWs — they interact through the starting lineup.
@@ -242,23 +256,30 @@ export interface ThresholdCount {
 }
 
 /**
- * §5 v3.3.1 per-band inventory: bands derive from the presets as half-open
- * [lo, hi) percent intervals (hi null on the open top). The engine stores the
- * top `stored` pairs by return WITHIN each band (quota 100), so any min/max
- * range over the presets has inventory; `count` is the band's legal pair
- * count — exact, or a verified floor when `saturated`.
+ * §5 v3.4.1 per-BUCKET inventory: buckets stratify on the pair's MAX LEG
+ * market return over half-open (−∞,2.5), [2.5,5), [5,10), [10,20), [20,∞)
+ * percent intervals (lo null on the open bottom — buy legs are normally
+ * negative; hi null on the open top). The engine stores each bucket's top
+ * `stored` pairs by TOTAL return (quota 100); a leg-cap preset `c` selects
+ * the union of buckets with hi ≤ c. `count` is the bucket's legal pair count
+ * and `by_total` its counts per total-return band (aligned with `presets`) —
+ * every count a verified floor when `saturated` (v3.4: always, outside
+ * whole-space walks). Docs written before v3.4.1 carry the old total-return
+ * band shape (lo non-null, no by_total) — render defensively.
  */
 export interface BandInfo {
-  /** Band lower edge, percent (inclusive) — coincides with a preset. */
-  lo: number;
-  /** Band upper edge, percent (exclusive); null = no cap. */
+  /** Bucket lower edge, percent (inclusive); null = open bottom (v3.4.1). */
+  lo: number | null;
+  /** Bucket upper edge, percent (exclusive); null = open top. */
   hi: number | null;
-  /** Pairs stored for this band (≤ the engine's per-band quota). */
+  /** Pairs stored for this bucket (≤ the engine's per-bucket quota). */
   stored: number;
-  /** Legal pairs in the band — exact, or a verified floor when saturated. */
+  /** Legal pairs in the bucket — a verified floor when saturated. */
   count: number;
-  /** True when the band's space outran the collection budget ("≥ N"). */
+  /** True when the count is a floor, not an exact tally ("≥ N"). */
   saturated: boolean;
+  /** v3.4.1: the bucket's counts per total-return band (aligned with presets). */
+  by_total?: number[];
 }
 
 /** §5 v3.3 storage-cap honesty: top `stored` by return kept of `total`. */
@@ -283,17 +304,19 @@ export interface TradeRecsDoc {
   meta: ScoringMeta;
   disabled: boolean;
   /**
-   * Primary (§5 v3.3.1): the stratified stored pair space behind the
-   * target-return RANGE — count-neutral pairs, top-quota per return band,
-   * return-desc within band, bands concatenated descending (so the whole
-   * list also reads return-desc). See `bands` for per-band honesty.
+   * Primary (§5 v3.4.1): the stratified stored pair space behind the TWO
+   * dials — total-return floor + per-leg market-return cap. Count-neutral
+   * pairs, top-quota per max-leg BUCKET by total return, the flat list sorted
+   * by total return desc globally. See `bands` for per-bucket honesty.
    */
   pairs: TradePair[];
-  /** Range presets, percent: [1, 2.5, 5, 10, 20]. */
+  /** Total-return floor presets, percent: [1, 2.5, 5, 10, 20]. */
   presets: number[];
-  /** Honest pair counts per preset (ascending thresholds; ≥-style compat). */
+  /** v3.4.1 leg-cap presets, percent: [2.5, 5, 10, 20]. Optional on old docs. */
+  leg_cap_presets?: number[];
+  /** Honest pair counts per floor preset (ascending; ≥-style compat). */
   counts_by_threshold: ThresholdCount[];
-  /** v3.3.1 per-band inventory (ascending lo) — the range filter's source. */
+  /** v3.4.1 per-bucket inventory (ascending) — the cap filter's source. */
   bands: BandInfo[];
   /** Set when more pairs cleared the floor than were stored; null otherwise. */
   truncated: TruncationInfo | null;

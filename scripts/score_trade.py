@@ -19,13 +19,16 @@ Usage (from the repo root, .env required):
       [--alternatives] [--hedge] [--json]
   uv run python scripts/score_trade.py pairs --min 5 --max 10 [--json]
 
-`pairs` computes the §5 v3.3.1 pair board (same engine code path as the
+`pairs` computes the §5 v3.4.1 pair board (same engine code path as the
 nightly run: enumerate-then-filter, posture as a hard constraint, count-
-neutral pairs, STRATIFIED per-band storage) and prints the band inventory
-followed by the stored pairs inside your return range [--min, --max) —
-`--target N` survives as an alias for `--min N`; omit --max for no cap.
-Every band count is a verified floor under v3.4 (the walk orders legs by
-their isolation ΔW while pairs are priced by the exact combined ledger).
+neutral pairs, storage STRATIFIED BY MAX-LEG BUCKET) and prints the bucket
+inventory followed by the stored pairs behind your two dials: `--min` floors
+the TOTAL pair return, `--max` caps EACH LEG's market return (v3.4.1 — the
+dials are independent dimensions; `--min 5 --max 2.5` is the balanced-legs
+query). The list always sorts by total return desc. `--target N` survives as
+an alias for `--min N`; omit --max for no cap. Every count is a verified
+floor under v3.4 (the walk orders legs by their isolation ΔW while pairs are
+priced by the exact combined ledger).
 """
 
 from __future__ import annotations
@@ -227,9 +230,11 @@ def fmt_legline(card: dict) -> str:
     ret = card.get("return_pct")
     parts = card.get("dW_parts", {}).get("me")
     tail = f"; {fmt_parts(parts)}" if parts else ""
+    mkt = card.get("market_return_pct")
+    mkt_s = f", market {mkt:+g}%" if mkt is not None else ""
     return (
         f"send {give} -> get {get}  "
-        f"(ΔW alone {card['dW']['me']:+.0f}{tail}, leg return {ret:g}%)"
+        f"(ΔW alone {card['dW']['me']:+.0f}{tail}, leg return {ret:g}%{mkt_s})"
     )
 
 
@@ -272,7 +277,12 @@ def fmt_card(card: dict, header: str = "") -> str:
         + f" · offer shape {p['shape']} ({'fits' if p['fit'] else 'does not fit'})",
         f"  Leg: {card['leg_type']} · counts you: {card['net_players']['me']:+d} players / "
         f"{card['net_picks']['me']:+d} picks (§5 v3.2; net active roster "
-        f"{card['net_roster']['me']:+d} you / {card['net_roster']['them']:+d} them)",
+        f"{card['net_roster']['me']:+d} you / {card['net_roster']['them']:+d} them)"
+        + (
+            f" · market return {card['market_return_pct']:+g}% (the v3.4.1 leg-cap number)"
+            if card.get("market_return_pct") is not None
+            else ""
+        ),
         f"  Sequencing: {card['sequencing']}",
         f"  Anchor ask: open at ≈{card['anchor_ask']['ask']} ({card['anchor_ask']['note']})",
     ]
@@ -316,23 +326,22 @@ def main() -> None:
     sc.add_argument("--json", action="store_true")
     pr = sub.add_parser(
         "pairs",
-        help="the §5 v3.3.1 pair board inside your return range (same code path as the nightly board)",
+        help="the §5 v3.4.1 pair board behind your two dials (same code path as the nightly board)",
     )
     pr.add_argument(
         "--min", "--target", dest="min_ret", type=float, default=5.0,
-        help="minimum pair return, percent (presets 1 / 2.5 / 5 / 10 / 20; "
+        help="floor on TOTAL pair return, percent (presets 1 / 2.5 / 5 / 10 / 20; "
         "--target is the v3.3 alias)",
     )
     pr.add_argument(
-        "--max", dest="max_ret", type=float, default=None,
-        help="exclusive upper bound on pair return, percent (presets "
-        "2.5 / 5 / 10 / 20; omit for no cap)",
+        "--max", dest="leg_cap", type=float, default=None,
+        help="v3.4.1: exclusive cap on EACH LEG's market return — face ΔW ÷ face "
+        "Σv sent on that leg, the skim that leg's counterparty sees (presets "
+        "2.5 / 5 / 10 / 20; omit for no cap). Independent of --min: --min 5 "
+        "--max 2.5 is the balanced-legs/high-total query",
     )
     pr.add_argument("--json", action="store_true")
     args = ap.parse_args()
-
-    if args.cmd == "pairs" and args.max_ret is not None and args.max_ret <= args.min_ret:
-        sys.exit(f"--max ({args.max_ret:g}) must exceed --min ({args.min_ret:g})")
 
     db = get_db()
     snapshot, fresh = build_snapshot_from_store(db)
@@ -345,21 +354,27 @@ def main() -> None:
         board = tr.trade_board(league)
         if board.get("disabled"):
             sys.exit("trade deadline has passed — the pair board is disabled")
-        lo, hi = args.min_ret, args.max_ret
-        range_label = f"[{lo:g}, {hi:g})%" if hi is not None else f">= {lo:g}%"
+        lo, cap = args.min_ret, args.leg_cap
+        filter_label = f"total >= {lo:g}%" + (
+            f", every leg < {cap:g}%" if cap is not None else ", no leg cap"
+        )
+        # v3.4.1: --min floors the TOTAL return; --max caps EACH LEG's market
+        # return; the list always sorts by total return desc
         hits = [
             p for p in board["pairs"]
-            if p["return_pct"] >= lo and (hi is None or p["return_pct"] < hi)
+            if p["return_pct"] >= lo
+            and (cap is None or p["max_leg_return_pct"] < cap)
         ]
         hits.sort(key=lambda p: -p["return_pct"])
-        bands = board.get("bands", [])
+        buckets = board.get("bands", [])
         if args.json:
             print(json.dumps(
                 {
                     "min": lo,
-                    "max": hi,
+                    "leg_cap": cap,
                     "presets": board["presets"],
-                    "bands": bands,
+                    "leg_cap_presets": board.get("leg_cap_presets"),
+                    "bands": buckets,
                     "counts_by_threshold": board["counts_by_threshold"],
                     "truncated": board["truncated"],
                     "pairs": hits[:15],
@@ -369,46 +384,59 @@ def main() -> None:
             ))
             return
 
-        def band_name(b: dict) -> str:
-            return f"[{b['lo']:g}, {b['hi']:g})%" if b["hi"] is not None else f"[{b['lo']:g}, inf)%"
+        def bucket_name(b: dict) -> str:
+            if b["lo"] is None:
+                return f"max leg < {b['hi']:g}%"
+            if b["hi"] is None:
+                return f"max leg >= {b['lo']:g}%"
+            return f"max leg [{b['lo']:g}, {b['hi']:g})%"
 
-        print("Band inventory (stored top-of-band / legal count; '>=' = verified floor — the space runs deeper):")
-        for b in bands:
-            mark = ">= " if b["saturated"] else ""
-            print(f"  {band_name(b):>12}: stored {b['stored']:>3} of {mark}{b['count']}")
-        if not hits:
-            fallback = [b for b in bands if b["stored"] > 0]
-            below = [b for b in fallback if b["lo"] < lo]
-            pick = max(below, key=lambda b: b["lo"]) if below else (
-                min(fallback, key=lambda b: b["lo"]) if fallback else None
-            )
-            if pick:
-                mark = ">= " if pick["saturated"] else ""
-                print(
-                    f"\nNo stored pairs in {range_label} today — the {band_name(pick)} band "
-                    f"holds {pick['stored']} stored of {mark}{pick['count']} legal. "
-                    "Widen the range, or hold."
-                )
-            else:
-                print(f"\nNo stored pairs in {range_label} today, and no band holds any.")
-            return
-        in_range_bands = [
-            b for b in bands
-            if b["lo"] >= lo and (hi is None or (b["hi"] is not None and b["hi"] <= hi))
+        tband_names = [
+            f"[{p:g},{board['presets'][i + 1]:g})" if i + 1 < len(board["presets"])
+            else f"[{p:g},inf)"
+            for i, p in enumerate(board["presets"])
         ]
-        deeper = any(b["saturated"] or b["count"] > b["stored"] for b in in_range_bands)
         print(
-            f"\nTop {min(15, len(hits))} of {len(hits)} stored pairs in {range_label}"
-            + (" (the legal space in this range runs deeper — see the inventory above)" if deeper else "")
+            "Max-leg bucket inventory (v3.4.1: bucket = the pair's larger leg market "
+            "return; stored = the bucket's top pairs by TOTAL return; every count a "
+            "verified floor — '>=' throughout):"
+        )
+        for b in buckets:
+            mark = ">= " if b["saturated"] else ""
+            grid = "  ".join(
+                f"{name}:{n}" for name, n in zip(tband_names, b["by_total"]) if n
+            ) or "-"
+            print(
+                f"  {bucket_name(b):>20}: stored {b['stored']:>3} of {mark}{b['count']:<8}"
+                f" by total {grid}"
+            )
+        if not hits:
+            print(
+                f"\nNo stored pairs with {filter_label} today. Loosen the leg cap "
+                "or drop the total floor — the inventory above shows where the "
+                "stored pairs sit. The board recomputes nightly."
+            )
+            return
+        deeper = any(b["saturated"] or b["count"] > b["stored"] for b in buckets)
+        print(
+            f"\nTop {min(15, len(hits))} of {len(hits)} stored pairs with {filter_label}, "
+            "total return desc"
+            + (" (the legal space runs deeper — see the inventory above)" if deeper else "")
             + ":"
         )
         for p in hits[:15]:
             b, s = p["buy"], p["sell"]
             parts = p.get("dW_combined_parts")
             tail = f" ({fmt_parts(parts)})" if parts else ""
+            lr = p.get("leg_returns", {})
+            legs_str = (
+                f"  legs market {lr.get('buy', 0):+g}% buy / {lr.get('sell', 0):+g}% sell"
+                if lr
+                else ""
+            )
             print(
-                f"\n{p['id']}  return {p['return_pct']:g}%  pair ΔW {p['dW_combined']:+g}"
-                f"{tail}  [0 players / 0 picks net · {p['fit_summary']}]"
+                f"\n{p['id']}  total return {p['return_pct']:g}%  pair ΔW {p['dW_combined']:+g}"
+                f"{tail}{legs_str}  [0 players / 0 picks net · {p['fit_summary']}]"
             )
             print(f"  BUY  {b['counterparty']:<15} {fmt_legline(b)}")
             print(f"  SELL {s['counterparty']:<15} {fmt_legline(s)}")

@@ -212,8 +212,9 @@ def test_pool_screen_never_rejects_a_gate_passer(league):
 
 
 def test_board_ranking_and_ids(result):
-    """§5 v3.3: pairs rank by return on inventory deployed, descending; the
-    secondary sell/neutral list by isolation ΔW descending; ids are sequential."""
+    """§5 v3.4.1: pairs sort by TOTAL return desc — ALWAYS, whatever the cap
+    filter later selects; the secondary sell/neutral list by isolation ΔW
+    descending; ids are sequential."""
     doc = result["trade_recs"]
     rets = [p["return_pct"] for p in doc["pairs"]]
     assert rets == sorted(rets, reverse=True)
@@ -433,27 +434,35 @@ def test_posture_is_a_hard_pair_pool_constraint(league, pool, result):
 
 
 def test_board_pairs_dense_and_honest_on_fixture(result, params):
-    """§5 v3.3.1 on the committed fixture: the pair space is deep — EVERY band
-    fills to its quota, the cap is reported via `truncated`, and every band
-    count is a saturated verified floor. v3.4 removed the exactness upgrade on
-    purpose: the walk orders legs by their ISOLATION ΔWs while pairs are priced
-    by the EXACT combined ledger, so no cutoff can certify a band is complete —
-    only a whole-space walk could, and the fixture space is far too deep."""
+    """§5 v3.4.1 on the committed fixture: the pair space is deep — EVERY
+    max-leg bucket fills to its quota, the cap is reported via `truncated`,
+    and every count is a saturated verified floor (v3.4: the walk orders legs
+    by their ISOLATION ΔWs while pairs are priced by the EXACT combined
+    ledger, so no cutoff can certify completeness)."""
     doc = result["trade_recs"]
     bands = doc["bands"]
     assert doc["presets"] == [1.0, 2.5, 5.0, 10.0, 20.0]
+    assert doc["leg_cap_presets"] == [2.5, 5.0, 10.0, 20.0]
     assert doc["pairs"][0]["return_pct"] == 49.88  # fixture pin: global top
+    # the top pair is lopsided in market terms — its sell leg skims 26.8% face
+    assert doc["pairs"][0]["leg_returns"] == {"buy": 6.65, "sell": 26.8}
+    assert doc["pairs"][0]["max_leg_return_pct"] == 26.8
     assert len(doc["pairs"]) == sum(b["stored"] for b in bands) == 500
     for b in bands:
-        assert b["stored"] == params.pairs_per_band == 100  # every band at quota
+        assert b["stored"] == params.pairs_per_band == 100  # every bucket at quota
         assert b["count"] >= b["stored"]
         assert b["saturated"] is True  # verified floors throughout (v3.4)
-    # the flagship range query has real inventory: the [5,10) stored top sits
-    # near the band's top edge, not at its floor
-    b510 = next(b for b in bands if b["lo"] == 5.0)
-    in_range = [p for p in doc["pairs"] if 5.0 <= p["return_pct"] < 10.0]
-    assert len(in_range) == b510["stored"] == 100
-    assert in_range[0]["return_pct"] > 9.0
+        assert sum(b["by_total"]) == b["count"]  # the grid partitions the bucket
+    # the flagship v3.4.1 query — high total floor UNDER a tight leg cap —
+    # has real inventory: cap 2.5% selects the (−∞,2.5) bucket, whose stored
+    # top-by-total all clear a 5% total floor with balanced legs
+    flagship = [
+        p for p in doc["pairs"]
+        if p["return_pct"] >= 5.0 and p["max_leg_return_pct"] < 2.5
+    ]
+    assert len(flagship) == 100
+    assert flagship[0]["return_pct"] == 49.76  # fixture pin: even legs, huge total
+    assert flagship[0]["max_leg_return_pct"] < 2.5
     t = doc["truncated"]
     assert t is not None and t["stored"] == 500
     assert t["total"] >= 500 and t["total_saturated"] is True
@@ -472,51 +481,71 @@ def test_board_pairs_dense_and_honest_on_fixture(result, params):
         assert "players" in w["blocker"] and "picks" in w["blocker"]
 
 
-def test_return_bands_and_membership_math():
-    """v3.3.1 range-filter math pinned: bands derive from the presets as
-    half-open [lo, hi) intervals with an open top; membership at the edges is
-    exact. The fixture's top pair at 49.88% lives in [20, ∞)."""
+def test_return_bands_and_bucket_math():
+    """v3.4.1 filter math pinned: total-return bands derive from the floor
+    presets as half-open [lo, hi) intervals (open top); max-leg BUCKETS derive
+    from the cap presets as half-open intervals open at BOTH ends — buy legs
+    are normally negative in market return, so the bottom bucket must reach
+    −∞. A cap preset `c` selects exactly the buckets with hi ≤ c."""
     bands = tr.return_bands((1.0, 2.5, 5.0, 10.0, 20.0))
     assert bands == [(1.0, 2.5), (2.5, 5.0), (5.0, 10.0), (10.0, 20.0), (20.0, None)]
-    assert tr.band_index(bands, 49.88) == 4  # pinned fixture pair return
-    assert tr.band_index(bands, 9.34) == 2
+    assert tr.band_index(bands, 49.88) == 4  # pinned fixture pair total
     assert tr.band_index(bands, 5.0) == 2 and tr.band_index(bands, 4.99) == 1
     assert tr.band_index(bands, 2.5) == 1 and tr.band_index(bands, 10.0) == 3
-    assert tr.band_index(bands, 20.0) == 4 and tr.band_index(bands, 31.72) == 4
     assert tr.band_index(bands, 1.0) == 0
     assert tr.band_index(bands, 0.99) is None  # below the lowest preset: no band
 
+    buckets = tr.leg_buckets((2.5, 5.0, 10.0, 20.0))
+    assert buckets == [
+        (None, 2.5), (2.5, 5.0), (5.0, 10.0), (10.0, 20.0), (20.0, None),
+    ]
+    assert tr.bucket_index(buckets, -100.0) == 0  # a pure-spend buy leg
+    assert tr.bucket_index(buckets, 0.0) == 0
+    assert tr.bucket_index(buckets, 2.49) == 0
+    assert tr.bucket_index(buckets, 2.5) == 1  # the cap is exclusive at c
+    assert tr.bucket_index(buckets, 4.99) == 1
+    assert tr.bucket_index(buckets, 26.8) == 4  # pinned fixture max leg
+    # cap-selection identity: max_leg < c ⟺ bucket.hi ≤ c, for every preset
+    for c in (2.5, 5.0, 10.0, 20.0):
+        selected = {i for i, (_lo, hi) in enumerate(buckets) if hi is not None and hi <= c}
+        for m in (-3.0, 0.0, 2.49, 2.5, 4.99, 5.0, 9.99, 10.0, 19.99, 20.0, 26.8):
+            assert (tr.bucket_index(buckets, m) in selected) == (m < c), (c, m)
 
-def test_stratified_band_storage_invariant(result, params):
-    """v3.3.1 stratification: every stored pair's return sits inside its band,
-    per-band storage is capped at the quota and return-desc within the band,
-    and bands concatenate descending (so the whole list reads return-desc)."""
+
+def test_bucket_storage_invariant(result, params):
+    """v3.4.1 stratification: every stored pair's MAX LEG market return sits
+    inside its bucket, per-bucket storage is capped at the quota, each
+    bucket's stored pairs read TOTAL-return-desc, and the flat list is sorted
+    by total return desc globally (the cap dial filters, never re-orders)."""
     doc = result["trade_recs"]
     bands = doc["bands"]
     edges = [(b["lo"], b["hi"]) for b in bands]
-    by_band: dict[int, list[float]] = {i: [] for i in range(len(bands))}
+    by_bucket: dict[int, list[float]] = {i: [] for i in range(len(bands))}
     for p in doc["pairs"]:
-        i = tr.band_index(edges, p["return_pct"])
-        assert i is not None
-        by_band[i].append(p["return_pct"])
+        m = p["max_leg_return_pct"]
+        assert m == max(p["leg_returns"]["buy"], p["leg_returns"]["sell"])
+        i = tr.bucket_index(edges, m)
+        lo, hi = edges[i]
+        assert lo is None or m >= lo
+        assert hi is None or m < hi
+        by_bucket[i].append(p["return_pct"])
     for i, b in enumerate(bands):
-        got = by_band[i]
+        got = by_bucket[i]
         assert len(got) == b["stored"] <= params.pairs_per_band
-        assert got == sorted(got, reverse=True)  # return-desc within band
-        for r in got:
-            assert r >= b["lo"] and (b["hi"] is None or r < b["hi"])
+        assert got == sorted(got, reverse=True)  # total-desc within the bucket
         assert b["count"] >= b["stored"]
         if not b["saturated"]:
             assert b["stored"] == min(params.pairs_per_band, b["count"])
     rets = [p["return_pct"] for p in doc["pairs"]]
-    assert rets == sorted(rets, reverse=True)  # bands concatenated desc
+    assert rets == sorted(rets, reverse=True)  # global sort: total return desc
     assert len(doc["pairs"]) == sum(b["stored"] for b in bands)
 
 
 def test_counts_by_threshold_consistency(result):
-    """§5 v3.3 dial counts: thresholds ascend with the presets, counts are
-    non-increasing in the threshold, saturation is downward-closed, and every
-    count covers the stored pairs clearing that threshold."""
+    """§5 floor-dial counts (compat, TOTAL return): thresholds ascend with the
+    presets, counts are non-increasing in the threshold, saturation is
+    downward-closed, and every count covers the stored pairs clearing that
+    threshold."""
     doc = result["trade_recs"]
     entries = doc["counts_by_threshold"]
     assert [e["threshold"] for e in entries] == doc["presets"]
@@ -529,27 +558,44 @@ def test_counts_by_threshold_consistency(result):
         assert e["count"] >= n_stored
 
 
-def test_counts_by_band_consistent_with_thresholds(result):
-    """v3.3.1: presets coincide with band los, so the bands at or above a
-    threshold tile its ≥-space exactly — the threshold count is their sum, and
-    a saturated threshold always has a saturated band above it."""
+def test_grid_consistent_with_buckets_and_thresholds(result):
+    """v3.4.1 grid honesty: each bucket's `by_total` row partitions its count
+    exactly; the grid's columns at or above a floor preset sum (across every
+    bucket) to that threshold's count; and every (floor, cap) cell read is a
+    floor for the stored pairs matching both dials."""
     doc = result["trade_recs"]
     bands = doc["bands"]
-    for e in doc["counts_by_threshold"]:
-        above = [b for b in bands if b["lo"] >= e["threshold"]]
-        assert e["count"] >= sum(b["count"] for b in above)
-        assert e["count"] >= sum(b["stored"] for b in above)
-        if e["saturated"]:
-            assert any(b["saturated"] for b in above)
-        if all(not b["saturated"] for b in above):
-            assert e["saturated"] is False
-            assert e["count"] == sum(b["count"] for b in above)
+    presets = doc["presets"]
+    for b in bands:
+        assert len(b["by_total"]) == len(presets)
+        assert all(n >= 0 for n in b["by_total"])
+        assert sum(b["by_total"]) == b["count"]  # rows partition the bucket
+    for k, e in enumerate(doc["counts_by_threshold"]):
+        col_sum = sum(sum(b["by_total"][k:]) for b in bands)
+        assert e["count"] >= col_sum
+        n_stored = sum(1 for p in doc["pairs"] if p["return_pct"] >= e["threshold"])
+        assert e["count"] == max(col_sum, n_stored)
+    # any (floor, cap) inventory read dominates the stored pairs behind it
+    for cap in (2.5, 5.0, 10.0, 20.0, None):
+        for k, floor_p in enumerate(presets):
+            inv = sum(
+                sum(b["by_total"][k:])
+                for b in bands
+                if cap is None or (b["hi"] is not None and b["hi"] <= cap)
+            )
+            n_stored = sum(
+                1
+                for p in doc["pairs"]
+                if p["return_pct"] >= floor_p
+                and (cap is None or p["max_leg_return_pct"] < cap)
+            )
+            assert inv >= n_stored, (cap, floor_p)
 
 
-def test_forced_per_band_truncation_honesty(snapshot):
-    """Force per-band truncation with a tiny quota and tiny budgets: every
-    non-empty band stores up to the quota, counts stay verified floors at or
-    above stored, ids stay sequential, ordering stays return-desc, and the
+def test_forced_per_bucket_truncation_honesty(snapshot):
+    """Force truncation with a tiny quota and tiny budgets: every non-empty
+    bucket stores up to the quota, counts stay verified floors at or above
+    stored, ids stay sequential, ordering stays total-return-desc, and the
     compat `truncated` block plus the storage-cap note disclose the depth."""
     from core.scoring import model as md
 
@@ -560,6 +606,7 @@ def test_forced_per_band_truncation_honesty(snapshot):
     for b in bands:
         assert b["stored"] <= 2
         assert b["count"] >= b["stored"]
+        assert sum(b["by_total"]) == b["count"]
         if not b["saturated"]:
             assert b["stored"] == min(2, b["count"])
     assert len(board["pairs"]) == sum(b["stored"] for b in bands) > 0
@@ -570,8 +617,8 @@ def test_forced_per_band_truncation_honesty(snapshot):
     assert rets == sorted(rets, reverse=True)
     edges = [(b["lo"], b["hi"]) for b in bands]
     for p in board["pairs"]:
-        i = tr.band_index(edges, p["return_pct"])
-        assert i is not None and bands[i]["stored"] > 0
+        i = tr.bucket_index(edges, p["max_leg_return_pct"])
+        assert bands[i]["stored"] > 0
     t = board["truncated"]
     assert t is not None and t["stored"] == len(board["pairs"])
     assert t["total"] > t["stored"]

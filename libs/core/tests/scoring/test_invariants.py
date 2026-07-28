@@ -360,19 +360,41 @@ def test_pairs_v34_contract(result, params, league):
         assert got["sent"] == sum(
             a["v"] for leg in (pair["buy"], pair["sell"]) for a in leg["give"]
         )
+        # §5 v3.4.1: the per-leg MARKET returns are pure face arithmetic on the
+        # embedded cards — face ΔW(me) ÷ face Σv sent on that leg
+        for tag in ("buy", "sell"):
+            leg = pair[tag]
+            sent = sum(a["v"] for a in leg["give"])
+            face_dw = sum(a["v"] for a in leg["get"]) - sent
+            assert pair["leg_returns"][tag] == round(100.0 * face_dw / sent, 2)
+            assert leg["market_return_pct"] == pair["leg_returns"][tag]
+        assert pair["max_leg_return_pct"] == max(pair["leg_returns"].values())
 
 
-def test_pair_dw_is_combined_not_the_leg_sum(result):
-    """§2/§5 v3.4: the pair ledger and the sum of the legs' isolation ΔWs are
-    reported as separate fields, and the board carries at least one pair where
-    the lineup interaction makes them differ — the reason the sum is not the
-    score."""
+def test_pair_dw_is_combined_not_the_leg_sum(result, league):
+    """§2/§5 v3.4: pair ΔW is the two legs applied TOGETHER, never the leg
+    sum. The board reports both fields on every pair, and a pinned fixture
+    pair shows them DIFFER: buy Josh Jacobs (4,853) from NoahMoell while
+    selling Kenneth Walker III (my flex starter) — Jacobs starts ONLY once
+    Walker's slot opens, so the buy is worthless alone (ΔS = 0) but worth
+    +792 more inside the pair (Jacobs replaces the 4,061 bench fill-in, not
+    nothing). Sum −940, combined −148. (Whether such a pair is STORED depends
+    on the walk — the arithmetic is the invariant.)"""
     pairs = result["trade_recs"]["pairs"]
-    assert all("dW_legs_isolated" in p for p in pairs)
-    assert any(p["dW_combined"] != p["dW_legs_isolated"] for p in pairs), (
-        "no interacting pair on the board — the combined/summed distinction "
-        "would be untested"
+    assert all("dW_legs_isolated" in p and "dW_combined" in p for p in pairs)
+    buy = tr.propose_by_names(league, "NoahMoell", ["2027 R1 (own)"], ["Josh Jacobs"])
+    sell = tr.propose_by_names(
+        league, "jaketoppen", ["Kenneth Walker III"], ["2027 R1 (from vishan)"]
     )
+    assert buy["dW"]["me"] == -6118.0 and buy["dW_parts"]["me"]["dS"] == 0.0
+    assert sell["dW"]["me"] == 5178.0
+    pair = tr.pair_ledger(league, buy, sell)
+    leg_sum = buy["dW"]["me"] + sell["dW"]["me"]
+    assert leg_sum == -940.0
+    assert pair["dW"] == -148.0  # combined ≠ sum: the lineup interaction
+    assert pair["dW"] - leg_sum == 792.0  # Jacobs (4,853) − the 4,061 fill-in
+    # submodularity guarantee (§2): combined is never BELOW the leg sum
+    assert pair["dW"] >= leg_sum
 
 
 def test_buy_legs_are_allowed_to_be_negative_alone(result):
