@@ -84,6 +84,15 @@ def result(snapshot, params) -> dict:
 
 
 @pytest.fixture(scope="session")
+def pool(league):
+    """The §5 v3.4 candidate-leg pool — shared: building it runs the exact KTC
+    gate and a starter-sum re-solve over the whole enumeration."""
+    from core.scoring import trades as tr
+
+    return tr.build_pair_pool(league)
+
+
+@pytest.fixture(scope="session")
 def ppts_fixture() -> dict:
     return _load(LOCAL / "ppts_2025.json")
 

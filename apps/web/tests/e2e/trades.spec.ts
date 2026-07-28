@@ -1,13 +1,14 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * Trades tab against the live seeded DB (scoring v3.3.1, range-filtered pairs
+ * Trades tab against the live seeded DB (scoring v3.4, range-filtered pairs
  * page): min/max target-return range controls filter the stratified stored
  * pairs, the inventory line comes from the engine's honest per-band `bands`
  * counts (saturated bands render "≥ N" — verified floors, never estimates),
- * invalid min/max combos are disabled, and NOTHING that isn't a pair renders:
- * no unpaired-legs section, no watch list, no standalone cards. Market map
- * still points into the League tab.
+ * invalid min/max combos are disabled, cards render BOTH sides' own wealth
+ * ledgers (v3.4 ΔW is per side, never ±zero-sum) with the starters/picks
+ * split, and NOTHING that isn't a pair renders: no unpaired-legs section, no
+ * watch list, no standalone cards. Market map still points into the League tab.
  */
 
 test.beforeEach(async ({ page }) => {
@@ -152,6 +153,16 @@ test("pairs render fully in every range or the empty state is honest", async ({
     expect(await first.getByText("You send").count()).toBe(2);
     expect(await first.getByText("You get").count()).toBe(2);
     expect(await first.getByText("PASS", { exact: true }).count()).toBe(2);
+    // v3.4: each leg shows the counterparty's OWN ledger delta — never a
+    // ±zero-sum negation of ours.
+    expect(await first.getByText(/their ledger/).count()).toBe(2);
+    // The starters/picks split is optional in the doc shape (boards written
+    // before v3.4 carry none), so assert its SHAPE only when the seeded DB
+    // supplies it: present on a leg ⇒ present on both legs and on the pair.
+    const splits = await first
+      .getByText(/starters [+−]\S* · picks [+−]/)
+      .count();
+    if (splits > 0) expect(splits).toBe(3);
     await expect(
       first.getByText(/Band ceiling for this package/).first(),
     ).toBeVisible();

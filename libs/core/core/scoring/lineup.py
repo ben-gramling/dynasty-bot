@@ -1,16 +1,26 @@
-"""§2 expected lineup strength: exact greedy solver + q-weighted insurance.
+"""§2 expected lineup strength: exact greedy solver + q-weighted insurance,
+plus the v3.4 RAW starter-sum solve that the trade ledger is built on.
 
 The greedy fill (dedicated slots take the positional top-K, FLEX takes the top-2
 remaining flex-eligibles) is provably optimal for raw value and is the exact shape
 the reference implementation uses — slot assignment matters because insurance
 weights differ per slot type, so this ordering is part of the contract
 (it is what makes ΔNC(1.01) = 1,406.4 rather than 1,408.9).
+
+Two solves live here and must never be confused (§11.2):
+
+- `solve()` / `removal_dl()` / `diff_terms()` — the league-tab + waiver strength
+  model: q insurance weights, availability multipliers `u`, FA replacement
+  lines. NONE of it may enter the trade path.
+- `starter_sum()` / `StarterIndex` — the v3.4 wealth ledger's `S`: Σ RAW KTC v
+  over the max-Σv legal starting lineup, no q, no u, no replacement. This is the
+  ONLY thing `trades.py` is allowed to import from this module.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable, Mapping
+from typing import Iterable, Mapping, Sequence
 
 from core.scoring.params import Params
 
@@ -20,6 +30,145 @@ DEDICATED: tuple[tuple[str, int], ...] = (("QB", 1), ("RB", 2), ("WR", 3), ("TE"
 GROUPS: tuple[str, ...] = ("QB", "RB", "WR", "TE", "FLEX")
 GROUP_N: dict[str, int] = {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "FLEX": 2}
 FLEX_ELIGIBLE = ("RB", "WR", "TE")
+
+# ------------------------------------------- §2 v3.4 the raw starter-sum solve
+
+# Positions in a fixed order so the hot path can index instead of hashing.
+POS4: tuple[str, ...] = ("QB", "RB", "WR", "TE")
+POS_INDEX: dict[str, int] = {p: i for i, p in enumerate(POS4)}
+# dedicated slots per position, then the deepest rung the 2 FLEX slots can reach
+DEDICATED_N: tuple[int, int, int, int] = (1, 2, 3, 1)
+DEPTH: tuple[int, int, int, int] = (1, 4, 5, 3)  # dedicated + 2 flex (QB is not flex-eligible)
+
+
+def _greedy_sum(tops: Sequence[Sequence[float]]) -> float:
+    """Σv of the max-Σv legal lineup (QB / 2 RB / 3 WR / TE / 2 FLEX) given the
+    per-position value lists sorted DESC. Greedy is exact for raw Σv: dedicated
+    slots take the positional tops, then the two FLEX slots take the best two
+    survivors (§2 v3.4; brute-force-verified in the test suite)."""
+    qb, rb, wr, te = tops
+    total = 0.0
+    for v in qb[:1]:
+        total += v
+    for v in rb[:2]:
+        total += v
+    for v in wr[:3]:
+        total += v
+    for v in te[:1]:
+        total += v
+    rest = sorted(rb[2:4] + wr[3:5] + te[1:3], reverse=True)
+    for v in rest[:2]:
+        total += v
+    return total
+
+
+def _by_pos(players: Iterable) -> list[list[float]]:
+    """Raw v per position, DESC. Ties are irrelevant to the SUM; when a caller
+    needs the named starters it re-sorts on (−v, ktc_id, sid) (§2 v3.4)."""
+    cols: list[list[float]] = [[], [], [], []]
+    for p in players:
+        i = POS_INDEX.get(p.pos)
+        if i is not None:
+            cols[i].append(p.v)
+    for col in cols:
+        col.sort(reverse=True)
+    return cols
+
+
+def starter_sum(players: Iterable) -> float:
+    """§2 v3.4 `S`: Σ raw KTC v over the max-Σv legal starting lineup, solved
+    over the players given (active + taxi — taxi is promote-anytime, §8; bench,
+    IR and empty slots contribute 0)."""
+    return _greedy_sum(_by_pos(players))
+
+
+def starters(players: Iterable) -> dict[str, list]:
+    """The named max-Σv starting lineup — deterministic ties on (−v, ktc_id,
+    sid), the §2.1 convention WITHOUT the availability multiplier. Display and
+    tests only; the ledger reads `starter_sum`."""
+    key = lambda p: (-p.v, p.ktc_id, p.sid)
+    by_pos: dict[str, list] = {pos: [] for pos in POS4}
+    for p in players:
+        if p.pos in by_pos:
+            by_pos[p.pos].append(p)
+    for lst in by_pos.values():
+        lst.sort(key=key)
+    out: dict[str, list] = {}
+    used: set[str] = set()
+    for i, pos in enumerate(POS4):
+        out[pos] = by_pos[pos][: DEDICATED_N[i]]
+        used.update(p.sid for p in out[pos])
+    out["FLEX"] = sorted(
+        (p for pos in FLEX_ELIGIBLE for p in by_pos[pos] if p.sid not in used), key=key
+    )[:2]
+    return out
+
+
+class StarterIndex:
+    """Incremental EXACT evaluator for `starter_sum` under small roster deltas
+    (§11.10): the pair walk re-solves `S` millions of times, so a full re-solve
+    per visit is out of budget.
+
+    Holds one team's per-position raw-value columns (DESC). A delta of a handful
+    of players out/in is evaluated by merging only the touched positions' short
+    prefixes — the prefix `DEPTH[pos] + |out|` provably contains the post-delta
+    top-`DEPTH[pos]`, so the result is identical to a full re-solve (asserted by
+    a property test over the fixture rosters and seeded random deltas).
+
+    Values only: `S` is a SUM, so tie-breaking never changes it.
+    """
+
+    __slots__ = ("_cols", "_base_tops", "base_sum")
+
+    def __init__(self, players: Iterable):
+        self._cols = _by_pos(players)
+        self._base_tops = [col[:DEPTH[i]] for i, col in enumerate(self._cols)]
+        self.base_sum = _greedy_sum(self._base_tops)
+
+    def sum_after(
+        self, out_v: Sequence[Sequence[float]], in_v: Sequence[Sequence[float]]
+    ) -> float:
+        """`S` after removing `out_v[pos]` and adding `in_v[pos]` (raw values,
+        per position, in POS4 order)."""
+        tops = self._base_tops
+        merged: list[Sequence[float]] = [tops[0], tops[1], tops[2], tops[3]]
+        for i in range(4):
+            outs = out_v[i]
+            ins = in_v[i]
+            if not outs and not ins:
+                continue
+            depth = DEPTH[i]
+            lst = list(self._cols[i][: depth + len(outs)])
+            for v in outs:
+                try:
+                    lst.remove(v)  # a value outside the prefix cannot reach the top
+                except ValueError:
+                    pass
+            if ins:
+                lst.extend(ins)
+                lst.sort(reverse=True)
+            merged[i] = lst[:depth]
+        return _greedy_sum(merged)
+
+    def delta(
+        self, out_v: Sequence[Sequence[float]], in_v: Sequence[Sequence[float]]
+    ) -> float:
+        """ΔS for this delta — the starter half of the §2 wealth ledger."""
+        return self.sum_after(out_v, in_v) - self.base_sum
+
+
+EMPTY4: tuple[tuple[float, ...], ...] = ((), (), (), ())
+
+
+def pos_columns(players: Iterable) -> tuple[tuple[float, ...], ...]:
+    """Pack players into the POS4-ordered raw-value tuples `StarterIndex` eats.
+    Off-position assets (picks, UNK) are dropped — they cannot start."""
+    cols: list[list[float]] = [[], [], [], []]
+    for p in players:
+        i = POS_INDEX.get(p.pos)
+        if i is not None:
+            cols[i].append(p.v)
+    return (tuple(cols[0]), tuple(cols[1]), tuple(cols[2]), tuple(cols[3]))
 
 
 @dataclass(frozen=True, slots=True)

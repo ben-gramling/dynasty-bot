@@ -7,7 +7,9 @@ import { pairLegs } from "./derive";
 /**
  * One §5 v3.2 count-neutral hedged pair — the board's PRIMARY unit: the buy
  * side and its hedge sell side as full embedded leg cards, listed in execution
- * order (sell first at the roster cap), with the combined ΔW, the neutrality
+ * order (sell first at the roster cap), with the pair ΔW (v3.4: the EXACT
+ * combined ledger, both legs applied together — not the sum of the legs'
+ * isolation ΔWs, which is why a negative buy leg is normal), the neutrality
  * badge (exactly 0 players / 0 picks net for you), the posture-fit summary,
  * and the agreement-first sequencing note.
  */
@@ -28,11 +30,22 @@ export function PairCard({ pair }: { pair: TradePair }) {
         <span className="ml-auto flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <span
             className="num text-[13px] font-medium text-sky-deep"
-            title="Return on inventory deployed (§5 v3.3): combined ΔW(you) ÷ Σv of every asset you send across both legs — the range filter's ranking metric"
+            title="Return on inventory deployed (§5): the pair's exact combined ΔW(you) ÷ Σ face v of every asset you send across both legs — the range filter's ranking metric"
           >
             {fmtPct(pair.return_pct, 1)} return
           </span>
           <ValueChip label="pair ΔW" value={pair.dW_combined} emphasis />
+          {pair.dW_combined_parts ? (
+            <span
+              className="text-[11.5px] text-ink-muted"
+              title="Where the pair's wealth moves (§2 v3.4): starters = the max-Σv lineup at raw KTC over active + taxi; picks = tranche value"
+            >
+              starters{" "}
+              <span className="num">{fmtSigned(pair.dW_combined_parts.dS)}</span> ·
+              picks{" "}
+              <span className="num">{fmtSigned(pair.dW_combined_parts.dP)}</span>
+            </span>
+          ) : null}
           <span
             className="text-[11.5px] text-ink-muted"
             title="Δ(active roster) across both legs — sequencing context only; count-neutrality is the badge (§5 v3.2)"

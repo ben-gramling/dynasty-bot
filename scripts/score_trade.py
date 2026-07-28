@@ -2,9 +2,14 @@
 
 Unlike the nightly trade-recs board (which enumerates from the engine's give-lists
 — cornerstones and taxi players excluded), this resolves ANY rostered player or
-owned pick by name and scores the exact package with the v3 card:
-ΔW = Σv(in) − Σv(out) at face KTC (§2), the fairness gate (§3), posture shape
-(§4), and sequencing (§5). Powers the trade-negotiator skill.
+owned pick by name and scores the exact package with the v3.4 card: the wealth
+ledger ΔW = ΔS + ΔP per side (starters at raw KTC over active + taxi, picks at
+tranche — §2), the exact KTC-calculator fairness gate (§3), posture shape (§4)
+and sequencing (§5). Powers the trade-negotiator skill.
+
+ΔW is NOT zero-sum: each side's number is its own ledger. A buy leg is normally
+negative on its own (picks out, a starter in) — pair it with a sell leg and read
+the PAIR ΔW, which `--hedge` computes exactly (both legs applied together).
 
 Usage (from the repo root, .env required):
   uv run python scripts/score_trade.py teams
@@ -19,6 +24,8 @@ nightly run: enumerate-then-filter, posture as a hard constraint, count-
 neutral pairs, STRATIFIED per-band storage) and prints the band inventory
 followed by the stored pairs inside your return range [--min, --max) —
 `--target N` survives as an alias for `--min N`; omit --max for no cap.
+Every band count is a verified floor under v3.4 (the walk orders legs by
+their isolation ΔW while pairs are priced by the exact combined ledger).
 """
 
 from __future__ import annotations
@@ -118,7 +125,8 @@ def alternatives(
     get: list[tr.Asset],
     base: dict,
 ) -> dict:
-    """Single-tweak variants, gate-passers only, ranked by my ΔW (§5)."""
+    """Single-tweak variants, gate-passers only, ranked by my LEDGER ΔW (§5
+    v3.4 — starters + picks, this leg in isolation)."""
     me = league.teams[league.me]
     opp = league.teams[opp_name]
     my_pool = tr.team_assets(league, me)
@@ -173,7 +181,8 @@ def find_hedges(
     the proposal are excluded; the proposal's counterparty is excluded (unrelated
     hedge parties leak less). v3.3: candidates come from the engine's pair pool
     WITHOUT the posture constraint (the desk treats posture qualitatively);
-    every candidate clears the leg return floor. Ranked by ΔW, top 3."""
+    the per-leg return floor is retired (v3.4), so candidates may be negative
+    alone — what matters is the pair. Ranked by isolation ledger ΔW, top 3."""
     pool = tr.build_pair_pool(league, enforce_posture=False)
     used = {a.key for a in give} | {a.key for a in get}
     want = (-net_players, -net_picks)
@@ -207,13 +216,20 @@ def find_hedges(
     return out
 
 
+def fmt_parts(parts: dict) -> str:
+    """The §2 v3.4 ledger breakdown: starters + picks."""
+    return f"starters {parts['dS']:+.0f} · picks {parts['dP']:+.0f}"
+
+
 def fmt_legline(card: dict) -> str:
     give = " + ".join(a["name"] for a in card["give"])
     get = " + ".join(a["name"] for a in card["get"])
     ret = card.get("return_pct")
+    parts = card.get("dW_parts", {}).get("me")
+    tail = f"; {fmt_parts(parts)}" if parts else ""
     return (
         f"send {give} -> get {get}  "
-        f"(ΔW {card['dW']['me']:+.0f}, leg return {ret:g}%)"
+        f"(ΔW alone {card['dW']['me']:+.0f}{tail}, leg return {ret:g}%)"
     )
 
 
@@ -230,11 +246,26 @@ def fmt_card(card: dict, header: str = "") -> str:
     g = card["gate"]
     p = card["posture"]
     dw = card["dW"]["me"]
+    parts = card.get("dW_parts", {})
     lines = [
-        header or f"Trade with {card['counterparty']} — ΔW(you) {dw:+.0f} (them {-dw:+.0f})",
+        header
+        or (
+            f"Trade with {card['counterparty']} — ledger ΔW(you) {dw:+.0f} "
+            f"(their own ledger {card['dW']['them']:+.0f}; per side, not zero-sum)"
+        ),
         f"  You send: {', '.join(fmt_asset(a) for a in card['give'])}",
         f"  You get:  {', '.join(fmt_asset(a) for a in card['get'])}",
-        f"  Gate: {g['verdict']}  ·  gap {g['gap']:.0f} ({g['gap_pct']:.1f}% of {max(g['adj_give'], g['adj_get']):.0f}, "
+    ]
+    if parts:
+        lines.append(
+            f"  Ledger: you {fmt_parts(parts['me'])}  ·  "
+            f"{card['counterparty']} {fmt_parts(parts['them'])}"
+            + ("  (this leg alone)" if card.get("dW_basis") == "isolation" else "")
+        )
+    lines += [
+        f"  Gate: {g['verdict']}  ·  KTC-calculator totals {g['adj_give']:.0f} you / "
+        f"{g['adj_get']:.0f} them  ·  gap {g['gap']:.0f} "
+        f"({g['gap_pct']:.1f}% of {max(g['adj_give'], g['adj_get']):.0f}, "
         f"band {g['band']:.0f})  ·  ratio {g['raw_ratio']} (cap {g['cap']})",
         f"  Posture: {card['counterparty']} is {p['label']}"
         + (f" (override)" if p["source"] == "override" else f" ({p['evidence_count']} classifying trades)")
@@ -373,9 +404,11 @@ def main() -> None:
         )
         for p in hits[:15]:
             b, s = p["buy"], p["sell"]
+            parts = p.get("dW_combined_parts")
+            tail = f" ({fmt_parts(parts)})" if parts else ""
             print(
-                f"\n{p['id']}  return {p['return_pct']:g}%  pair ΔW {p['dW_combined']:+g}  "
-                f"[0 players / 0 picks net · {p['fit_summary']}]"
+                f"\n{p['id']}  return {p['return_pct']:g}%  pair ΔW {p['dW_combined']:+g}"
+                f"{tail}  [0 players / 0 picks net · {p['fit_summary']}]"
             )
             print(f"  BUY  {b['counterparty']:<15} {fmt_legline(b)}")
             print(f"  SELL {s['counterparty']:<15} {fmt_legline(s)}")
@@ -457,10 +490,10 @@ def main() -> None:
                   "today; treat it as blocked (§5 v3.2).")
         else:
             print(f"\nHedges (legs elsewhere offsetting {np_me:+d} players / {nk_me:+d} picks "
-                  "exactly; pair nets 0 players / 0 picks):")
+                  "exactly; pair nets 0 players / 0 picks). Pair ΔW is the EXACT "
+                  "combined ledger — both legs applied together, not the leg sum:")
             for h in hedges:
-                pair_dw = card["dW"]["me"] + h["dW"]["me"]
-                pair_ret = tr.pair_return_pct(card, h)
+                pair = tr.pair_ledger(league, card, h)
                 order = (
                     "execute this sell FIRST"
                     if h["net_players"]["me"] < 0
@@ -469,17 +502,18 @@ def main() -> None:
                 print()
                 print(fmt_card(
                     h,
-                    header=f"Hedge — with {h['counterparty']}: pair ΔW {pair_dw:+.0f} · "
-                    f"pair return {pair_ret:g}% on Σv you send "
-                    f"(this leg {h['dW']['me']:+.0f}) · {order}",
+                    header=f"Hedge — with {h['counterparty']}: pair ΔW {pair['dW']:+.0f} "
+                    f"({fmt_parts(pair)}) · pair return {pair['return_pct']:g}% on "
+                    f"{pair['sent']:.0f} Σv you send (this leg alone "
+                    f"{h['dW']['me']:+.0f}) · {order}",
                 ))
     if alts:
         print(f"\nAlternatives ({alts['variants_scored']} single-tweak variants scored; "
-              f"gate-passers ranked by your ΔW):")
+              f"gate-passers ranked by your ledger ΔW):")
         if not alts["gate_passers"]:
             print("  none pass the gate")
         for v in alts["gate_passers"]:
-            print(f"\n{fmt_card(v['card'], header=f'Variant — {v['tweak']}: ΔW(you) {v['card']['dW']['me']:+.0f}')}")
+            print(f"\n{fmt_card(v['card'], header=f'Variant — {v['tweak']}: ledger ΔW(you) {v['card']['dW']['me']:+.0f}')}")
 
 
 if __name__ == "__main__":

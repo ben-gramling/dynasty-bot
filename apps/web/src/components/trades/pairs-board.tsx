@@ -15,7 +15,8 @@ const DEFAULT_MIN = 5;
  * combos. Filtering is client-side on return_pct ∈ [min, max); the engine's
  * stratified per-band storage guarantees every such range has whatever
  * inventory exists. The inventory line comes from the doc's `bands` — exact
- * counts, or verified floors rendered "≥ N" when a band is saturated.
+ * counts, or verified floors rendered "≥ N" when a band is saturated (v3.4:
+ * every band is, by construction — see the note under the inventory line).
  */
 export function PairsBoard({
   pairs,
@@ -141,8 +142,10 @@ export function PairsBoard({
       {invSat ? (
         <p className="mt-2 text-[11.5px] text-ink-muted">
           Inventory marked ≥ is a verified floor — the legal pair space in
-          this range runs deeper than the collection budget; only each
-          band&apos;s stored top is listed.
+          this range runs deeper than the collection budget, and the walk
+          crosses legs by their isolation ΔW while pairs are priced by the
+          exact combined ledger, so completeness above a cutoff cannot be
+          certified (§5 v3.4). Only each band&apos;s stored top is listed.
         </p>
       ) : null}
 

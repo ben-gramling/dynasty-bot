@@ -1,6 +1,9 @@
 """League/team state built from a Snapshot: crosswalk join, replacement lines,
 pick pricing, lineups (strength map + waiver ΔL only), posture, and the taxi/roster
-mechanics (§8) that gate trade legality. Nothing here feeds ΔW except face values."""
+mechanics (§8) that gate trade legality. Nothing here feeds the v3.4 trade
+ledger except raw KTC values: the `solve()` lineup built here is the league-tab /
+waiver model (q, u, replacement) and never enters the trade path (§11.2), which
+reads `lineup.starter_sum` over `act + taxi` instead."""
 
 from __future__ import annotations
 
@@ -69,6 +72,9 @@ class LeagueState:
     rookie_rank: dict[str, int]
     roster_cap: int
     taxi_cap: int
+    # §3.1 v3.4: the #1 overall KTC value in the snapshot (every player, not just
+    # rostered ones) — KTC's calculator caps its adjustment curve at this + 80
+    top_ktc_value: float
     current_year: int
     draft_pre: bool
     offseason: bool
@@ -137,6 +143,12 @@ def build_league(snapshot: Snapshot, params: Params) -> LeagueState:
 
     ref_date = _in_season_date(snapshot)
     ktc_by_id = {str(a["playerID"]): a for a in snapshot.ktc_assets if a.get("position") != "RDP"}
+    # §3.1 v3.4 cap input: the top overall KTC value across the whole player
+    # table (the site reads playersArray[0].value — rostered or not)
+    top_ktc_value = max(
+        (float((a.get("oneQBValues") or {}).get("value") or 0) for a in ktc_by_id.values()),
+        default=0.0,
+    )
     players: dict[str, PlayerV] = {}
     for kid, entry in snapshot.crosswalk.items():
         asset = ktc_by_id.get(str(kid))
@@ -271,7 +283,8 @@ def build_league(snapshot: Snapshot, params: Params) -> LeagueState:
         teams=teams, me=me, replacement=replacement, board=board, tranches=tranches,
         rank_l=rank_l, group_rank=group_rank, postures=postures,
         fa_rookies=fa_rookies, fa_vets=fa_vets, rookie_rank=rookie_rank,
-        roster_cap=roster_cap, taxi_cap=taxi_cap, current_year=current_year,
+        roster_cap=roster_cap, taxi_cap=taxi_cap, top_ktc_value=top_ktc_value,
+        current_year=current_year,
         draft_pre=draft_pre, offseason=offseason, rostered=frozenset(rostered), alerts=alerts,
     )
 

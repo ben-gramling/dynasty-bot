@@ -94,7 +94,7 @@ export interface TradeAsset {
   type: "player" | "pick";
   key: string;
   name: string;
-  /** Face KTC value — the ΔW basis. 0 when unvalued (display "—", §11.7). */
+  /** Face KTC value — what the market prices the asset at (§3). 0 when unvalued. */
   v: number;
   /** No KTC price on record — contributes 0 to ΔW; card flags it. */
   unvalued?: boolean;
@@ -103,7 +103,11 @@ export interface TradeAsset {
   note?: string;
 }
 
-/** The §3 fairness gate — band, anti-fleece cap, legality. */
+/**
+ * The §3 fairness gate — band, anti-fleece cap, legality. v3.4: `adj_give` /
+ * `adj_get` are the EXACT totals KTC's own trade calculator displays for the
+ * two sides (the reverse-engineered value adjustment, zero fitted parameters).
+ */
 export interface TradeGate {
   adj_give: number;
   adj_get: number;
@@ -117,6 +121,16 @@ export interface TradeGate {
   ratio_ok: boolean;
   legal: boolean;
   verdict: string;
+}
+
+/**
+ * §2 v3.4 ledger split: `dS` is the change in the max-Σv starting lineup at raw
+ * KTC (active + taxi; bench and IR are worth 0), `dP` the change in pick wealth
+ * at tranche. Optional everywhere — board docs written before v3.4 omit it.
+ */
+export interface LedgerParts {
+  dS: number;
+  dP: number;
 }
 
 /** §4 posture context: observed-trades label + how this offer is shaped. */
@@ -137,8 +151,19 @@ export interface TradeRec {
   leg_type: "buy" | "sell" | "neutral";
   give: TradeAsset[];
   get: TradeAsset[];
-  /** ΔW both ways — exact zero-sum by construction (§11.1). */
+  /**
+   * §2 v3.4 wealth ledger, PER SIDE and NOT zero-sum: each number is that
+   * side's own `W = starters + picks` delta, so a good leg can lift both.
+   * (Pre-v3.4 board docs carried `them = −me`; nothing here assumes it.)
+   */
   dW: { me: number; them: number };
+  /** Optional §2 v3.4 split of `dW` into starters (`dS`) and picks (`dP`). */
+  dW_parts?: {
+    me: LedgerParts;
+    them: LedgerParts;
+  };
+  /** "isolation" on leg cards: this leg alone. Pairs carry the combined ΔW. */
+  dW_basis?: string;
   /** §5 v3.3 leg return on inventory deployed: ΔW(me) ÷ Σv sent, percent. */
   return_pct: number | null;
   gate: TradeGate;
@@ -186,7 +211,15 @@ export interface TradePair {
    * every asset I send across both legs — the range filter's ranking metric.
    */
   return_pct: number;
+  /**
+   * §5 v3.4: my ledger delta with BOTH legs applied together. Not the sum of
+   * the legs' isolation ΔWs — they interact through the starting lineup.
+   */
   dW_combined: number;
+  /** Optional starters/picks split of `dW_combined` (v3.4 docs only). */
+  dW_combined_parts?: LedgerParts;
+  /** The legs' isolation ΔWs added up — shown for contrast, never the score. */
+  dW_legs_isolated?: number;
   /** Combined Δ(active roster) — sequencing context only. */
   net_roster: number;
   /** Combined Δ(player count) for my side — exactly 0 by construction. */

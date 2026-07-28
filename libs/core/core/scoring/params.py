@@ -1,8 +1,11 @@
 """Every §9 parameter with its default. All knobs live here; nothing is hardcoded elsewhere.
 
-v3: one score (ΔW), one gate (§3), qualitative posture targeting (§4). The lineup
-q/replacement/availability knobs survive only for the league-tab strength map and
-the in-season FAAB bid formula — they never touch the trade path (§11.2).
+v3.4: one score (the wealth ledger `W = S + P`, §2), one gate (the exact KTC
+calculator adjustment + the fleece cap + legality, §3), qualitative posture
+targeting (§4). The lineup q/replacement/availability knobs survive only for the
+league-tab strength map and the in-season FAAB bid formula — they never touch
+the trade path (§11.2). The gate itself has ZERO fitted parameters now: the
+consolidation coefficients `c` are retired with v3.4.
 """
 
 from __future__ import annotations
@@ -12,13 +15,17 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Params:
-    # §2 the score
+    # §2 the score (v3.4: the wealth ledger W = starters + picks)
     # v3.3: W_min is RETIRED as a gate — kept only for the CLI's display-level
     # noise note (a positive ΔW inside KTC's own error bars gets flagged, never hidden)
     w_min: float = 150.0
 
-    # §3 fairness gate (measured from this league's ~33 completed trades)
-    consolidation: tuple[float, ...] = (1.00, 0.90, 0.80)
+    # §3 fairness gate. The band tolerances are measured from this league's ~33
+    # completed trades; the adjustment they are applied to is the EXACT KTC
+    # calculator port (core.scoring.ktc_adjust — zero free parameters). v3.4
+    # retired the fitted consolidation coefficients c = (1.00, 0.90, 0.80):
+    # they approximated this algorithm, and the real one provably does not
+    # cancel across roster-neutral pairs.
     fairness_rel: float = 0.20
     fairness_abs: float = 500.0
     fleece_ratio: float = 1.35  # never exempted
@@ -29,17 +36,23 @@ class Params:
     posture_min_trades: int = 2
 
     # §5 v3.3 target-return range + enumerate-then-filter bounds
+    # v3.4: the per-leg return floor is RETIRED — a pair's buy leg is legitimately
+    # negative in isolation, so legs are no longer required to earn on their own.
     max_package: int = 3
     give_list_protect_top: int = 2  # cornerstones never enter the give-list
-    return_floor: float = 0.01  # lowest range preset: every leg must return ≥ 1% on Σv sent
     return_presets: tuple[float, ...] = (1.0, 2.5, 5.0, 10.0, 20.0)  # range presets, percent
     # v3.3.1 stratified storage: top-N pairs kept PER return band ([1,2.5), [2.5,5),
     # [5,10), [10,20), [20,∞) percent — bands derived from return_presets), so a
     # min/max range query always has inventory; per-band honesty via `bands`
     pairs_per_band: int = 100
-    variants_per_signature: int = 2  # in-band gets kept per (opponent, give, count-signature), ΔW desc
+    variants_per_signature: int = 2  # gets kept per (opponent, give, count-signature), ledger ΔW desc
+    # v3.4 scan bound: gate-passers evaluated per (opponent, give, count-signature)
+    # before the top-`variants_per_signature` are taken. The exact KTC gate and the
+    # starter-sum re-solve are ~30× the retired adjv comparison, so the bracket is
+    # sampled from its Σv-desc top rather than drained (disclosed in the board notes).
+    variant_scan_cap: int = 3
     pair_scan_budget: int = 40_000  # pair visits per COUNTING pass; counters saturate honestly
-    pair_collect_budget: int = 2_000_000  # pair visits for the stored-pair collection walk
+    pair_collect_budget: int = 400_000  # pair visits for the stored-pair collection walk
     top_league_wide: int = 10  # unpaired sell/neutral legs kept as `recommendations` (ΔW desc)
     watch_max: int = 5  # unpaired buys surfaced as watch-list notes
 

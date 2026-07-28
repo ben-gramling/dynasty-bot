@@ -45,10 +45,14 @@ def test_top_level_shape(result):
     assert 0 <= len(tr["recommendations"]) <= 10  # secondary: building blocks
     assert isinstance(tr["watch"], list) and isinstance(tr["notes"], list)
     for pair in tr["pairs"]:
+        # v3.4 adds the ledger split of the combined ΔW and the legs' isolation
+        # sum alongside it (the two differ wherever the legs share a lineup)
         assert set(pair) == {
-            "id", "buy", "sell", "return_pct", "dW_combined", "net_roster",
-            "net_players", "net_picks", "fit_summary", "sequencing", "overlaps",
+            "id", "buy", "sell", "return_pct", "dW_combined", "dW_combined_parts",
+            "dW_legs_isolated", "net_roster", "net_players", "net_picks",
+            "fit_summary", "sequencing", "overlaps",
         }
+        assert set(pair["dW_combined_parts"]) == {"dS", "dP"}
         assert pair["net_players"] == 0 and pair["net_picks"] == 0  # §5 v3.2
 
 
@@ -56,15 +60,22 @@ def test_card_schema_matches_contract(result):
     """§5/§10 field census on every displayed trade card (pair legs + sell list)."""
     for card in board_legs(result["trade_recs"]):
         for key in (
-            "id", "action", "counterparty", "give", "get", "dW", "gate",
-            "posture", "holes", "net_roster", "net_players", "net_picks",
-            "standalone", "leg_type", "sequencing", "ceiling",
+            "id", "action", "counterparty", "give", "get", "dW", "dW_parts",
+            "dW_basis", "gate", "posture", "holes", "net_roster", "net_players",
+            "net_picks", "standalone", "leg_type", "sequencing", "ceiling",
             "taxi_stashed", "anchor_ask", "dip_notes", "unvalued", "exclusive_with",
         ):
             assert key in card, key
         assert card["action"] == "TRADE"
         assert card["leg_type"] in ("buy", "sell", "neutral")
         assert set(card["dW"]) == {"me", "them"}
+        # §2 v3.4: each side's own ledger, split into starters and picks
+        assert set(card["dW_parts"]) == {"me", "them"}
+        assert set(card["dW_parts"]["me"]) == {"dS", "dP"}
+        assert card["dW"]["me"] == round(
+            card["dW_parts"]["me"]["dS"] + card["dW_parts"]["me"]["dP"], 1
+        )
+        assert card["dW_basis"] == "isolation"
         assert set(card["net_players"]) == {"me", "them"}  # §5 v3.2 count deltas
         assert set(card["net_picks"]) == {"me", "them"}
         assert isinstance(card["standalone"], bool)

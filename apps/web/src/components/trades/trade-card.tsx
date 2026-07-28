@@ -4,12 +4,13 @@ import { ValueChip } from "@/components/value-chip";
 import { legLabel, ord, postureEvidenceNote } from "./derive";
 
 /**
- * One ranked trade leg (scoring-system.md v3 §2–§5): You send / You get at
- * face KTC value, the headline ΔW(you) with the honest zero-sum "them" line,
- * the §3 gate strip (band gap, anti-fleece ratio, PASS), the §4 posture
- * shape line with visible holes, and the §5 execution notes (sequencing,
- * exclusive-with, anchor ask). The row-per-asset columns keep a 3-for-1 as
- * scannable as a 1-for-1.
+ * One ranked trade leg (scoring-system.md v3.4 §2–§5): You send / You get at
+ * face KTC value, the headline ledger ΔW(you) beside the counterparty's OWN
+ * ledger delta (v3.4 — per side, never a negation), the starters/picks split
+ * when the doc carries it, the §3 gate strip (KTC-calculator gap, anti-fleece
+ * ratio, PASS), the §4 posture shape line with visible holes, and the §5
+ * execution notes (sequencing, exclusive-with, anchor ask). The row-per-asset
+ * columns keep a 3-for-1 as scannable as a 1-for-1.
  */
 export function TradeCard({ rec, compact = false }: { rec: TradeRec; compact?: boolean }) {
   return (
@@ -39,14 +40,17 @@ export function TradeCard({ rec, compact = false }: { rec: TradeRec; compact?: b
           <ValueChip label="ΔW you" value={rec.dW.me} emphasis />
           <span
             className="text-[11.5px] text-ink-muted"
-            title="Exact zero-sum by construction — their loss is your gain (§11.1)"
+            title="Their OWN ledger delta — v3.4 ΔW is per side, not zero-sum: a good trade can lift both (§2)"
           >
-            them <span className={`num${rec.dW.them < 0 ? " text-star" : ""}`}>
+            their ledger{" "}
+            <span className={`num${rec.dW.them < 0 ? " text-star" : ""}`}>
               {fmtSigned(rec.dW.them)}
             </span>
           </span>
         </span>
       </header>
+
+      <LedgerSplit rec={rec} />
 
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
         <AssetColumn title="You send" assets={rec.give} />
@@ -121,6 +125,28 @@ export function TradeCard({ rec, compact = false }: { rec: TradeRec; compact?: b
   );
 }
 
+/**
+ * §2 v3.4: where a leg's ledger move comes from — starters (the max-Σv lineup
+ * at raw KTC over active + taxi) and picks (tranche). Omitted entirely for
+ * board docs written before v3.4, which carry no split.
+ */
+function LedgerSplit({ rec }: { rec: TradeRec }) {
+  const parts = rec.dW_parts?.me;
+  if (!parts) return null;
+  return (
+    <p
+      className="mt-1.5 text-[11.5px] text-ink-muted"
+      title="Bench players are trade currency, not wealth: they move at face value but carry 0 in the ledger (§2)"
+    >
+      starters <span className="num">{fmtSigned(parts.dS)}</span> · picks{" "}
+      <span className="num">{fmtSigned(parts.dP)}</span>
+      {rec.dW_basis === "isolation" ? (
+        <span> — this leg alone; pair ΔW is both legs together</span>
+      ) : null}
+    </p>
+  );
+}
+
 function LegBadge({ rec }: { rec: TradeRec }) {
   const tone =
     rec.leg_type === "buy"
@@ -162,7 +188,7 @@ function AssetColumn({ title, assets }: { title: string; assets: TradeAsset[] })
         </span>
         <span
           className="num text-[11px] text-ink-muted"
-          title="Face Σv — the ΔW and anti-fleece basis (§2)"
+          title="Face Σv — what the market prices, the anti-fleece and return-denominator basis (§3)"
         >
           Σ {fmtValue(total)}
         </span>
@@ -210,7 +236,7 @@ function GateStrip({ rec }: { rec: TradeRec }) {
   return (
     <p className="mt-3 flex flex-wrap items-baseline gap-x-4 gap-y-1 border-t border-line pt-2 text-[11.5px] text-ink-muted">
       <span
-        title={`Adjusted values (consolidation-discounted): ${fmtValue(g.adj_give)} give vs ${fmtValue(g.adj_get)} get — gap ${fmtValue(g.gap)} of a ${fmtValue(g.band)} band`}
+        title={`What their KTC trade calculator shows: ${fmtValue(g.adj_give)} your side vs ${fmtValue(g.adj_get)} theirs — gap ${fmtValue(g.gap)} of a ${fmtValue(g.band)} band (§3.1 exact port)`}
       >
         gap <span className="num">{fmtPct(g.gap_pct, 1)}</span> of{" "}
         <span className="num">{fmtPct(g.band_pct, 0)}</span> band

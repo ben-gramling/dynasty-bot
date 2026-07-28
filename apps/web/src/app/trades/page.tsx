@@ -10,8 +10,9 @@ export const metadata: Metadata = {
 };
 
 /**
- * Trades tab (scoring-system.md v3.3.1): the stratified stored PAIR space
- * behind the target-return RANGE. Pairs stay fully count-neutral (exactly
+ * Trades tab (scoring-system.md v3.4): the stratified stored PAIR space
+ * behind the target-return RANGE, priced by the wealth ledger (starters +
+ * picks, per side, never zero-sum). Pairs stay fully count-neutral (exactly
  * 0 players / 0 picks net for our side; a buy never goes out without its
  * exit); the range controls (min presets 1 / 2.5 / 5 / 10 / 20, default 5;
  * max presets 2.5 / 5 / 10 / 20 / no cap, default no cap) filter the stored
@@ -71,11 +72,15 @@ export default async function TradesPage() {
           The recommendation unit is the count-neutral pair (§5 v3.3): a buy
           and its exit, distinct counterparties, no shared assets, netting
           exactly 0 players and 0 picks for your side — players count wherever
-          they land, picks regardless of year. Every leg passes the fairness
-          gate and respects posture (BUYERs receive players, SELLERs picks);
-          the range sets the return window — on the inventory you send — you
-          want to see. Band ceilings on cards are negotiating room, not the
-          opener.
+          they land, picks regardless of year. ΔW is the wealth ledger (§2
+          v3.4): your starting lineup at raw KTC over active + taxi, plus picks
+          at tranche — bench value is trade currency, not wealth. It is per
+          side, so a good pair can lift both ledgers, and a buy leg on its own
+          is normally negative; the pair number is both legs together. Every
+          leg passes the fairness gate — literally the totals their KTC
+          calculator shows — and respects posture (BUYERs receive players,
+          SELLERs picks); the range sets the return window, on the inventory
+          you send. Band ceilings on cards are negotiating room, not the opener.
         </p>
         <PairsBoard
           pairs={doc.pairs}
