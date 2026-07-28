@@ -10,10 +10,10 @@ export const metadata: Metadata = {
 };
 
 /**
- * Trades tab (scoring-system.md v3.4.1): the stratified stored PAIR space
+ * Trades tab (scoring-system.md v3.5): the stratified stored PAIR space
  * behind TWO independent dials — a floor on total pair return (the wealth
- * ledger: starters + picks, per side, never zero-sum) and a cap on each leg's
- * market return. Pairs stay fully count-neutral (exactly 0 players / 0 picks
+ * ledger: starters + 25% of all stored value, per side, never zero-sum) and a
+ * cap on each leg's market return. Pairs stay fully count-neutral (exactly 0 players / 0 picks
  * net for our side; a buy never goes out without its exit); the dials (floor
  * presets 1 / 2.5 / 5 / 10 / 20, default 5; leg-cap presets 2.5 / 5 / 10 /
  * 20 / no cap, default no cap — no combination is invalid) filter the stored
@@ -74,10 +74,13 @@ export default async function TradesPage() {
           and its exit, distinct counterparties, no shared assets, netting
           exactly 0 players and 0 picks for your side — players count wherever
           they land, picks regardless of year. ΔW is the wealth ledger (§2
-          v3.4): your starting lineup at raw KTC over active + taxi, plus picks
-          at tranche — bench value is trade currency, not wealth. It is per
-          side, so a good pair can lift both ledgers, and a buy leg on its own
-          is normally negative; the pair number is both legs together. Every
+          v3.5): your starting lineup at raw KTC over active + taxi, plus 25%
+          of everything you are storing — bench players at face and picks at
+          tranche are one class, priced the same way, so upgrading the bench
+          counts and swapping a non-starter for a pick of equal value scores
+          about nothing. It is per side, so a good pair can lift both ledgers,
+          and a buy leg on its own can still be negative; the pair number is
+          both legs together. Every
           leg passes the fairness gate — literally the totals their KTC
           calculator shows — and respects posture (BUYERs receive players,
           SELLERs picks). Two independent dials (§5 v3.4.1): the floor is on

@@ -4,9 +4,9 @@ import { ValueChip } from "@/components/value-chip";
 import { legLabel, ord, postureEvidenceNote } from "./derive";
 
 /**
- * One ranked trade leg (scoring-system.md v3.4 §2–§5): You send / You get at
+ * One ranked trade leg (scoring-system.md v3.5 §2–§5): You send / You get at
  * face KTC value, the headline ledger ΔW(you) beside the counterparty's OWN
- * ledger delta (v3.4 — per side, never a negation), the starters/picks split
+ * ledger delta (per side, never a negation), the starters/stored split
  * when the doc carries it, the §3 gate strip (KTC-calculator gap, anti-fleece
  * ratio, PASS), the §4 posture shape line with visible holes, and the §5
  * execution notes (sequencing, exclusive-with, anchor ask). The row-per-asset
@@ -126,20 +126,21 @@ export function TradeCard({ rec, compact = false }: { rec: TradeRec; compact?: b
 }
 
 /**
- * §2 v3.4: where a leg's ledger move comes from — starters (the max-Σv lineup
- * at raw KTC over active + taxi) and picks (tranche). Omitted entirely for
- * board docs written before v3.4, which carry no split.
+ * §2 v3.5: where a leg's ledger move comes from — starters (the max-Σv lineup
+ * at raw KTC over active + taxi) and stored value (everything else you own:
+ * bench players at face AND picks at tranche, counted at 25%). Omitted for
+ * board docs written before v3.5, which carry a different split.
  */
 function LedgerSplit({ rec }: { rec: TradeRec }) {
   const parts = rec.dW_parts?.me;
-  if (!parts) return null;
+  if (parts?.dS === undefined || parts?.dT === undefined) return null;
   return (
     <p
       className="mt-1.5 text-[11.5px] text-ink-muted"
-      title="Bench players are trade currency, not wealth: they move at face value but carry 0 in the ledger (§2)"
+      title="Stored value is one class (§2 v3.5): a bench player and a draft pick are both value you can't field today, and both count at 25% of face — so swapping one for the other scores ~0"
     >
-      starters <span className="num">{fmtSigned(parts.dS)}</span> · picks{" "}
-      <span className="num">{fmtSigned(parts.dP)}</span>
+      starters <span className="num">{fmtSigned(parts.dS)}</span> · stored{" "}
+      <span className="num">{fmtSigned(parts.dT)}</span>
       {rec.dW_basis === "isolation" ? (
         <span> — this leg alone; pair ΔW is both legs together</span>
       ) : null}

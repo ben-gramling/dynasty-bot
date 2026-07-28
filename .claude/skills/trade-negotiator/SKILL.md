@@ -10,24 +10,37 @@ assets in Chicago Dynasty (12-team, 1QB, full PPR) for **"what would it take"**
 (Sleeper user `bengramling`, roster_id 4). The user is your flow desk: they bring
 market color from the league; you turn it into priced, targeted, hedged trades.
 
-Division of labor (spec v3.4, `docs/scoring-system.md`):
-- **The engine prices a WEALTH LEDGER, not a face-value swap.** `W = S + P`:
-  `S` = Σ raw KTC over our max-Σv legal starting lineup (QB/2RB/3WR/TE/2FLEX)
-  solved over ACTIVE + TAXI — taxi counts (promote-anytime), bench and IR are
-  worth **zero** — and `P` = picks at KTC tranche. `ΔW = W(after) − W(before)`.
-  Three consequences the desk must internalise:
-  - **Bench players are trade currency, not wealth.** They move at face value
-    (that is what the market prices and what the gate and the return
-    denominator use) but carry 0 in the ledger. Turning bench depth into picks
-    or into a starter upgrade is where our edge comes from.
+Division of labor (spec v3.5, `docs/scoring-system.md`):
+- **The engine prices a WEALTH LEDGER, not a face-value swap.** `W = S + δ·T`
+  with `δ = 0.25`: `S` = Σ raw KTC over our max-Σv legal starting lineup
+  (QB/2RB/3WR/TE/2FLEX) solved over ACTIVE + TAXI — taxi counts
+  (promote-anytime), IR never does — and `T` = **all stored value**:
+  non-starting players at face PLUS picks at tranche, one class priced one way.
+  `ΔW = W(after) − W(before)`. Four consequences the desk must internalise:
+  - **A starter point is worth four stored points.** A 1,000 downgrade to the
+    starting lineup needs a 4,000 stored gain to break even. Genuine starter
+    upgrades are where the edge is; everything else is small by construction.
+  - **Bench upgrades DO score (v3.5).** Improving depth without touching the
+    lineup is worth δ of the face gained — small, positive, real. v3.4 scored
+    it at exactly 0; the user's own case ("a trade that upgrades my bench
+    without decreasing my starters or my picks can still be a good trade")
+    is why that changed.
+  - **Non-starter → pick conversions no longer pay.** Under v3.4, selling a
+    bench player for a pick of equal face banked the pick's whole value
+    (≈ +4,116 on the fixture board) for a roster that got no better — pure
+    reclassification, and it produced the old board's 40%-return pairs. Both
+    sides of that swap are stored value now, so it scores ≈ 0. Never pitch one
+    as an upgrade; if a pair's return comes from that shape, say so.
   - **ΔW is PER SIDE, never zero-sum.** `dW.them` is the counterparty's own
     ledger delta. A good trade can lift both — that is exactly what arbitrage
     between postures means, and it is the honest thing to say in a
     negotiation. What is conserved is the face-KTC transfer, not the ledger.
-  - **A buy leg is normally NEGATIVE on its own** (picks out, a player in who
-    may not even start). That is expected, not a red flag: always pair it and
-    quote the PAIR ΔW, which is both legs applied together — not the sum of
-    the leg numbers, because the legs interact through the lineup.
+  - **A buy leg can still be NEGATIVE on its own** (a starter's worth of picks
+    out, a player in who may not even start) — much less often than under
+    v3.4, where every pick shipped cost its full face. When it happens it is
+    expected, not a red flag: pair it and quote the PAIR ΔW, which is both
+    legs applied together — not the sum of the leg numbers, because the legs
+    interact through the lineup.
 - **One gate, and it is literally the number their KTC calculator shows.**
   `core.scoring.ktc_adjust` is an exact port of keeptradecut.com's
   trade-calculator value adjustment (13/13 live trades integer-exact), so
@@ -189,11 +202,13 @@ uv run python scripts/score_trade.py pairs --min 5 --max 2.5 [--json]  # v3.4.1:
   via `--alternatives`, keeping only shapes consistent with X's revealed wants;
   present accept / counter / decline with numbers.
 - **"Score this trade"** → run it; report OUR ledger ΔW with its
-  starters/picks split, THEIR own ledger ΔW (not a negation), gate detail
+  starters/stored split (`starters +X · stored +Y` — the stored figure is
+  already discounted to 25%), THEIR own ledger ΔW (not a negation), gate detail
   (KTC-calculator totals, gap vs band, ratio vs cap), posture fit, sequencing.
-  If it's a buy leg, expect a negative number in isolation, say so plainly, and
-  run `--hedge` unprompted — the user expects every buy to arrive with its exit
-  and the pair number is the one that decides.
+  If the number is small and it is all in `stored`, say what that means: the
+  trade shuffles value we cannot field, and the lineup is unchanged. If it's a
+  buy leg, run `--hedge` unprompted — the user expects every buy to arrive with
+  its exit and the pair number is the one that decides.
 - **"Who should I trade with?"** → rank counterparties by (intel match, posture
   fit, board's best gated ΔW against them, hole match); say which factor drives
   each ranking.
@@ -211,11 +226,12 @@ uv run python scripts/score_trade.py pairs --min 5 --max 2.5 [--json]  # v3.4.1:
 - Distinguish your two knowledge types explicitly: *priced* (engine arithmetic)
   vs *read* (posture/intel). "The math says +552; your intel says millj wants
   picks, which is why this shape clears."
-- Picks score at KTC tranche value in `P`; current-year picks show the
-  rookie-board slot value as information only. Unvalued players (Waller) add 0
-  to ΔW and get flagged — never treat the 0 as truth. A player who cannot crack
-  our starting lineup also adds 0 to `S`: say that out loud when a proposed buy
-  scores badly, it is usually the whole explanation.
+- Picks score at KTC tranche value inside `T`, exactly like a bench player at
+  face — same class, same 25%; current-year picks show the rookie-board slot
+  value as information only. Unvalued players (Waller) add 0 to ΔW and get
+  flagged — never treat the 0 as truth. A player who cannot crack our starting
+  lineup adds nothing to `S` and only δ of his face to `T`: say that out loud
+  when a proposed buy scores badly, it is usually the whole explanation.
 - Taxi players COUNT in `S` (promote-anytime); IR players never do.
 - Taxi mechanics (lock after week 4) are sequencing/legality: stash-routed
   arrivals consume no active spot (`taxi_stashed` on the card); departing taxi

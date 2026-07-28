@@ -1,4 +1,4 @@
-"""§2/§3/§5 trades: the v3.4 WEALTH LEDGER (W = starters + picks), the exact
+"""§2/§3/§5 trades: the v3.5 WEALTH LEDGER (W = starters + δ·stored), the exact
 KTC-calculator fairness gate, enumerate-then-filter pairing behind the user's
 TWO dials (§5 v3.4.1: a floor on TOTAL pair return plus a cap on EACH leg's
 market return — independent dimensions, storage stratified by max-leg bucket
@@ -6,20 +6,32 @@ so any (floor, cap) query has whatever inventory exists), posture as a hard
 pair-pool constraint, fully count-neutral pairs (§5 v3.2: a recommended pair
 nets exactly 0 players AND 0 picks for my side).
 
-v3.4 changed what the score IS (§2):
+What the score IS (§2, v3.5):
 
-- `W(side) = S + P` — `S` = Σ RAW KTC v over the max-Σv legal starting lineup
-  solved over ACTIVE + TAXI (taxi is promote-anytime, §8; bench, IR and empty
-  slots are worth 0), `P` = Σ picks at tranche. `ΔW` is PER SIDE and is not
-  zero-sum: `dW.them` is the counterparty's own ledger delta, never `−dW.me`.
-  What stays conserved is the face-KTC transfer on every leg (§11.1).
+- `W(side) = S + δ·T` — `S` = Σ RAW KTC v over the max-Σv legal starting lineup
+  solved over ACTIVE + TAXI (taxi is promote-anytime, §8; IR and empty slots
+  are worth 0), `T` = ALL stored value: non-starting players (bench and
+  non-starting taxi) at face v PLUS owned picks at tranche, one class priced
+  one way at `δ = params.stored_delta`. v3.5 replaced v3.4's `W = S + P`
+  (bench = 0, picks = 100%), whose accounting seam paid ≈ +4,116 for selling a
+  non-starter for a pick of equal face — pure reclassification.
+- The identity the whole module runs on: `T = total_face − S`, so
+  `W = δ·total_face + (1−δ)·S` and `ΔW = δ·Δface + (1−δ)·ΔS`. Face transfers
+  exactly on a leg (§11.1), so `Δface = get.v_sum − give.v_sum` is free, and a
+  starter displaced INTO the bench (or promoted out of it) needs no separate
+  accounting — the reclassification cancels identically.
+- `ΔW` is PER SIDE and is not zero-sum: `dW.them` is the counterparty's own
+  ledger delta, never `−dW.me`. What stays conserved is the face-KTC transfer
+  on every leg (§11.1).
 - A pair's ΔW is the COMBINED delta (both legs applied together), not the sum
   of the legs' isolation ΔWs — the legs interact through the lineup. Leg cards
-  carry their isolation ΔW, labeled; a buy leg alone is usually negative.
+  carry their isolation ΔW, labeled; a buy leg alone can still be negative
+  (less often than under v3.4, where every pick shipped cost its full face).
 - Only the raw starter-sum solve enters this module from the lineup model
   (§11.2, enforced by an import-graph test): no q insurance weights, no
-  availability multipliers, no replacement lines. Roster legality and taxi
-  routing (§8) stay in model.apply_tx — legality and sequencing only.
+  availability multipliers, no replacement lines. `stored_delta` is a TRADE
+  parameter, not a lineup one. Roster legality and taxi routing (§8) stay in
+  model.apply_tx — legality and sequencing only.
 - The fairness gate is the EXACT reverse-engineered KTC trade-calculator
   adjustment (core.scoring.ktc_adjust), not a fitted consolidation curve.
 
@@ -127,10 +139,10 @@ class Package:
     # §3.1: asset values DESC — exactly what KTC's calculator sorts before it
     # runs processV over a side
     vals: tuple[float, ...]
-    # §2 v3.4 ledger inputs: the package's players as raw-value columns in
-    # lineup.POS4 order, and the Σ tranche value of its picks
+    # §2 v3.5 ledger input: the package's players as raw-value columns in
+    # lineup.POS4 order (the ΔS solve). The stored term needs no per-class
+    # column — it reads `v_sum`, which already covers players AND picks.
     cols: tuple[tuple[float, ...], ...]
-    picks_v: float
 
     @property
     def keys(self) -> tuple[str, ...]:
@@ -161,7 +173,6 @@ def package_of(league: md.LeagueState, assets: Sequence[Asset]) -> Package:
         cols=pos_columns(
             a.player for a in assets if a.kind == "player" and a.player is not None
         ),
-        picks_v=sum(a.v for a in assets if a.kind == "pick"),
     )
 
 
@@ -173,13 +184,14 @@ def _packages(league: md.LeagueState, assets: list[Asset]) -> list[Package]:
     return out
 
 
-# ------------------------------------------------------- §2 v3.4 wealth ledger
+# ------------------------------------------------------- §2 v3.5 wealth ledger
 
 
 def starter_pool(t: md.TeamCtx) -> list:
     """The players `S` is solved over: ACTIVE + TAXI (taxi is promote-anytime,
-    §8). Bench players are in `act` and simply lose the max-Σv solve; IR players
-    are already out of `act` and never enter."""
+    §8). Bench players are in `act` and simply lose the max-Σv solve — under
+    v3.5 they keep earning `δ` of face through `T`. IR players are already out
+    of `act` and never enter: they are in neither term (§11.8)."""
     return t.act + t.taxi
 
 
@@ -188,9 +200,18 @@ def team_index(t: md.TeamCtx) -> StarterIndex:
     return StarterIndex(starter_pool(t))
 
 
-def wealth(t: md.TeamCtx) -> float:
-    """§2 `W = S + P` for a team, at raw KTC / tranche values."""
-    return starter_sum(starter_pool(t)) + t.picks_mv
+def total_face(t: md.TeamCtx) -> float:
+    """§2 v3.5 Σ face value the ledger sees: every player the S-solve ranges
+    over (active + taxi, IR excluded — §11.8) at raw KTC v, plus every owned
+    pick at tranche. `S` is a subset of it; `T = total_face − S`."""
+    return sum(p.v for p in starter_pool(t)) + t.picks_mv
+
+
+def wealth(t: md.TeamCtx, stored_delta: float) -> float:
+    """§2 v3.5 `W = S + δ·T` for a team — equivalently `δ·total_face +
+    (1−δ)·S`, the identity the ledger deltas are computed from."""
+    s = starter_sum(starter_pool(t))
+    return s + stored_delta * (total_face(t) - s)
 
 
 def _merge4(a: Sequence[Sequence[float]], b: Sequence[Sequence[float]]) -> tuple:
@@ -198,22 +219,30 @@ def _merge4(a: Sequence[Sequence[float]], b: Sequence[Sequence[float]]) -> tuple
 
 
 def ledger_delta(
-    index: StarterIndex, out_pkgs: Sequence[Package], in_pkgs: Sequence[Package]
+    index: StarterIndex,
+    out_pkgs: Sequence[Package],
+    in_pkgs: Sequence[Package],
+    stored_delta: float,
 ) -> tuple[float, float, float]:
-    """§2 v3.4 ΔW for ONE side: (ΔS, ΔP, ΔW) when `out_pkgs` leave that roster
-    and `in_pkgs` arrive, all applied together. Per-side — never negated for the
-    counterparty (§11.1)."""
+    """§2 v3.5 ΔW for ONE side: (ΔS, δ·ΔT, ΔW) when `out_pkgs` leave that roster
+    and `in_pkgs` arrive, all applied together. The second term is already
+    δ-scaled, so `ΔS + δ·ΔT == ΔW` exactly. Per-side — never negated for the
+    counterparty (§11.1).
+
+    Stored value needs no separate bookkeeping: `T = total_face − S`, so what
+    a starter loses to the bench (or the bench gains from a promotion) is
+    already inside `ΔS`, and the only other input is the leg's face delta."""
     out4: tuple = EMPTY4
     in4: tuple = EMPTY4
-    d_p = 0.0
+    d_face = 0.0
     for pkg in out_pkgs:
         out4 = _merge4(out4, pkg.cols)
-        d_p -= pkg.picks_v
+        d_face -= pkg.v_sum
     for pkg in in_pkgs:
         in4 = _merge4(in4, pkg.cols)
-        d_p += pkg.picks_v
-    d_s = index.delta(out4, in4)
-    return d_s, d_p, d_s + d_p
+        d_face += pkg.v_sum
+    d_s, d_t = index.wealth_delta(out4, in4, d_face, stored_delta)
+    return d_s, d_t, d_s + d_t
 
 
 def combined_ledger(
@@ -224,13 +253,16 @@ def combined_ledger(
     ranked by. Not the sum of the legs' isolation ΔWs: the legs interact
     through the starting lineup."""
     me_t = league.teams[league.me]
-    d_s, d_p, d_w = ledger_delta(
-        team_index(me_t), [g for g, _ in legs], [t for _, t in legs]
+    d_s, d_t, d_w = ledger_delta(
+        team_index(me_t),
+        [g for g, _ in legs],
+        [t for _, t in legs],
+        league.params.stored_delta,
     )
     sent = sum(g.v_sum for g, _ in legs)
     return {
         "dS": round(d_s, 1),
-        "dP": round(d_p, 1),
+        "dT": round(d_t, 1),
         "dW": round(d_w, 1),
         "sent": round(sent, 1),
         "return_pct": round(100.0 * d_w / sent, 2) if sent > 0 else None,
@@ -455,14 +487,15 @@ def build_card(
     ceiling: float | None = None,
 ) -> dict:
     """The §5/§10 card for one leg. `dW` carries EACH SIDE'S OWN ledger delta
-    (§2 v3.4) — not a zero-sum pair: a good leg can lift both ledgers. What is
+    (§2 v3.5) — not a zero-sum pair: a good leg can lift both ledgers. What is
     conserved is the face-KTC transfer (§11.1). Leg ΔW is an ISOLATION figure;
     a pair's ΔW is the combined one (§5)."""
     params = league.params
+    delta = params.stored_delta
     me_t = league.teams[league.me]
     opp_t = league.teams[opp_name]
-    ds_me, dp_me, dw_me = ledger_delta(team_index(me_t), [give], [get])
-    ds_them, dp_them, dw_them = ledger_delta(team_index(opp_t), [get], [give])
+    ds_me, dt_me, dw_me = ledger_delta(team_index(me_t), [give], [get], delta)
+    ds_them, dt_them, dw_them = ledger_delta(team_index(opp_t), [get], [give], delta)
     gate = gate_info(league, give, get)
     verdicts = leg if leg is not None else legality(league, me_t, opp_t, give, get)
     gate["legal"] = verdicts["legal"]
@@ -500,11 +533,13 @@ def build_card(
         "counterparty": opp_name,
         "give": [_asset_dict(a) for a in give.assets],
         "get": [_asset_dict(a) for a in get.assets],
-        # §2 v3.4: per-side OWN-ledger deltas (never negations of each other)
+        # §2 v3.5: per-side OWN-ledger deltas (never negations of each other),
+        # split into the starter term and the δ-scaled STORED term (bench
+        # players + picks alike) — the two sum to dW exactly
         "dW": {"me": round(dw_me, 1), "them": round(dw_them, 1)},
         "dW_parts": {
-            "me": {"dS": round(ds_me, 1), "dP": round(dp_me, 1)},
-            "them": {"dS": round(ds_them, 1), "dP": round(dp_them, 1)},
+            "me": {"dS": round(ds_me, 1), "dT": round(dt_me, 1)},
+            "them": {"dS": round(ds_them, 1), "dT": round(dt_them, 1)},
         },
         "dW_basis": "isolation",  # this leg alone; pairs carry the combined ΔW
         # §5 leg return on inventory deployed: isolation ΔW(me) ÷ Σv sent, percent
@@ -628,10 +663,12 @@ _POS4 = ("QB", "RB", "WR", "TE")
 _MIN4 = tuple(MIN_POS[p] for p in _POS4)
 
 # leg tuple layout inside PairPool.legs (indices 0-8 are the v3.3 contract and
-# stay put; v3.4 appends the ledger inputs the pair walk needs; v3.4.1 appends
-# the leg's MARKET return — face ΔW(me) ÷ face Σv sent, the §5 leg-cap input)
+# stay put; v3.4 appends the ledger inputs the pair walk needs — v3.5 makes the
+# stored input the leg's FACE delta, `get.v_sum − give.v_sum`, which is all the
+# `W = δ·face + (1−δ)·S` identity needs; v3.4.1 appends the leg's MARKET return
+# — face ΔW(me) ÷ face Σv sent, the §5 leg-cap input)
 L_RET, L_DW, L_SENT, L_NP, L_NK, L_OPP, L_MASK, L_GIVE, L_GET = range(9)
-L_OUT4, L_IN4, L_DP, L_MKT = 9, 10, 11, 12
+L_OUT4, L_IN4, L_DFACE, L_MKT = 9, 10, 11, 12
 
 
 @dataclass(slots=True)
@@ -651,21 +688,20 @@ class PairPool:
     opp_pkgs: dict[str, tuple[list[float], list[Package]]]  # Σv-sorted; ceilings
     enforce_posture: bool
     index: StarterIndex
+    stored_delta: float  # §2 v3.5 δ — the ledger's stored-value discount
 
     def pair_ledger_dw(self, buy_i: int, sell_i: int) -> float:
         """EXACT combined ledger ΔW(me) for two legs applied TOGETHER (§5 v3.4)
-        — never the sum of their isolation ΔWs."""
+        — never the sum of their isolation ΔWs. v3.5: one starter re-solve plus
+        the two legs' face deltas, via `ΔW = δ·Δface + (1−δ)·ΔS` (§2)."""
         b, s = self.legs[buy_i], self.legs[sell_i]
         bo, so = b[L_OUT4], s[L_OUT4]
         bi_, si_ = b[L_IN4], s[L_IN4]
-        return (
-            self.index.delta(
-                (bo[0] + so[0], bo[1] + so[1], bo[2] + so[2], bo[3] + so[3]),
-                (bi_[0] + si_[0], bi_[1] + si_[1], bi_[2] + si_[2], bi_[3] + si_[3]),
-            )
-            + b[L_DP]
-            + s[L_DP]
-        )
+        d = self.stored_delta
+        return (1.0 - d) * self.index.delta(
+            (bo[0] + so[0], bo[1] + so[1], bo[2] + so[2], bo[3] + so[3]),
+            (bi_[0] + si_[0], bi_[1] + si_[1], bi_[2] + si_[2], bi_[3] + si_[3]),
+        ) + d * (b[L_DFACE] + s[L_DFACE])
 
     def pair_return(self, buy_i: int, sell_i: int) -> float:
         """The stored pair's return FRACTION: exact combined ΔW(me) ÷ Σ face v
@@ -743,6 +779,7 @@ def build_pair_pool(league: md.LeagueState, enforce_posture: bool = True) -> Pai
     K = params.variants_per_signature
     scan_cap = params.variant_scan_cap
     fl = params.fleece_ratio
+    delta = params.stored_delta  # §2 v3.5 stored-value discount
     top_v = league.top_ktc_value
     cap = top_v + 80.0
     g_info = []
@@ -857,24 +894,24 @@ def build_pair_pool(league: md.LeagueState, enforce_posture: bool = True) -> Pai
                     )
                     if not _band_ok(params, adj_g, adj_t):
                         continue
-                    d_s = my_index.delta(g.cols, t.cols)
-                    d_p = t.picks_v - g.picks_v
-                    dw = d_s + d_p
-                    best.append((-dw, t.keys, t, d_p))
+                    d_face = t_v - gv
+                    d_s, d_t = my_index.wealth_delta(g.cols, t.cols, d_face, delta)
+                    dw = d_s + d_t
+                    best.append((-dw, t.keys, t, d_face))
                     passers += 1
                     if passers >= scan_cap:
                         break
                 if not best:
                     continue
                 best.sort()  # isolation ΔW desc, deterministic ties on the keys
-                for _neg_dw, _k, t, d_p in best[:K]:
+                for _neg_dw, _k, t, d_face in best[:K]:
                     dw = -_neg_dw
                     buckets.setdefault((np_, nk), []).append(len(legs))
                     legs.append(
                         (
                             dw / gv, dw, gv, np_, nk, oi, mask, g, t,
-                            g.cols, t.cols, d_p,
-                            (t.v_sum - gv) / gv,  # market return (§5 v3.4.1)
+                            g.cols, t.cols, d_face,
+                            d_face / gv,  # market return (§5 v3.4.1)
                         )
                     )
     return PairPool(
@@ -884,6 +921,7 @@ def build_pair_pool(league: md.LeagueState, enforce_posture: bool = True) -> Pai
         opp_pkgs=opp_pkgs,
         enforce_posture=enforce_posture,
         index=my_index,
+        stored_delta=delta,
     )
 
 
@@ -1419,10 +1457,10 @@ def pair_count_deltas(buy_card: dict, sell_card: dict) -> tuple[int, int]:
 def trade_board(league: md.LeagueState) -> dict:
     """§5 v3.4.1: the exhaustively-crossed PAIR board behind the user's TWO
     independent dials — a floor on TOTAL pair return (combined ledger ÷ face Σv
-    sent, §2/§5 v3.4) and a cap on EACH leg's MARKET return (face skim off that
-    leg's counterparty). Storage is STRATIFIED BY MAX-LEG BUCKET: pairs bucket
-    on max(r(buy), r(sell)) over (−∞,2.5), [2.5,5), [5,10), [10,20), [20,∞)
-    percent, the top `pairs_per_band` per bucket kept by TOTAL return desc, and
+    sent, §2 v3.5 / §5 v3.4) and a cap on EACH leg's MARKET return (face skim
+    off that leg's counterparty). Storage is STRATIFIED BY MAX-LEG BUCKET:
+    pairs bucket on max(r(buy), r(sell)) over (−∞,2.5), [2.5,5), [5,10),
+    [10,20), [20,∞) percent, the top `pairs_per_band` per bucket kept by TOTAL return desc, and
     `pairs` lists every stored pair sorted by total return desc globally (the
     sort is ALWAYS total-desc; the cap only filters). Every stored pair is
     fully count-neutral, both legs gate-PASS, posture-clean, distinct
@@ -1690,7 +1728,7 @@ def trade_board(league: md.LeagueState) -> dict:
                 "leg_returns": {"buy": mkt_b, "sell": mkt_s},
                 "max_leg_return_pct": mkt_b if mkt_b > mkt_s else mkt_s,
                 "dW_combined": combined["dW"],
-                "dW_combined_parts": {"dS": combined["dS"], "dP": combined["dP"]},
+                "dW_combined_parts": {"dS": combined["dS"], "dT": combined["dT"]},
                 "dW_legs_isolated": round(b["dW"]["me"] + s["dW"]["me"], 1),
                 "net_roster": b["net_roster"]["me"] + s["net_roster"]["me"],
                 "net_players": np_pair,  # exactly 0 by construction (§5 v3.2)
@@ -1777,10 +1815,12 @@ def trade_board(league: md.LeagueState) -> dict:
         "skim off that leg's counterparty) — independent dimensions; every stored "
         "pair nets exactly 0 players / 0 picks for you, always sorted by total "
         "return desc",
-        "ΔW is the v3.4 wealth ledger (starters at raw KTC over active+taxi, plus "
-        "picks at tranche) and is PER SIDE — a good pair can lift both ledgers. A "
-        "pair's ΔW is the two legs applied TOGETHER; each leg card also shows its "
-        "isolation ΔW, and a buy leg alone is normally negative",
+        "ΔW is the v3.5 wealth ledger — starters at raw KTC over active+taxi plus "
+        "ALL stored value (bench players at face AND picks at tranche, one class) "
+        f"discounted to {100 * params.stored_delta:g}% — and is PER SIDE: a good "
+        "pair can lift both ledgers. A pair's ΔW is the two legs applied TOGETHER; "
+        "each leg card also shows its isolation ΔW, and a buy leg alone can still "
+        "be negative",
         f"stratified storage (v3.4.1): up to {quota} pairs kept per MAX-LEG bucket "
         "(buckets on max(r(buy), r(sell)) at the cap presets), each bucket's top "
         "by TOTAL return — `by_total` on each bucket is its count per total-return "

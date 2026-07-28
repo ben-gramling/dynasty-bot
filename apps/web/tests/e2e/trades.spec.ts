@@ -7,8 +7,9 @@ import { expect, test } from "@playwright/test";
  * always sorted by total return desc. The inventory line comes from the
  * engine's honest per-bucket `bands` grid (saturated counts render "≥ N" —
  * verified floors, never estimates), cards render BOTH sides' own wealth
- * ledgers (v3.4 ΔW is per side, never ±zero-sum) with the starters/picks
- * split and each leg's market return, and NOTHING that isn't a pair renders:
+ * ledgers (v3.4 ΔW is per side, never ±zero-sum) with the v3.5
+ * starters/stored split and each leg's market return, and NOTHING that isn't
+ * a pair renders:
  * no unpaired-legs section, no watch list, no standalone cards. Market map
  * still points into the League tab.
  */
@@ -185,11 +186,12 @@ test("pairs render fully behind every dial combo or the empty state is honest", 
     // v3.4: each leg shows the counterparty's OWN ledger delta — never a
     // ±zero-sum negation of ours.
     expect(await first.getByText(/their ledger/).count()).toBe(2);
-    // The starters/picks split is optional in the doc shape (boards written
-    // before v3.4 carry none), so assert its SHAPE only when the seeded DB
-    // supplies it: present on a leg ⇒ present on both legs and on the pair.
+    // The starters/stored split is optional in the doc shape (boards written
+    // before v3.5 carry a different one), so assert its SHAPE only when the
+    // seeded DB supplies it: present on a leg ⇒ present on both legs and on
+    // the pair.
     const splits = await first
-      .getByText(/starters [+−]\S* · picks [+−]/)
+      .getByText(/starters [+−]\S* · stored [+−]/)
       .count();
     if (splits > 0) expect(splits).toBe(3);
     await expect(

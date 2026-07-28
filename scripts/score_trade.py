@@ -2,14 +2,15 @@
 
 Unlike the nightly trade-recs board (which enumerates from the engine's give-lists
 — cornerstones and taxi players excluded), this resolves ANY rostered player or
-owned pick by name and scores the exact package with the v3.4 card: the wealth
-ledger ΔW = ΔS + ΔP per side (starters at raw KTC over active + taxi, picks at
-tranche — §2), the exact KTC-calculator fairness gate (§3), posture shape (§4)
+owned pick by name and scores the exact package with the v3.5 card: the wealth
+ledger ΔW = ΔS + δ·ΔT per side (starters at raw KTC over active + taxi, plus ALL
+stored value — bench players at face AND picks at tranche, one class — at
+δ = 0.25 — §2), the exact KTC-calculator fairness gate (§3), posture shape (§4)
 and sequencing (§5). Powers the trade-negotiator skill.
 
-ΔW is NOT zero-sum: each side's number is its own ledger. A buy leg is normally
-negative on its own (picks out, a starter in) — pair it with a sell leg and read
-the PAIR ΔW, which `--hedge` computes exactly (both legs applied together).
+ΔW is NOT zero-sum: each side's number is its own ledger. A buy leg can still be
+negative on its own — pair it with a sell leg and read the PAIR ΔW, which
+`--hedge` computes exactly (both legs applied together).
 
 Usage (from the repo root, .env required):
   uv run python scripts/score_trade.py teams
@@ -129,7 +130,7 @@ def alternatives(
     base: dict,
 ) -> dict:
     """Single-tweak variants, gate-passers only, ranked by my LEDGER ΔW (§5
-    v3.4 — starters + picks, this leg in isolation)."""
+    v3.4 — the v3.5 starters + δ·stored ledger, this leg in isolation)."""
     me = league.teams[league.me]
     opp = league.teams[opp_name]
     my_pool = tr.team_assets(league, me)
@@ -220,8 +221,9 @@ def find_hedges(
 
 
 def fmt_parts(parts: dict) -> str:
-    """The §2 v3.4 ledger breakdown: starters + picks."""
-    return f"starters {parts['dS']:+.0f} · picks {parts['dP']:+.0f}"
+    """The §2 v3.5 ledger breakdown: starters + stored value (bench players at
+    face AND picks at tranche, one class, already discounted by δ)."""
+    return f"starters {parts['dS']:+.0f} · stored {parts['dT']:+.0f}"
 
 
 def fmt_legline(card: dict) -> str:

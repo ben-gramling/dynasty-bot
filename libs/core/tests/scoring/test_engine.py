@@ -48,14 +48,15 @@ def test_top_level_shape(result):
     assert 0 <= len(tr["recommendations"]) <= 10  # secondary: building blocks
     assert isinstance(tr["watch"], list) and isinstance(tr["notes"], list)
     for pair in tr["pairs"]:
-        # v3.4 adds the ledger split of the combined ΔW and the legs' isolation
-        # sum; v3.4.1 adds each leg's market return and their max (the cap key)
+        # v3.4 adds the ledger split of the combined ΔW (v3.5: starters +
+        # stored) and the legs' isolation sum; v3.4.1 adds each leg's market
+        # return and their max (the cap key)
         assert set(pair) == {
             "id", "buy", "sell", "return_pct", "leg_returns", "max_leg_return_pct",
             "dW_combined", "dW_combined_parts", "dW_legs_isolated", "net_roster",
             "net_players", "net_picks", "fit_summary", "sequencing", "overlaps",
         }
-        assert set(pair["dW_combined_parts"]) == {"dS", "dP"}
+        assert set(pair["dW_combined_parts"]) == {"dS", "dT"}
         assert set(pair["leg_returns"]) == {"buy", "sell"}
         assert pair["max_leg_return_pct"] == max(pair["leg_returns"].values())
         assert pair["net_players"] == 0 and pair["net_picks"] == 0  # §5 v3.2
@@ -75,12 +76,14 @@ def test_card_schema_matches_contract(result):
         assert card["action"] == "TRADE"
         assert card["leg_type"] in ("buy", "sell", "neutral")
         assert set(card["dW"]) == {"me", "them"}
-        # §2 v3.4: each side's own ledger, split into starters and picks
+        # §2 v3.5: each side's own ledger, split into the starter term and
+        # the δ-scaled STORED term (bench players AND picks) — they sum to ΔW
         assert set(card["dW_parts"]) == {"me", "them"}
-        assert set(card["dW_parts"]["me"]) == {"dS", "dP"}
-        assert card["dW"]["me"] == round(
-            card["dW_parts"]["me"]["dS"] + card["dW_parts"]["me"]["dP"], 1
-        )
+        for side in ("me", "them"):
+            assert set(card["dW_parts"][side]) == {"dS", "dT"}
+            assert card["dW"][side] == round(
+                card["dW_parts"][side]["dS"] + card["dW_parts"][side]["dT"], 1
+            )
         assert card["dW_basis"] == "isolation"
         assert set(card["net_players"]) == {"me", "them"}  # §5 v3.2 count deltas
         assert set(card["net_picks"]) == {"me", "them"}

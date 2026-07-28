@@ -1,5 +1,5 @@
 """§2 expected lineup strength: exact greedy solver + q-weighted insurance,
-plus the v3.4 RAW starter-sum solve that the trade ledger is built on.
+plus the RAW starter-sum solve that the v3.5 trade ledger is built on.
 
 The greedy fill (dedicated slots take the positional top-K, FLEX takes the top-2
 remaining flex-eligibles) is provably optimal for raw value and is the exact shape
@@ -12,7 +12,7 @@ Two solves live here and must never be confused (§11.2):
 - `solve()` / `removal_dl()` / `diff_terms()` — the league-tab + waiver strength
   model: q insurance weights, availability multipliers `u`, FA replacement
   lines. NONE of it may enter the trade path.
-- `starter_sum()` / `StarterIndex` — the v3.4 wealth ledger's `S`: Σ RAW KTC v
+- `starter_sum()` / `StarterIndex` — the v3.5 wealth ledger's `S`: Σ RAW KTC v
   over the max-Σv legal starting lineup, no q, no u, no replacement. This is the
   ONLY thing `trades.py` is allowed to import from this module.
 """
@@ -31,7 +31,7 @@ GROUPS: tuple[str, ...] = ("QB", "RB", "WR", "TE", "FLEX")
 GROUP_N: dict[str, int] = {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "FLEX": 2}
 FLEX_ELIGIBLE = ("RB", "WR", "TE")
 
-# ------------------------------------------- §2 v3.4 the raw starter-sum solve
+# ------------------------------------------- §2 v3.5 the raw starter-sum solve
 
 # Positions in a fixed order so the hot path can index instead of hashing.
 POS4: tuple[str, ...] = ("QB", "RB", "WR", "TE")
@@ -45,7 +45,7 @@ def _greedy_sum(tops: Sequence[Sequence[float]]) -> float:
     """Σv of the max-Σv legal lineup (QB / 2 RB / 3 WR / TE / 2 FLEX) given the
     per-position value lists sorted DESC. Greedy is exact for raw Σv: dedicated
     slots take the positional tops, then the two FLEX slots take the best two
-    survivors (§2 v3.4; brute-force-verified in the test suite)."""
+    survivors (§2; brute-force-verified in the test suite)."""
     qb, rb, wr, te = tops
     total = 0.0
     for v in qb[:1]:
@@ -76,9 +76,10 @@ def _by_pos(players: Iterable) -> list[list[float]]:
 
 
 def starter_sum(players: Iterable) -> float:
-    """§2 v3.4 `S`: Σ raw KTC v over the max-Σv legal starting lineup, solved
-    over the players given (active + taxi — taxi is promote-anytime, §8; bench,
-    IR and empty slots contribute 0)."""
+    """§2 `S`: Σ raw KTC v over the max-Σv legal starting lineup, solved over
+    the players given (active + taxi — taxi is promote-anytime, §8; IR and
+    empty slots contribute 0). Non-starting players are worth 0 HERE — under
+    v3.5 they carry `δ` of face in the ledger's stored term instead (§2)."""
     return _greedy_sum(_by_pos(players))
 
 
@@ -153,8 +154,33 @@ class StarterIndex:
     def delta(
         self, out_v: Sequence[Sequence[float]], in_v: Sequence[Sequence[float]]
     ) -> float:
-        """ΔS for this delta — the starter half of the §2 wealth ledger."""
+        """ΔS for this delta — the starter term of the §2 wealth ledger."""
         return self.sum_after(out_v, in_v) - self.base_sum
+
+    def wealth_delta(
+        self,
+        out_v: Sequence[Sequence[float]],
+        in_v: Sequence[Sequence[float]],
+        d_face: float,
+        stored_delta: float,
+    ) -> tuple[float, float]:
+        """§2 v3.5 `(ΔS, δ·ΔT)` for this delta — the ledger's two terms, the
+        second already δ-scaled so the pair SUMS to ΔW exactly.
+
+        `d_face` is the change in Σ face value of everything the side owns
+        (players at raw v + picks at tranche) — for a trade leg simply
+        `get.v_sum − give.v_sum`, since face transfers exactly (§11.1).
+
+        The identity that makes this one subtraction instead of a second solve:
+        `T = total_face − S`, so `W = S + δ(total_face − S) = δ·total_face +
+        (1−δ)·S`. Every reclassification between the two terms cancels — when
+        an incoming player displaces a starter, the displaced value leaves `S`
+        and lands in `T` in the same breath, and only `ΔS` and `Δtotal_face`
+        are ever measured. `stored_delta` is passed in by the caller: δ is a
+        TRADE parameter (§9) and this module never reads Params.
+        """
+        d_s = self.sum_after(out_v, in_v) - self.base_sum
+        return d_s, stored_delta * (d_face - d_s)
 
 
 EMPTY4: tuple[tuple[float, ...], ...] = ((), (), (), ())

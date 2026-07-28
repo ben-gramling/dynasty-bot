@@ -1,11 +1,13 @@
 """Every §9 parameter with its default. All knobs live here; nothing is hardcoded elsewhere.
 
-v3.4: one score (the wealth ledger `W = S + P`, §2), one gate (the exact KTC
+v3.5: one score (the wealth ledger `W = S + δ·T`, §2), one gate (the exact KTC
 calculator adjustment + the fleece cap + legality, §3), qualitative posture
 targeting (§4). The lineup q/replacement/availability knobs survive only for the
 league-tab strength map and the in-season FAAB bid formula — they never touch
-the trade path (§11.2). The gate itself has ZERO fitted parameters now: the
-consolidation coefficients `c` are retired with v3.4.
+the trade path (§11.2). `stored_delta` is a TRADE parameter, not a lineup one:
+it prices stored value in the ledger and never enters the S-solve. The gate
+itself has ZERO fitted parameters: the consolidation coefficients `c` are
+retired with v3.4.
 """
 
 from __future__ import annotations
@@ -15,10 +17,18 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Params:
-    # §2 the score (v3.4: the wealth ledger W = starters + picks)
+    # §2 the score (v3.5: the wealth ledger W = S + δ·T — starters at raw KTC
+    # plus ALL stored value, bench players and picks alike, at δ of face)
     # v3.3: W_min is RETIRED as a gate — kept only for the CLI's display-level
     # noise note (a positive ΔW inside KTC's own error bars gets flagged, never hidden)
     w_min: float = 150.0
+
+    # §2/§9 v3.5 stored-value discount: what a point of non-startable value (a
+    # bench player at face, a pick at tranche — one class, priced one way) is
+    # worth against a point of starter value. A strategy DIAL, not an estimate:
+    # the two §2 worked QB cases bracket it to (0, 0.5) and the midpoint was
+    # chosen. Retuning it is this one line; nothing else depends on its value.
+    stored_delta: float = 0.25
 
     # §3 fairness gate. The band tolerances are measured from this league's ~33
     # completed trades; the adjustment they are applied to is the EXACT KTC

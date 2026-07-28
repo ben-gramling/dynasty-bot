@@ -46,15 +46,16 @@ export function PairCard({ pair }: { pair: TradePair }) {
             </span>
           ) : null}
           <ValueChip label="pair ΔW" value={pair.dW_combined} emphasis />
-          {pair.dW_combined_parts ? (
+          {pair.dW_combined_parts?.dS !== undefined &&
+          pair.dW_combined_parts?.dT !== undefined ? (
             <span
               className="text-[11.5px] text-ink-muted"
-              title="Where the pair's wealth moves (§2 v3.4): starters = the max-Σv lineup at raw KTC over active + taxi; picks = tranche value"
+              title="Where the pair's wealth moves (§2 v3.5): starters = the max-Σv lineup at raw KTC over active + taxi; stored = everything else you own — bench players at face and picks at tranche, one class, counted at 25%"
             >
               starters{" "}
               <span className="num">{fmtSigned(pair.dW_combined_parts.dS)}</span> ·
-              picks{" "}
-              <span className="num">{fmtSigned(pair.dW_combined_parts.dP)}</span>
+              stored{" "}
+              <span className="num">{fmtSigned(pair.dW_combined_parts.dT)}</span>
             </span>
           ) : null}
           <span

@@ -1,6 +1,6 @@
-"""§2 the wealth ledger, §3 the exact-KTC gate, §5 v3.3 enumerate-then-filter
-pairing behind the target-return dial (posture as a hard pair-pool constraint)
-+ §10 worked examples.
+"""§2 the v3.5 wealth ledger (`W = S + δ·T`), §3 the exact-KTC gate, §5 v3.3
+enumerate-then-filter pairing behind the target-return dial (posture as a hard
+pair-pool constraint) + §10 worked examples.
 
 §10 pins are computed from the COMMITTED fixtures (data/, 2026-07-26 KTC values,
 2026-07-27 transactions) and are exact to this data; the spec's §10 prose quotes
@@ -9,8 +9,11 @@ the same trades.
 
 from __future__ import annotations
 
+import pytest
+
 from core.scoring import Params
 from core.scoring import ktc_adjust as ka
+from core.scoring import lineup as ln
 from core.scoring import trades as tr
 
 from .conftest import board_legs
@@ -65,11 +68,13 @@ def test_gate_is_the_exact_ktc_calculator(league):
 
 def test_worked_example_1_sell_leg(league):
     """§10.1: Evans + Sutton → jaketoppen for vishan's 2027 1st + his 2028 4th.
-    v3.4 flips this one: the LEDGER loves it (+9,093 — two players who barely
-    reach my max-Σv lineup become 9,157 of pick wealth), but the exact KTC
-    calculator prices the concentrated 7,398 pick far above two mid WRs, so the
-    gap lands at 36.8% against a 20% band and the gate REJECTS it. Under v3.3's
-    fitted consolidation curve the same trade read 17.3% and passed."""
+    v3.5 deflates the ledger from v3.4's +9,093 to +291.5: the picks arriving are
+    stored value at δ, not wealth at face, and the WRs leaving were already
+    mostly stored too — what is left is δ of the 1,358 face gained minus the 64
+    of starter value shipped. The gate is untouched and still REJECTS (the exact
+    KTC calculator prices the concentrated 7,398 pick far above two mid WRs:
+    36.8% against a 20% band; under v3.3's fitted curve it read 17.3% and
+    passed)."""
     card = tr.propose_by_names(
         league, "jaketoppen",
         ["Mike Evans", "Courtland Sutton"],
@@ -79,12 +84,19 @@ def test_worked_example_1_sell_leg(league):
     get = {a["name"]: a["v"] for a in card["get"]}
     assert give == {"Mike Evans": 4125, "Courtland Sutton": 3674}
     assert get == {"2027 R1 (from vishan)": 7398, "2028 R4 (own)": 1759}
-    # §2 v3.4 per-side ledger — NOT a negation
-    assert card["dW"] == {"me": 9093.0, "them": -7941.0}
+    # §2 v3.5 per-side ledger — NOT a negation. Both sides gain here: I bank
+    # δ of a 1,358 face pickup, they bank 1,216 of real starter value.
+    assert card["dW"] == {"me": 291.5, "them": 572.5}
     assert card["dW_parts"] == {
-        "me": {"dS": -64.0, "dP": 9157.0},
-        "them": {"dS": 1216.0, "dP": -9157.0},
+        "me": {"dS": -64.0, "dT": 355.5},
+        "them": {"dS": 1216.0, "dT": -643.5},
     }
+    # the two terms sum to ΔW exactly, on both sides (§2 v3.5)
+    for side in ("me", "them"):
+        p = card["dW_parts"][side]
+        assert card["dW"][side] == round(p["dS"] + p["dT"], 1)
+    # δ·Δface arithmetic, spelled out: 0.25·(9,157 − 7,799 + 64) = 355.5
+    assert card["dW_parts"]["me"]["dT"] == 0.25 * ((9157 - 7799) - (-64))
     assert card["dW_basis"] == "isolation"
     g = card["gate"]
     assert (g["adj_give"], g["adj_get"]) == (7799.0, 12339.0)
@@ -111,15 +123,21 @@ def test_worked_example_1_sell_leg(league):
     assert card["posture"]["label"] in ("BUYER", "SELLER", "NEUTRAL")
 
 
-def test_worked_example_2_buy_leg_negative_alone(league):
-    """§10.2: buy Jauan Jennings from millj for my 2028 3rd. v3.4 makes the
-    isolation ledger honest — Jennings does not crack my max-Σv lineup, so the
-    buy is a pure 2,468 pick spend for 0 starter value; and the exact gate
-    rejects it besides (a 3,026 player outweighs a 2,468 pick by 1,430
-    adjusted, a 36.7% gap). The shape (picks → SELLER) is still right."""
+def test_worked_example_2_buy_leg_stored_for_stored(league):
+    """§10.2: buy Jauan Jennings (3,001) from millj for my 2028 3rd (2,468).
+    Under v3.4 this was a pure −2,468 pick spend (Jennings never cracks my
+    max-Σv lineup, so ΔS = 0 and the pick was 100% wealth). v3.5 prices it as
+    what it is — a swap INSIDE the stored class — so it is worth δ of the 533
+    face picked up, +133.2, not −2,468: the sign flip that killed the
+    reclassification loop. The exact gate still rejects it (a 3,001 player
+    outweighs a 2,468 pick by 1,430 adjusted, a 36.7% gap); the shape
+    (picks → SELLER) is still right."""
     card = tr.propose_by_names(league, "millj", ["2028 R3 (own)"], ["Jauan Jennings"])
-    assert card["dW"] == {"me": -2468.0, "them": 2468.0}
-    assert card["dW_parts"]["me"] == {"dS": 0.0, "dP": -2468.0}
+    assert sum(a["v"] for a in card["give"]) == 2468
+    assert sum(a["v"] for a in card["get"]) == 3001
+    assert card["dW"] == {"me": 133.2, "them": -133.2}
+    assert card["dW_parts"]["me"] == {"dS": 0.0, "dT": 133.2}
+    assert card["dW_parts"]["me"]["dT"] == round(0.25 * (3001 - 2468), 1)
     g = card["gate"]
     assert (g["adj_give"], g["adj_get"]) == (2468.0, 3898.0)
     assert (g["gap"], g["gap_pct"], g["band"]) == (1430.0, 36.7, 779.6)
@@ -148,6 +166,174 @@ def test_worked_example_3_fleece_rejected(league):
         [tr.team_assets(league, league.teams["vishan"])["Shedeur Sanders"]],
     )
     assert rev["gate"]["raw_ratio"] == 1.87
+
+
+# --------------------------------------- §2/§11.8b v3.5 stored value at δ = 0.25
+
+
+def _pv(name: str, pos: str, v: float, i: int) -> ln.PlayerV:
+    return ln.PlayerV(sid=f"syn:{i}", name=name, pos=pos, v=float(v), ktc_id=i)
+
+
+def _synth_pick(v: float, name: str = "synthetic 2027 R2") -> tr.Asset:
+    """A pick asset with no lineup role — stored value, nothing else."""
+    return tr.Asset(
+        kind="pick", key=f"syn:{name}", name=name, v=float(v), pos=None,
+        unvalued=False, concrete=None,
+    )
+
+
+def _synth_ledger(league, roster, give, get, delta) -> tuple[float, float, float]:
+    """(ΔS, δ·ΔT, ΔW) for a synthetic roster and an explicit swap. `give`/`get`
+    are Assets (players or `_synth_pick`s)."""
+    return tr.ledger_delta(
+        ln.StarterIndex(roster),
+        [tr.package_of(league, give)],
+        [tr.package_of(league, get)],
+        delta,
+    )
+
+
+def test_v35_qb_case_a_two_qbs_one_slot_scores_negative(league, params):
+    """§2/§11.8b(a), the user's FIRST worked QB case: "my total KTC has gone up
+    but I can only start one QB". An 8,000 starter + a 4,000 backup swapped for
+    a 7,000 + a 6,000 raises face by 1,000 and must still score NEGATIVE —
+    −1,000 of starter value against +2,000 of stored value at δ = 0.25 is
+    −500. This case is what puts the CEILING on δ (δ < 0.5)."""
+    assert params.stored_delta == 0.25
+    starter, backup = _pv("QB8000", "QB", 8000, 1), _pv("QB4000", "QB", 4000, 2)
+    roster = [starter, backup]
+    assert ln.starter_sum(roster) == 8000.0  # only one QB slot exists
+    d_s, d_t, d_w = _synth_ledger(
+        league,
+        roster,
+        [tr.player_asset(starter), tr.player_asset(backup)],
+        [tr.player_asset(_pv("QB7000", "QB", 7000, 3)),
+         tr.player_asset(_pv("QB6000", "QB", 6000, 4))],
+        params.stored_delta,
+    )
+    assert (d_s, d_t, d_w) == (-1000.0, 500.0, -500.0)
+    assert d_w < 0.0  # the invariant the user stated
+    assert d_s + d_t == d_w
+
+
+def test_v35_qb_case_b_bench_upgrade_scores_positive(league, params):
+    """§2/§11.8b(a), the user's SECOND worked QB case: "a trade that upgrades my
+    bench without decreasing my starters or my picks can still be a good
+    trade". The 8,000 starter is untouched and the 5,000 backup becomes a
+    6,000 backup: ΔS = 0, +1,000 of stored value ⇒ +250. This case is what
+    puts the FLOOR on δ (δ > 0) and is why pure deployability was rejected."""
+    starter, backup = _pv("QB8000", "QB", 8000, 1), _pv("QB5000", "QB", 5000, 2)
+    roster = [starter, backup]
+    d_s, d_t, d_w = _synth_ledger(
+        league,
+        roster,
+        [tr.player_asset(backup)],
+        [tr.player_asset(_pv("QB6000", "QB", 6000, 3))],
+        params.stored_delta,
+    )
+    assert (d_s, d_t, d_w) == (0.0, 250.0, 250.0)
+    assert d_w > 0.0  # the invariant the user stated
+
+
+@pytest.mark.parametrize("delta", [0.0, 0.1, 0.25, 0.4, 0.49, 0.5, 0.75, 1.0])
+def test_the_two_qb_cases_bracket_delta_to_0_0p5(league, delta):
+    """§2/§9: the two cases above are not just pins, they are the DERIVATION of
+    δ ∈ (0, 0.5). Case A scores negative iff δ < 0.5; case B scores positive
+    iff δ > 0. The shipped 0.25 is the midpoint of exactly that interval."""
+    qb8 = _pv("QB8000", "QB", 8000, 1)
+    a = _synth_ledger(
+        league, [qb8, _pv("QB4000", "QB", 4000, 2)],
+        [tr.player_asset(qb8), tr.player_asset(_pv("QB4000", "QB", 4000, 2))],
+        [tr.player_asset(_pv("QB7000", "QB", 7000, 3)),
+         tr.player_asset(_pv("QB6000", "QB", 6000, 4))],
+        delta,
+    )[2]
+    b = _synth_ledger(
+        league, [qb8, _pv("QB5000", "QB", 5000, 5)],
+        [tr.player_asset(_pv("QB5000", "QB", 5000, 5))],
+        [tr.player_asset(_pv("QB6000", "QB", 6000, 6))],
+        delta,
+    )[2]
+    assert (a < 0) == (delta < 0.5), (delta, a)
+    assert (b > 0) == (delta > 0.0), (delta, b)
+
+
+def test_stored_class_conversion_scores_zero(league, params):
+    """§11.8b(b): a pure conversion BETWEEN stored classes pays nothing. A
+    non-starting player for a pick of equal face is exactly 0 — the death of
+    v3.4's reclassification loop, where the same trade banked the pick's whole
+    face because the bench player was priced at 0."""
+    wrs = [_pv(f"WR{v}", "WR", v, i) for i, v in enumerate([9000, 8000, 7000, 6000, 5000, 4000])]
+    bench = wrs[-1]  # 3 WR + 2 FLEX slots: the 6th WR cannot start
+    assert ln.starter_sum(wrs) == ln.starter_sum(wrs[:-1]) == 35000.0
+    d_s, d_t, d_w = _synth_ledger(
+        league, wrs, [tr.player_asset(bench)], [_synth_pick(4000)], params.stored_delta
+    )
+    assert (d_s, d_t, d_w) == (0.0, 0.0, 0.0)
+    # and the v3.5 bound holds for unequal face too: |ΔW| ≤ δ·|Δface|
+    for pick_v in (3000, 3900, 4100, 5000):
+        _, _, dw = _synth_ledger(
+            league, wrs, [tr.player_asset(bench)], [_synth_pick(pick_v)],
+            params.stored_delta,
+        )
+        assert abs(dw) <= params.stored_delta * abs(pick_v - bench.v) + 1e-9
+        assert dw == params.stored_delta * (pick_v - bench.v)
+
+
+def test_hunter_for_a_2027_second_no_longer_pays(league, params):
+    """§11.8b(b) pinned on the COMMITTED fixtures — the regression v3.5 exists
+    to kill. Travis Hunter (4,061) is on my bench: he cannot crack the max-Σv
+    lineup, so under v3.4 shipping him for ronakpatel32's 2027 2nd (4,139)
+    scored the pick's ENTIRE face, +4,139, for a roster that got no better.
+    Under v3.5 both sides of the swap are stored value and the trade is worth
+    δ·78 = +19.5 — noise, correctly. The gate passed then and passes now, so
+    the seam really was reachable."""
+    mine = tr.team_assets(league, league.teams[league.me])
+    ron = tr.team_assets(league, league.teams["ronakpatel32"])
+    hunter, second = mine["Travis Hunter"], ron["2027 R2 (own)"]
+    assert (hunter.v, second.v) == (4061.0, 4139.0)
+    starters = {p.sid for grp in ln.starters(tr.starter_pool(league.teams[league.me])).values() for p in grp}
+    assert hunter.player.sid not in starters  # bench: ΔS = 0 either way
+
+    card = tr.propose(league, "ronakpatel32", [hunter], [second])
+    assert card["gate"]["verdict"] == "PASS"  # it was always gate-clean
+    assert card["dW_parts"]["me"] == {"dS": 0.0, "dT": 19.5}
+    assert card["dW"]["me"] == 19.5
+    assert abs(card["dW"]["me"]) <= params.stored_delta * abs(second.v - hunter.v) + 1e-9
+    # what v3.4 would have paid for the same trade: ΔS + the pick's full face
+    v34 = card["dW_parts"]["me"]["dS"] + second.v
+    assert v34 == 4139.0 and card["dW"]["me"] < 0.005 * v34
+
+
+@pytest.mark.parametrize("delta", [0.0, 1.0])
+def test_delta_endpoints_reproduce_the_older_ledgers(snapshot, delta):
+    """§11.8b(c): the parameter's endpoints are the two ledgers v3.5 sits
+    between. δ = 0 is pure deployability — ΔW collapses onto ΔS, v3.4's starter
+    term with its pick column zeroed (the option §2 rejects, because it scores
+    the second QB case at exactly 0). δ = 1 is v3.3's face ledger — ΔW is the
+    face transfer itself, which is why the market, not the ledger, prices the
+    gate."""
+    from core.scoring import model as md
+
+    league2 = md.build_league(snapshot, Params(stored_delta=delta))
+    cases = [
+        ("jaketoppen", ["Mike Evans", "Courtland Sutton"],
+         ["2027 R1 (from vishan)", "2028 R4 (own)"]),
+        ("millj", ["2028 R3 (own)"], ["Jauan Jennings"]),
+        ("ronakpatel32", ["Javonte Williams"], ["Zay Flowers"]),
+        ("Jukinski", ["Joe Burrow", "2026 4.01"], ["2026 1.12", "2028 R1 (own)"]),
+    ]
+    for opp, give, get in cases:
+        card = tr.propose_by_names(league2, opp, give, get)
+        parts = card["dW_parts"]["me"]
+        face = sum(a["v"] for a in card["get"]) - sum(a["v"] for a in card["give"])
+        if delta == 0.0:
+            assert parts["dT"] == 0.0, (opp, give)
+            assert card["dW"]["me"] == parts["dS"], (opp, give)
+        else:
+            assert card["dW"]["me"] == float(face), (opp, give)
+            assert round(parts["dS"] + parts["dT"], 1) == float(face), (opp, give)
 
 
 def test_fleece_never_on_board(result):
@@ -273,10 +459,11 @@ def test_below_noise_floor_note(league):
     hiding it — display note only, never a gate (v3.3)."""
     mine = tr.team_assets(league, league.teams[league.me])
     theirs = tr.team_assets(league, league.teams["jaketoppen"])
-    # my 2026 2.09 at tranche 3,504 for their 2028 2nd at 3,579: ΔW +75 < 150
+    # my 2026 2.09 at tranche 3,504 for their 2028 2nd at 3,579: a pick-for-pick
+    # swap inside the stored class, so ΔW is δ·75 = +18.8, well under W_min
     card = tr.propose(league, "jaketoppen", [mine["2026 2.09"]], [theirs["2028 R2 (own)"]])
-    assert card["dW"]["me"] == 75.0
-    assert card["dW_parts"]["me"] == {"dS": 0.0, "dP": 75.0}
+    assert card["dW"]["me"] == 18.8
+    assert card["dW_parts"]["me"] == {"dS": 0.0, "dT": 18.8}
     note = next(n for n in card.get("notes", []) if "noise" in n)
     assert "not a gate" in note
 
@@ -342,24 +529,27 @@ def test_pair_count_deltas_both_currencies(league):
 
 
 def test_pair_ledger_math_pinned(league):
-    """§5 v3.4 return-on-inventory arithmetic, pinned to the fixtures. The buy
-    leg is NEGATIVE alone (−1,759: a pick out, a player who never starts in) —
-    exactly the shape v3.3's per-leg return floor used to delete. The sell leg
-    recoups (+6,516 = starters −1,312, picks +7,828), and the PAIR is the
-    combined ledger over the face Σv sent across both legs:
-    4,757 ÷ 9,536 = 49.88%."""
+    """§5 v3.4 return-on-inventory arithmetic on the v3.5 ledger, pinned to the
+    fixtures. The buy leg swaps a 1,759 pick for a 1,876 non-starter — stored
+    for stored, +29.2. The sell leg ships Joe Burrow, my starting QB, for picks:
+    v3.4 read it +6,516 (7,828 of pick face at 100% against a 1,312 starter
+    dent), v3.5 reads it −463.0, because the picks arrive as stored value at δ.
+    The PAIR is the combined ledger over the face Σv sent across both legs:
+    −433.8 ÷ 9,536 = −4.55% — the 49.88% that used to top the board was
+    reclassification, not wealth."""
     buy, sell = _fixture_pair_legs(league)
-    assert (buy["dW"]["me"], sum(a["v"] for a in buy["give"])) == (-1759.0, 1759)
-    assert buy["return_pct"] == -100.0
-    assert (sell["dW"]["me"], sum(a["v"] for a in sell["give"])) == (6516.0, 7777)
-    assert sell["dW_parts"]["me"] == {"dS": -1312.0, "dP": 7828.0}
+    assert (buy["dW"]["me"], sum(a["v"] for a in buy["give"])) == (29.2, 1759)
+    assert buy["dW_parts"]["me"] == {"dS": 0.0, "dT": 29.2}
+    assert buy["return_pct"] == 1.66
+    assert (sell["dW"]["me"], sum(a["v"] for a in sell["give"])) == (-463.0, 7777)
+    assert sell["dW_parts"]["me"] == {"dS": -1312.0, "dT": 849.0}
     pair = tr.pair_ledger(league, buy, sell)
     assert pair == {
         "dS": -1312.0,
-        "dP": 6069.0,
-        "dW": 4757.0,
+        "dT": 878.2,
+        "dW": -433.8,
         "sent": 9536.0,
-        "return_pct": 49.88,
+        "return_pct": -4.55,
     }
 
 
@@ -377,10 +567,10 @@ def test_exhaustiveness_spot_check(league, pool):
         pool, "Jukinski",
         [a["key"] for a in sell["give"]], [a["key"] for a in sell["get"]],
     )
-    assert bi is not None and si is not None, "legs missing from the v3.4 pool"
+    assert bi is not None and si is not None, "legs missing from the v3.5 pool"
     ret = tr.pair_in_space(league, pool, bi, si)
     assert ret is not None
-    assert round(100 * ret, 2) == 49.88 == tr.pair_ledger(league, buy, sell)["return_pct"]
+    assert round(100 * ret, 2) == -4.55 == tr.pair_ledger(league, buy, sell)["return_pct"]
 
 
 def test_pinned_negative_count_signature_mismatch(league, pool):
@@ -407,14 +597,17 @@ def test_pinned_negative_count_signature_mismatch(league, pool):
 def test_posture_is_a_hard_pair_pool_constraint(league, pool, result):
     """§5 v3.3 pinned negative: ronakpatel32 is the fixture's BUYER — a
     picks-majority package at him passes the §3 gate (my 2026 1.01 for Lamar
-    Jackson: ledger ΔW −5,731 in isolation, gap 0.8%) yet appears NOWHERE in
-    the pair pool or on the board; millj (SELLER) likewise never receives
-    players-majority."""
+    Jackson: ledger ΔW +387.2 in isolation under v3.5 — he displaces Burrow for
+    a 512 starter gain, gap 0.8%) yet appears NOWHERE in the pair pool or on the
+    board; millj (SELLER) likewise never receives players-majority. The pin is
+    the ABSENCE, not the sign: a gate-clean, ledger-positive trade is still
+    refused because the shape contradicts the counterparty's posture."""
     mine = tr.team_assets(league, league.teams[league.me])
     ron = tr.team_assets(league, league.teams["ronakpatel32"])
     candidate = tr.propose(league, "ronakpatel32", [mine["2026 1.01"]], [ron["Lamar Jackson"]])
     assert candidate["gate"]["verdict"] == "PASS"
-    assert candidate["dW"]["me"] == -5731.0 and candidate["gate"]["gap_pct"] == 0.8
+    assert candidate["dW"]["me"] == 387.2 and candidate["gate"]["gap_pct"] == 0.8
+    assert candidate["dW_parts"]["me"] == {"dS": 512.0, "dT": -124.8}
     assert candidate["posture"]["label"] == "BUYER"
     assert candidate["posture"]["shape"] == "picks"  # count-majority: 1 pick out
 
@@ -443,10 +636,14 @@ def test_board_pairs_dense_and_honest_on_fixture(result, params):
     bands = doc["bands"]
     assert doc["presets"] == [1.0, 2.5, 5.0, 10.0, 20.0]
     assert doc["leg_cap_presets"] == [2.5, 5.0, 10.0, 20.0]
-    assert doc["pairs"][0]["return_pct"] == 49.88  # fixture pin: global top
-    # the top pair is lopsided in market terms — its sell leg skims 26.8% face
-    assert doc["pairs"][0]["leg_returns"] == {"buy": 6.65, "sell": 26.8}
-    assert doc["pairs"][0]["max_leg_return_pct"] == 26.8
+    assert doc["pairs"][0]["return_pct"] == 22.98  # fixture pin: global top
+    # v3.5 re-sorts the whole board: the top pair is a STARTER upgrade
+    # (dS +2,468) paid for with stored value (dT −354.8), where v3.4's 49.88%
+    # top pair was a bench-to-picks reclassification
+    assert doc["pairs"][0]["dW_combined_parts"] == {"dS": 2468.0, "dT": -354.8}
+    # it is still lopsided in market terms — its sell leg skims 23.68% face
+    assert doc["pairs"][0]["leg_returns"] == {"buy": 5.61, "sell": 23.68}
+    assert doc["pairs"][0]["max_leg_return_pct"] == 23.68
     assert len(doc["pairs"]) == sum(b["stored"] for b in bands) == 500
     for b in bands:
         assert b["stored"] == params.pairs_per_band == 100  # every bucket at quota
@@ -461,7 +658,7 @@ def test_board_pairs_dense_and_honest_on_fixture(result, params):
         if p["return_pct"] >= 5.0 and p["max_leg_return_pct"] < 2.5
     ]
     assert len(flagship) == 100
-    assert flagship[0]["return_pct"] == 49.76  # fixture pin: even legs, huge total
+    assert flagship[0]["return_pct"] == 18.38  # fixture pin: even legs, big total
     assert flagship[0]["max_leg_return_pct"] < 2.5
     t = doc["truncated"]
     assert t is not None and t["stored"] == 500
@@ -489,7 +686,7 @@ def test_return_bands_and_bucket_math():
     −∞. A cap preset `c` selects exactly the buckets with hi ≤ c."""
     bands = tr.return_bands((1.0, 2.5, 5.0, 10.0, 20.0))
     assert bands == [(1.0, 2.5), (2.5, 5.0), (5.0, 10.0), (10.0, 20.0), (20.0, None)]
-    assert tr.band_index(bands, 49.88) == 4  # pinned fixture pair total
+    assert tr.band_index(bands, 22.98) == 4  # pinned fixture pair total
     assert tr.band_index(bands, 5.0) == 2 and tr.band_index(bands, 4.99) == 1
     assert tr.band_index(bands, 2.5) == 1 and tr.band_index(bands, 10.0) == 3
     assert tr.band_index(bands, 1.0) == 0
@@ -504,11 +701,11 @@ def test_return_bands_and_bucket_math():
     assert tr.bucket_index(buckets, 2.49) == 0
     assert tr.bucket_index(buckets, 2.5) == 1  # the cap is exclusive at c
     assert tr.bucket_index(buckets, 4.99) == 1
-    assert tr.bucket_index(buckets, 26.8) == 4  # pinned fixture max leg
+    assert tr.bucket_index(buckets, 23.68) == 4  # pinned fixture max leg
     # cap-selection identity: max_leg < c ⟺ bucket.hi ≤ c, for every preset
     for c in (2.5, 5.0, 10.0, 20.0):
         selected = {i for i, (_lo, hi) in enumerate(buckets) if hi is not None and hi <= c}
-        for m in (-3.0, 0.0, 2.49, 2.5, 4.99, 5.0, 9.99, 10.0, 19.99, 20.0, 26.8):
+        for m in (-3.0, 0.0, 2.49, 2.5, 4.99, 5.0, 9.99, 10.0, 19.99, 20.0, 23.68):
             assert (tr.bucket_index(buckets, m) in selected) == (m < c), (c, m)
 
 

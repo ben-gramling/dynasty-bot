@@ -124,13 +124,16 @@ export interface TradeGate {
 }
 
 /**
- * §2 v3.4 ledger split: `dS` is the change in the max-Σv starting lineup at raw
- * KTC (active + taxi; bench and IR are worth 0), `dP` the change in pick wealth
- * at tranche. Optional everywhere — board docs written before v3.4 omit it.
+ * §2 v3.5 ledger split: `dS` is the change in the max-Σv starting lineup at raw
+ * KTC (active + taxi; IR never counts), `dT` the change in STORED value —
+ * non-starting players at face AND picks at tranche, one class — already
+ * discounted by δ = 0.25, so `dS + dT === dW`. Both fields optional: board docs
+ * written before v3.5 carry `{dS, dP}` (bench = 0, picks = 100%) and render
+ * without the split rather than mislabelling it.
  */
 export interface LedgerParts {
-  dS: number;
-  dP: number;
+  dS?: number;
+  dT?: number;
 }
 
 /** §4 posture context: observed-trades label + how this offer is shaped. */
@@ -152,12 +155,13 @@ export interface TradeRec {
   give: TradeAsset[];
   get: TradeAsset[];
   /**
-   * §2 v3.4 wealth ledger, PER SIDE and NOT zero-sum: each number is that
-   * side's own `W = starters + picks` delta, so a good leg can lift both.
-   * (Pre-v3.4 board docs carried `them = −me`; nothing here assumes it.)
+   * §2 v3.5 wealth ledger, PER SIDE and NOT zero-sum: each number is that
+   * side's own `W = S + δ·T` delta (starters, plus all stored value at 25% of
+   * face), so a good leg can lift both. (Pre-v3.4 board docs carried
+   * `them = −me`; nothing here assumes it.)
    */
   dW: { me: number; them: number };
-  /** Optional §2 v3.4 split of `dW` into starters (`dS`) and picks (`dP`). */
+  /** Optional §2 v3.5 split of `dW` into starters (`dS`) and stored (`dT`). */
   dW_parts?: {
     me: LedgerParts;
     them: LedgerParts;
@@ -230,7 +234,7 @@ export interface TradePair {
    * the legs' isolation ΔWs — they interact through the starting lineup.
    */
   dW_combined: number;
-  /** Optional starters/picks split of `dW_combined` (v3.4 docs only). */
+  /** Optional starters/stored split of `dW_combined` (v3.5 docs only). */
   dW_combined_parts?: LedgerParts;
   /** The legs' isolation ΔWs added up — shown for contrast, never the score. */
   dW_legs_isolated?: number;

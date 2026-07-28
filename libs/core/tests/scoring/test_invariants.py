@@ -1,6 +1,6 @@
-"""§11 implementation invariants (v3.4): face conservation, the per-side wealth
-ledger, independence from the lineup model, import graph, bundles, exclusivity,
-legality, determinism, runtime.
+"""§11 implementation invariants (v3.5): face conservation, the per-side wealth
+ledger `W = S + δ·T`, independence from the lineup model, import graph, bundles,
+exclusivity, legality, determinism, runtime.
 
 Pins computed from the COMMITTED fixtures (see test_trades docstring)."""
 
@@ -49,18 +49,20 @@ def test_face_transfer_conserved_per_leg(result, league):
 
 
 def test_ledger_is_per_side_not_zero_sum(league):
-    """§2/§11.1 v3.4 pinned: ΔW is each side's OWN ledger. Javonte Williams
-    (5,460) ↔ ronakpatel32's Zay Flowers (5,651) is the fixture's arbitrage
-    shape — the ONLY gate-clean 1-for-1 in the whole snapshot where BOTH
-    ledgers gain: my starters +191, theirs +96, no picks either way."""
+    """§2/§11.1 pinned: ΔW is each side's OWN ledger. Javonte Williams (5,460)
+    ↔ ronakpatel32's Zay Flowers (5,651) is the fixture's arbitrage shape — the
+    ONLY gate-clean 1-for-1 in the whole snapshot where BOTH ledgers gain: my
+    starters +191 with the face gain landing entirely in the lineup (so my
+    stored term is exactly 0), theirs +96 of starters against −71.8 of stored
+    value (they ship 191 more face than they take back)."""
     card = tr.propose_by_names(
         league, "ronakpatel32", ["Javonte Williams"], ["Zay Flowers"]
     )
-    assert card["dW"] == {"me": 191.0, "them": 96.0}
+    assert card["dW"] == {"me": 191.0, "them": 24.2}
     assert card["dW"]["me"] + card["dW"]["them"] != 0.0  # emphatically not zero-sum
     assert card["dW_parts"] == {
-        "me": {"dS": 191.0, "dP": 0.0},
-        "them": {"dS": 96.0, "dP": 0.0},
+        "me": {"dS": 191.0, "dT": 0.0},
+        "them": {"dS": 96.0, "dT": -71.8},
     }
     assert card["gate"]["verdict"] == "PASS"
     # face value still transfers exactly: 5,460 out, 5,651 in
@@ -68,13 +70,28 @@ def test_ledger_is_per_side_not_zero_sum(league):
     assert sum(a["v"] for a in card["get"]) == 5651
 
 
-def test_wealth_ledger_components(league, me):
-    """§2: W = S + P, with S the max-Σv legal lineup over ACTIVE + TAXI at raw
-    KTC and P the picks at tranche. Pinned to the committed fixture."""
+def test_wealth_ledger_components(league, me, params):
+    """§2 v3.5: W = S + δ·T. `S` is the max-Σv legal lineup over ACTIVE + TAXI
+    at raw KTC; `T` is everything else I own — non-starting players at face
+    PLUS picks at tranche, one class — at δ = 0.25. Pinned to the committed
+    fixture, together with the identity the engine actually computes with:
+    W = δ·total_face + (1−δ)·S."""
     s = ln.starter_sum(tr.starter_pool(me))
     assert s == 51832.0
     assert me.picks_mv == 39921.0
-    assert tr.wealth(me) == s + me.picks_mv == 91753.0
+    # everything the ledger sees: active + taxi at face (IR in neither term,
+    # §11.8) plus the picks
+    assert sum(p.v for p in tr.starter_pool(me)) == 87173.0
+    assert tr.total_face(me) == 87173.0 + 39921.0 == 127094.0
+    stored = tr.total_face(me) - s  # T: 35,341 of bench + 39,921 of picks
+    assert stored == 75262.0
+    assert tr.wealth(me, params.stored_delta) == s + 0.25 * stored == 70647.5
+    assert tr.wealth(me, params.stored_delta) == (
+        0.25 * tr.total_face(me) + 0.75 * s
+    )
+    # the endpoints of the dial are the two ledgers v3.5 sits between
+    assert tr.wealth(me, 0.0) == s  # pure deployability
+    assert tr.wealth(me, 1.0) == tr.total_face(me)  # v3.3's face ledger
 
 
 # ------------------------------------------------ 2. independence + import graph
@@ -99,18 +116,32 @@ def _dw_ex1(league):
 
 def test_lineup_perturbations_never_move_dw(snapshot, league):
     """§11.2: perturb every lineup parameter — the trade ledger is unchanged on
-    BOTH sides (the S-solve uses raw v only: no q, no u, no replacement)."""
+    BOTH sides (the S-solve uses raw v only: no q, no u, no replacement; and
+    `stored_delta`, which DOES move it, is a trade parameter, not a lineup
+    one)."""
     base = _dw_ex1(league)
-    assert base == {"me": 9093.0, "them": -7941.0}
+    assert base == {"me": 291.5, "them": 572.5}
     for params in PERTURBED:
         league2 = md.build_league(snapshot, params)
         assert _dw_ex1(league2) == base, params
 
 
-def test_bench_player_never_moves_dw(snapshot, params, league, me):
-    """§11.2: add or remove a bench player who cannot crack the max-Σv lineup —
-    no ΔW moves. Verified both on an uninvolved third party's roster and on MY
-    OWN (the strongest form: my ledger's S is blind to my own bench)."""
+def test_roster_counts_never_move_dw_but_stored_face_does(snapshot, params, league, me):
+    """§11.2 RESTATED FOR v3.5 — the honest form of the old
+    "bench players never move ΔW" regression.
+
+    v3.4 priced bench players at 0, so a bench body was invisible to the whole
+    ledger. v3.5 prices stored value at δ, so that is no longer true and the
+    invariant must not pretend otherwise. What v3.5 actually guarantees:
+
+    (a) ROSTER COUNTS are still housekeeping — removing an uninvolved
+        non-startable bench player (mine or a third party's) leaves a given
+        trade's ΔW bit-identical on both sides, because ΔW reads only ΔS and
+        the traded assets' face; and
+    (b) stored FACE moves W BY DESIGN — that same body is worth δ·v of wealth
+        while it sits there, and shipping it in a trade now costs δ·v. That is
+        the entire point of v3.5, so it is pinned as an equality, not excluded.
+    """
     base = _dw_ex1(league)
     starters = {
         p.sid for grp in ln.starters(tr.starter_pool(me)).values() for p in grp
@@ -134,7 +165,28 @@ def test_bench_player_never_moves_dw(snapshot, params, league, me):
                 r["players"] = [sid for sid in r["players"] if sid != victim.sid]
             rosters.append(r)
         league2 = md.build_league(dc_replace(snapshot, rosters=rosters), params)
+        # (a) an uninvolved bench body never moves an unrelated trade's ΔW
         assert _dw_ex1(league2) == base, (team.name, victim.name)
+        me2 = league2.teams[league2.me]
+        if team is me:
+            # (b) but he was carrying δ·v of MY wealth the whole time
+            assert ln.starter_sum(tr.starter_pool(me2)) == ln.starter_sum(
+                tr.starter_pool(me)
+            )  # he never started
+            assert tr.total_face(me) - tr.total_face(me2) == victim.v
+            assert tr.wealth(me, params.stored_delta) - tr.wealth(
+                me2, params.stored_delta
+            ) == pytest.approx(params.stored_delta * victim.v)
+    # …and trading him is no longer free: v3.4 scored this at 0, v3.5 at −δ·v
+    jake = tr.team_assets(league, league.teams["jaketoppen"])
+    mine = tr.team_assets(league, league.teams[league.me])
+    card = tr.propose(
+        league, "jaketoppen", [mine[my_bench.name]], [jake["2028 R4 (own)"]]
+    )
+    assert card["dW_parts"]["me"]["dS"] == 0.0  # he never started: v3.4 read 0
+    assert card["dW"]["me"] == pytest.approx(
+        params.stored_delta * (jake["2028 R4 (own)"].v - my_bench.v), abs=0.05
+    )
 
 
 def test_roster_tweaks_never_move_recommended_pair_dw(snapshot, params, league):
@@ -287,6 +339,57 @@ def test_starter_index_matches_full_resolve(league):
             assert got == pytest.approx(want), (t.name, out_ids)
 
 
+def test_wealth_delta_identity_matches_direct_recompute(league, params):
+    """§2/§11.10 v3.5: the evaluator computes `ΔW = δ·Δface + (1−δ)·ΔS` from
+    one starter re-solve and a face subtraction. This asserts that identity
+    against a DIRECT recomputation of `W = S + δ·T` — full re-solve of `S`,
+    `T` counted as everything owned minus the starters — over every fixture
+    roster and seeded random deltas, at both endpoints of δ, the shipped
+    value, and seeded random small ones. Picks carry no lineup role, so they
+    enter only through `Δface`; that asymmetry is exercised explicitly."""
+    rng = random.Random(20260728)
+    deltas = [0.0, params.stored_delta, 1.0] + [
+        round(rng.uniform(0.01, 0.49), 4) for _ in range(4)
+    ]
+    all_players = [p for t in league.teams.values() for p in tr.starter_pool(t)]
+    for t in league.teams.values():
+        base = tr.starter_pool(t)
+        base_s = ln.starter_sum(base)
+        base_face = tr.total_face(t)
+        index = ln.StarterIndex(base)
+        for _ in range(60 // len(league.teams) + 1):
+            out = rng.sample(base, rng.randrange(0, min(5, len(base) + 1)))
+            incoming = rng.sample(all_players, rng.randrange(0, 5))
+            d_picks = float(rng.randrange(-6000, 6000))  # no lineup role at all
+            d_face = (
+                sum(p.v for p in incoming) - sum(p.v for p in out) + d_picks
+            )
+            rest = list(base)
+            for sid in [p.sid for p in out]:
+                for i, p in enumerate(rest):
+                    if p.sid == sid:
+                        del rest[i]
+                        break
+            after_s = ln.starter_sum(rest + incoming)
+            after_face = base_face + d_face
+            for delta in deltas:
+                # direct: W = S + δ·T with T = (everything owned) − S
+                w_before = base_s + delta * (base_face - base_s)
+                w_after = after_s + delta * (after_face - after_s)
+                d_s, d_t = index.wealth_delta(
+                    ln.pos_columns(out), ln.pos_columns(incoming), d_face, delta
+                )
+                assert d_s + d_t == pytest.approx(w_after - w_before), (t.name, delta)
+                assert d_s == pytest.approx(after_s - base_s)
+                # and the whole ledger through the trade-path entry point
+                assert tr.ledger_delta(
+                    index,
+                    [tr.package_of(league, [tr.player_asset(p) for p in out])],
+                    [tr.package_of(league, [tr.player_asset(p) for p in incoming])],
+                    delta,
+                )[0] == pytest.approx(d_s)
+
+
 def test_taxi_counts_in_S_and_ir_does_not(league, snapshot, params):
     """§11.8: a taxi player is startable (promote-anytime) and COUNTS in S; an
     IR player never does. Pinned on my own fixture roster."""
@@ -356,7 +459,7 @@ def test_pairs_v34_contract(result, params, league):
         got = tr.pair_ledger(league, pair["buy"], pair["sell"])
         assert got["dW"] == pair["dW_combined"]
         assert got["return_pct"] == pair["return_pct"]
-        assert {"dS": got["dS"], "dP": got["dP"]} == pair["dW_combined_parts"]
+        assert {"dS": got["dS"], "dT": got["dT"]} == pair["dW_combined_parts"]
         assert got["sent"] == sum(
             a["v"] for leg in (pair["buy"], pair["sell"]) for a in leg["give"]
         )
@@ -371,39 +474,77 @@ def test_pairs_v34_contract(result, params, league):
         assert pair["max_leg_return_pct"] == max(pair["leg_returns"].values())
 
 
-def test_pair_dw_is_combined_not_the_leg_sum(result, league):
+def test_pair_dw_is_combined_not_the_leg_sum(result, league, params):
     """§2/§5 v3.4: pair ΔW is the two legs applied TOGETHER, never the leg
     sum. The board reports both fields on every pair, and a pinned fixture
     pair shows them DIFFER: buy Josh Jacobs (4,853) from NoahMoell while
     selling Kenneth Walker III (my flex starter) — Jacobs starts ONLY once
-    Walker's slot opens, so the buy is worthless alone (ΔS = 0) but worth
-    +792 more inside the pair (Jacobs replaces the 4,061 bench fill-in, not
-    nothing). Sum −940, combined −148. (Whether such a pair is STORED depends
-    on the walk — the arithmetic is the invariant.)"""
+    Walker's slot opens, so the buy moves no starter value alone (ΔS = 0) but
+    is worth 792 more of STARTER value inside the pair (Jacobs replaces the
+    4,061 bench fill-in, not nothing). v3.5 keeps the interaction and scales
+    what it is worth: the ledger gap is (1−δ)·792 = 594, because the 792 of
+    starter value the pair unlocks was already earning δ as stored value.
+    Sum −1,702, combined −1,108. (Whether such a pair is STORED depends on the
+    walk — the arithmetic is the invariant.)"""
     pairs = result["trade_recs"]["pairs"]
     assert all("dW_legs_isolated" in p and "dW_combined" in p for p in pairs)
     buy = tr.propose_by_names(league, "NoahMoell", ["2027 R1 (own)"], ["Josh Jacobs"])
     sell = tr.propose_by_names(
         league, "jaketoppen", ["Kenneth Walker III"], ["2027 R1 (from vishan)"]
     )
-    assert buy["dW"]["me"] == -6118.0 and buy["dW_parts"]["me"]["dS"] == 0.0
-    assert sell["dW"]["me"] == 5178.0
+    assert buy["dW"]["me"] == -316.2 and buy["dW_parts"]["me"]["dS"] == 0.0
+    assert sell["dW"]["me"] == -1385.8
     pair = tr.pair_ledger(league, buy, sell)
     leg_sum = buy["dW"]["me"] + sell["dW"]["me"]
-    assert leg_sum == -940.0
-    assert pair["dW"] == -148.0  # combined ≠ sum: the lineup interaction
-    assert pair["dW"] - leg_sum == 792.0  # Jacobs (4,853) − the 4,061 fill-in
+    assert leg_sum == -1702.0
+    assert pair["dW"] == -1108.0  # combined ≠ sum: the lineup interaction
+    # the interaction is pure ΔS, so it reaches the ledger at (1−δ)
+    assert pair["dS"] - (buy["dW_parts"]["me"]["dS"] + sell["dW_parts"]["me"]["dS"]) == 792.0
+    assert pair["dW"] - leg_sum == (1 - params.stored_delta) * 792.0 == 594.0
     # submodularity guarantee (§2): combined is never BELOW the leg sum
     assert pair["dW"] >= leg_sum
 
 
-def test_buy_legs_are_allowed_to_be_negative_alone(result):
-    """§5 v3.4: the per-leg return floor is retired. Buy legs (picks out, a
-    player in) are normally negative in isolation and must still reach the
-    board inside a pair — the v3.3 floor would have deleted them all."""
+def test_buy_legs_are_allowed_to_be_negative_alone(result, pool, league):
+    """§5 v3.4: the per-leg return floor is retired — a leg that loses value on
+    its own stays in the pool and stays pairable, because its partner recoups.
+
+    v3.5 changes the SIZE of the effect, not the rule: a pick going out now
+    costs δ·face instead of face, so buy legs are far less negative and the
+    stored top-500 no longer needs any of them. The invariant is therefore
+    pinned where it lives — the candidate pool, which the v3.3 floor would have
+    emptied of these legs entirely — plus the fact that negative legs of BOTH
+    directions are still eligible to pair."""
     buys = [p["buy"] for p in result["trade_recs"]["pairs"]]
     assert buys
-    assert any(b["dW"]["me"] < 0 for b in buys)
+    neg_buys: dict[tuple[int, int], list[int]] = {}
+    neg_sells: dict[tuple[int, int], list[int]] = {}
+    for i, leg in enumerate(pool.legs):
+        if leg[tr.L_DW] >= 0 or leg[tr.L_NP] == 0:
+            continue
+        sink = neg_buys if leg[tr.L_NP] > 0 else neg_sells
+        sink.setdefault((leg[tr.L_NP], leg[tr.L_NK]), []).append(i)
+    assert neg_buys and neg_sells  # the v3.3 per-leg floor would have deleted both
+    # and they are genuinely pairable, not just parked: a negative buy leg is
+    # a member of the computed count-neutral pair space, priced by the exact
+    # combined ledger like any other
+    paired = None
+    for sig, bis in sorted(neg_buys.items()):
+        comp = neg_sells.get((-sig[0], -sig[1]))
+        if not comp:
+            continue
+        for bi in bis[:40]:
+            for si in comp[:300]:
+                if tr.pair_in_space(league, pool, bi, si) is not None:
+                    paired = (bi, si)
+                    break
+            if paired:
+                break
+        if paired:
+            break
+    assert paired is not None
+    bi, si = paired
+    assert pool.legs[bi][tr.L_DW] < 0 and pool.legs[si][tr.L_DW] < 0
 
 
 def test_no_standalone_buy_anywhere(result):
@@ -491,12 +632,16 @@ def test_determinism_byte_for_byte(snapshot, params, result):
 def test_runtime_within_budget(snapshot, params):
     """§11.10: v3.4 puts the exact KTC-calculator gate and a raw starter-sum
     re-solve inside the enumeration, and the exact combined ledger inside the
-    pair walk. Measured ≈ 27s on the dev box (v3.3 was ≈ 7s) — bought with an
+    pair walk. Measured ≈ 29s on the dev box (v3.3 was ≈ 7s) — bought with an
     incremental exact evaluator, a necessary-condition screen ahead of the
-    gate, and bounded walks. The collector Lambda's budget is 600s for the
-    whole run (scrape included), so the 90s bound here keeps real headroom
-    while still catching the regression that matters: any unbounded walk blows
-    straight past it."""
+    gate, and bounded walks. v3.5 costs NOTHING here: the stored term is one
+    multiply-add on a face delta the leg already carries (§2's
+    `ΔW = δ·Δface + (1−δ)·ΔS` identity), and the head-to-head on this box is
+    28.9s against v3.4's 29.6s (pair pool 18.7s against 19.0s) — so the bound
+    stays where it was rather than tightening onto measurement noise. The
+    collector Lambda's budget is 600s for the whole run (scrape included), so
+    the 90s bound here keeps real headroom while still catching the regression
+    that matters: any unbounded walk blows straight past it."""
     t0 = time.perf_counter()
     compute_all(snapshot, params)
     elapsed = time.perf_counter() - t0
