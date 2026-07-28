@@ -80,7 +80,11 @@ test("the leg cap filters on each leg's market return", async ({ page }) => {
   await expect(after).toBeVisible();
   expect(await after.textContent()).not.toBe(before);
   const section = page.locator('section[aria-labelledby="pairs"]');
-  const cards = section.locator("article", { hasText: "pair ΔW" });
+  // Top-level pair cards only: embedded leg articles also contain the text
+  // "pair ΔW" (the isolation-ΔW footnote), so anchor on the pair heading.
+  const cards = section
+    .locator("article")
+    .filter({ has: page.getByRole("heading", { name: "Buy + sell" }) });
   const n = await cards.count();
   for (let i = 0; i < Math.min(n, 5); i++) {
     const card = cards.nth(i);
@@ -144,7 +148,9 @@ test("pairs render fully behind every dial combo or the empty state is honest", 
     // No coupling between the dials (v3.4.1) — click order is free.
     await minG.getByRole("button", { name: minL, exact: true }).click();
     await capG.getByRole("button", { name: capL, exact: true }).click();
-    const pairCards = section.locator("article", { hasText: "pair ΔW" });
+    const pairCards = section
+      .locator("article")
+      .filter({ has: page.getByRole("heading", { name: "Buy + sell" }) });
     const n = await pairCards.count();
     if (n === 0) {
       // Empty filter: the message must quantify what each loosening exposes,
@@ -165,7 +171,7 @@ test("pairs render fully behind every dial combo or the empty state is honest", 
       ).toBeVisible();
     }
     const first = pairCards.first();
-    await expect(first.getByText("pair ΔW")).toBeVisible();
+    await expect(first.getByText("pair ΔW", { exact: true })).toBeVisible();
     await expect(first.getByText(/% return/)).toBeVisible();
     await expect(
       first.getByText("0 players / 0 picks net", { exact: true }),
