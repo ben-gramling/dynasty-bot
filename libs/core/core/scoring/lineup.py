@@ -1,5 +1,5 @@
 """§2 expected lineup strength: exact greedy solver + q-weighted insurance,
-plus the RAW starter-sum solve that the v3.5 trade ledger is built on.
+plus the RAW starter-sum solve that the v4 ΔS coordinate is built on.
 
 The greedy fill (dedicated slots take the positional top-K, FLEX takes the top-2
 remaining flex-eligibles) is provably optimal for raw value and is the exact shape
@@ -12,9 +12,10 @@ Two solves live here and must never be confused (§11.2):
 - `solve()` / `removal_dl()` / `diff_terms()` — the league-tab + waiver strength
   model: q insurance weights, availability multipliers `u`, FA replacement
   lines. NONE of it may enter the trade path.
-- `starter_sum()` / `StarterIndex` — the v3.5 wealth ledger's `S`: Σ RAW KTC v
-  over the max-Σv legal starting lineup, no q, no u, no replacement. This is the
-  ONLY thing `trades.py` is allowed to import from this module.
+- `starter_sum()` / `StarterIndex` — the v4 ΔS coordinate: Σ RAW KTC v over the
+  max-Σv legal starting lineup, no q, no u, no replacement — and NO δ: v4 has
+  no stored-value discount anywhere. This is the ONLY thing `trades.py` is
+  allowed to import from this module.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ GROUPS: tuple[str, ...] = ("QB", "RB", "WR", "TE", "FLEX")
 GROUP_N: dict[str, int] = {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "FLEX": 2}
 FLEX_ELIGIBLE = ("RB", "WR", "TE")
 
-# ------------------------------------------- §2 v3.5 the raw starter-sum solve
+# --------------------------------------------- §2 v4 the raw starter-sum solve
 
 # Positions in a fixed order so the hot path can index instead of hashing.
 POS4: tuple[str, ...] = ("QB", "RB", "WR", "TE")
@@ -78,15 +79,15 @@ def _by_pos(players: Iterable) -> list[list[float]]:
 def starter_sum(players: Iterable) -> float:
     """§2 `S`: Σ raw KTC v over the max-Σv legal starting lineup, solved over
     the players given (active + taxi — taxi is promote-anytime, §8; IR and
-    empty slots contribute 0). Non-starting players are worth 0 HERE — under
-    v3.5 they carry `δ` of face in the ledger's stored term instead (§2)."""
+    empty slots contribute 0). Non-starting players are worth 0 HERE — they
+    count in the OTHER coordinate, total face owned (§2 v4)."""
     return _greedy_sum(_by_pos(players))
 
 
 def starters(players: Iterable) -> dict[str, list]:
     """The named max-Σv starting lineup — deterministic ties on (−v, ktc_id,
     sid), the §2.1 convention WITHOUT the availability multiplier. Display and
-    tests only; the ledger reads `starter_sum`."""
+    tests only; the trade coordinates read `starter_sum`."""
     key = lambda p: (-p.v, p.ktc_id, p.sid)
     by_pos: dict[str, list] = {pos: [] for pos in POS4}
     for p in players:
@@ -154,33 +155,26 @@ class StarterIndex:
     def delta(
         self, out_v: Sequence[Sequence[float]], in_v: Sequence[Sequence[float]]
     ) -> float:
-        """ΔS for this delta — the starter term of the §2 wealth ledger."""
+        """ΔS for this delta — the §2 v4 starter coordinate."""
         return self.sum_after(out_v, in_v) - self.base_sum
 
-    def wealth_delta(
+    def coords_delta(
         self,
         out_v: Sequence[Sequence[float]],
         in_v: Sequence[Sequence[float]],
         d_face: float,
-        stored_delta: float,
     ) -> tuple[float, float]:
-        """§2 v3.5 `(ΔS, δ·ΔT)` for this delta — the ledger's two terms, the
-        second already δ-scaled so the pair SUMS to ΔW exactly.
+        """§2 v4 `(ΔS, ΔF)` for this delta — the two objective coordinates,
+        raw. NO δ exists anywhere in this module (or the system): any blend
+        `ΔW(δ) = ΔS + δ·(ΔF − ΔS)` is the caller's to form, and the v4 spec
+        forms none — it reports the endpoints themselves.
 
-        `d_face` is the change in Σ face value of everything the side owns
-        (players at raw v + picks at tranche) — for a trade leg simply
-        `get.v_sum − give.v_sum`, since face transfers exactly (§11.1).
-
-        The identity that makes this one subtraction instead of a second solve:
-        `T = total_face − S`, so `W = S + δ(total_face − S) = δ·total_face +
-        (1−δ)·S`. Every reclassification between the two terms cancels — when
-        an incoming player displaces a starter, the displaced value leaves `S`
-        and lands in `T` in the same breath, and only `ΔS` and `Δtotal_face`
-        are ever measured. `stored_delta` is passed in by the caller: δ is a
-        TRADE parameter (§9) and this module never reads Params.
+        `d_face` IS `ΔF`: the change in Σ face value of everything the side
+        owns (players at raw v + picks at tranche) — for a trade leg simply
+        `get.v_sum − give.v_sum`, since face transfers exactly (§11.1). It is
+        passed through untouched; `ΔS` costs one incremental starter re-solve.
         """
-        d_s = self.sum_after(out_v, in_v) - self.base_sum
-        return d_s, stored_delta * (d_face - d_s)
+        return self.sum_after(out_v, in_v) - self.base_sum, d_face
 
 
 EMPTY4: tuple[tuple[float, ...], ...] = ((), (), (), ())

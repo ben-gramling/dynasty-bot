@@ -1,17 +1,17 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * Trades tab against the live seeded DB (scoring v3.4.1, two-dial pairs
- * page): a TOTAL-return floor and a PER-LEG market-return cap filter the
- * stored pairs — independent dimensions, no combination disabled, the list
- * always sorted by total return desc. The inventory line comes from the
- * engine's honest per-bucket `bands` grid (saturated counts render "≥ N" —
- * verified floors, never estimates), cards render BOTH sides' own wealth
- * ledgers (v3.4 ΔW is per side, never ±zero-sum) with the v3.5
- * starters/stored split and each leg's market return, and NOTHING that isn't
- * a pair renders:
- * no unpaired-legs section, no watch list, no standalone cards. Market map
- * still points into the League tab.
+ * Trades tab against the live seeded DB (scoring v4, two-dial pairs page): a
+ * TOTAL-return floor (v4: floor-based — the guaranteed gain min(ΔS, ΔF) over
+ * face sent) and a PER-LEG market-return cap filter the stored pairs —
+ * independent dimensions, no combination disabled, the list always in
+ * maximin order (guaranteed return desc, ceiling tie-break). The inventory
+ * line comes from the engine's honest per-bucket `bands` grid (saturated
+ * counts render "≥ N" — verified floors, never estimates), cards render BOTH
+ * sides' own coordinates ("starters +X · face +Y" — ΔF zero-sum per leg, ΔS
+ * per side) with the guaranteed interval and each leg's market return, and
+ * NOTHING that isn't a pair renders: no unpaired-legs section, no watch
+ * list, no standalone cards. Market map still points into the League tab.
  */
 
 test.beforeEach(async ({ page }) => {
@@ -81,8 +81,8 @@ test("the leg cap filters on each leg's market return", async ({ page }) => {
   await expect(after).toBeVisible();
   expect(await after.textContent()).not.toBe(before);
   const section = page.locator('section[aria-labelledby="pairs"]');
-  // Top-level pair cards only: embedded leg articles also contain the text
-  // "pair ΔW" (the isolation-ΔW footnote), so anchor on the pair heading.
+  // Top-level pair cards only: anchor on the pair heading (embedded leg
+  // articles carry their own coordinate lines).
   const cards = section
     .locator("article")
     .filter({ has: page.getByRole("heading", { name: "Buy + sell" }) });
@@ -172,7 +172,9 @@ test("pairs render fully behind every dial combo or the empty state is honest", 
       ).toBeVisible();
     }
     const first = pairCards.first();
-    await expect(first.getByText("pair ΔW", { exact: true })).toBeVisible();
+    // v4: the pair metric chip is the guaranteed floor ("guaranteed ΔW");
+    // the % return is floor-based.
+    await expect(first.getByText("guaranteed ΔW", { exact: true })).toBeVisible();
     await expect(first.getByText(/% return/)).toBeVisible();
     await expect(
       first.getByText("0 players / 0 picks net", { exact: true }),
@@ -183,17 +185,17 @@ test("pairs render fully behind every dial combo or the empty state is honest", 
     expect(await first.getByText("You send").count()).toBe(2);
     expect(await first.getByText("You get").count()).toBe(2);
     expect(await first.getByText("PASS", { exact: true }).count()).toBe(2);
-    // v3.4: each leg shows the counterparty's OWN ledger delta — never a
-    // ±zero-sum negation of ours.
-    expect(await first.getByText(/their ledger/).count()).toBe(2);
-    // The starters/stored split is optional in the doc shape (boards written
-    // before v3.5 carry a different one), so assert its SHAPE only when the
-    // seeded DB supplies it: present on a leg ⇒ present on both legs and on
-    // the pair.
+    // v4: each leg shows the counterparty's OWN coordinates — ΔF negates
+    // across sides (face conserves), ΔS never forced to (per side).
+    expect(await first.getByText(/them: starters /).count()).toBe(2);
+    // The coordinate lines are optional in the doc shape (boards written
+    // before v4 carry the retired ledger split), so assert their SHAPE only
+    // when the seeded DB supplies them: present on a leg ⇒ present as
+    // you/them on both legs plus the pair's combined line (2×2 + 1 = 5).
     const splits = await first
-      .getByText(/starters [+−]\S* · stored [+−]/)
+      .getByText(/starters [+−]\S* · face [+−]/)
       .count();
-    if (splits > 0) expect(splits).toBe(3);
+    if (splits > 0) expect(splits).toBe(5);
     await expect(
       first.getByText(/Band ceiling for this package/).first(),
     ).toBeVisible();

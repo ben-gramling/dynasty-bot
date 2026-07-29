@@ -7,12 +7,14 @@ import { pairLegs } from "./derive";
 /**
  * One §5 v3.2 count-neutral hedged pair — the board's PRIMARY unit: the buy
  * side and its hedge sell side as full embedded leg cards, listed in execution
- * order (sell first at the roster cap), with the pair ΔW (v3.4: the EXACT
- * combined ledger, both legs applied together — not the sum of the legs'
- * isolation ΔWs, which is why a negative buy leg is normal), each leg's
- * market return (v3.4.1 — the leg-cap dial's input), the neutrality badge
- * (exactly 0 players / 0 picks net for you), the posture-fit summary, and the
- * agreement-first sequencing note.
+ * order (sell first at the roster cap), with the pair's GUARANTEED floor (§2
+ * v4: min of the exact combined coordinates, both legs applied together — a
+ * floor-negative leg is normal, the pair's verdict is what is constrained),
+ * the interval up to the ceiling, the combined "starters · face" coordinates,
+ * each leg's market return (v3.4.1 — the leg-cap dial's input), the
+ * neutrality badge (exactly 0 players / 0 picks net for you), the posture-fit
+ * summary, and the agreement-first sequencing note. Pre-v4 docs fall back to
+ * the stored pair ΔW.
  */
 export function PairCard({ pair }: { pair: TradePair }) {
   const legs = pairLegs(pair);
@@ -31,27 +33,44 @@ export function PairCard({ pair }: { pair: TradePair }) {
         <span className="ml-auto flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <span
             className="num text-[13px] font-medium text-sky-deep"
-            title="TOTAL return on inventory deployed (§5): the pair's exact combined ΔW(you) ÷ Σ face v of every asset you send across both legs — the floor dial's key and the only sort key"
+            title="TOTAL return on inventory deployed (§5 v4): the pair's guaranteed floor min(ΔS, ΔF) ÷ Σ face v of every asset you send across both legs — the floor dial's key and the primary sort key (ceiling breaks ties)"
           >
             {fmtPct(pair.return_pct, 1)} return
           </span>
           {pair.leg_returns ? (
             <span
               className="text-[11.5px] text-ink-muted"
-              title="Each leg's market return (§5 v3.4.1): face ΔW(you) ÷ face Σv you send on that leg — the skim that leg's counterparty sees; the leg-cap dial filters on the larger of the two"
+              title="Each leg's market return (§5 v3.4.1): face ΔF(you) ÷ face Σv you send on that leg — the skim that leg's counterparty sees; the leg-cap dial filters on the larger of the two"
             >
               legs: buy <span className="num">{fmtSigned(pair.leg_returns.buy, 1)}%</span>{" "}
               · sell <span className="num">{fmtSigned(pair.leg_returns.sell, 1)}%</span>{" "}
               market
             </span>
           ) : null}
-          <ValueChip label="pair ΔW" value={pair.dW_combined} emphasis />
-          {pair.dW_combined_parts?.dS !== undefined &&
-          pair.dW_combined_parts?.dT !== undefined ? (
+          {pair.floor !== undefined ? (
+            <ValueChip label="guaranteed ΔW" value={pair.floor} emphasis />
+          ) : pair.dW_combined !== undefined ? (
+            <ValueChip label="pair ΔW" value={pair.dW_combined} emphasis />
+          ) : null}
+          {pair.ceiling !== undefined ? (
             <span
               className="text-[11.5px] text-ink-muted"
-              title="Where the pair's wealth moves (§2 v3.5): starters = the max-Σv lineup at raw KTC over active + taxi; stored = everything else you own — bench players at face and picks at tranche, one class, counted at 25%"
+              title="The §2 v4 interval: with both legs executed your gain lies between the guaranteed floor and this ceiling, whatever your stored-value preference — every stored pair is objectively good (both coordinates positive)"
             >
+              up to <span className="num">{fmtSigned(pair.ceiling)}</span>
+            </span>
+          ) : null}
+          {pair.coords ? (
+            <span
+              className="text-[11.5px] text-ink-muted"
+              title="The pair's combined coordinates (§2 v4): starters = ΔS, the max-Σv lineup at raw KTC over active + taxi, both legs applied together; face = ΔF, the total face you gain across both legs. The gain interval runs between them."
+            >
+              starters <span className="num">{fmtSigned(pair.coords.dS)}</span> ·
+              face <span className="num">{fmtSigned(pair.coords.dF)}</span>
+            </span>
+          ) : pair.dW_combined_parts?.dS !== undefined &&
+            pair.dW_combined_parts?.dT !== undefined ? (
+            <span className="text-[11.5px] text-ink-muted">
               starters{" "}
               <span className="num">{fmtSigned(pair.dW_combined_parts.dS)}</span> ·
               stored{" "}

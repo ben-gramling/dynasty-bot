@@ -24,7 +24,7 @@ def test_my_2026_concrete_prices(league, me):
 
 
 def test_my_2026_tranche_values(me):
-    """The mv tranche numbers — what ΔW and the wealth ledgers actually use (§1)."""
+    """The mv tranche numbers — what the ΔF coordinate actually uses (§1)."""
     assert pick_of(me, 2026, 1).mv == 6243  # Early 1st (slot 1)
     assert pick_of(me, 2026, 2).mv == 3504  # Late 2nd (slot 9)
     assert pick_of(me, 2026, 3).mv == 2835  # Early 3rd (slot 3)

@@ -1,13 +1,13 @@
 """Every §9 parameter with its default. All knobs live here; nothing is hardcoded elsewhere.
 
-v3.5: one score (the wealth ledger `W = S + δ·T`, §2), one gate (the exact KTC
-calculator adjustment + the fleece cap + legality, §3), qualitative posture
+v4: the score has ZERO parameters — two objective coordinates (ΔS, ΔF) plus
+maximin, §2. `stored_delta` is RETIRED: δ survives only as the derived,
+per-trade breakeven the CLI reports on preference trades. One gate (the exact
+KTC calculator adjustment + the fleece cap + legality, §3), qualitative posture
 targeting (§4). The lineup q/replacement/availability knobs survive only for the
 league-tab strength map and the in-season FAAB bid formula — they never touch
-the trade path (§11.2). `stored_delta` is a TRADE parameter, not a lineup one:
-it prices stored value in the ledger and never enters the S-solve. The gate
-itself has ZERO fitted parameters: the consolidation coefficients `c` are
-retired with v3.4.
+the trade path (§11.2). The gate itself has ZERO fitted parameters: the
+consolidation coefficients `c` are retired with v3.4.
 """
 
 from __future__ import annotations
@@ -17,18 +17,11 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Params:
-    # §2 the score (v3.5: the wealth ledger W = S + δ·T — starters at raw KTC
-    # plus ALL stored value, bench players and picks alike, at δ of face)
-    # v3.3: W_min is RETIRED as a gate — kept only for the CLI's display-level
-    # noise note (a positive ΔW inside KTC's own error bars gets flagged, never hidden)
+    # §2 the score (v4: two objective coordinates ΔS/ΔF, no blend, no δ).
+    # v3.3: W_min is RETIRED as a gate — kept only as the display-level noise
+    # floor, applied to the guaranteed FLOOR min(ΔS, ΔF) (a positive floor
+    # inside KTC's own error bars gets flagged, never hidden)
     w_min: float = 150.0
-
-    # §2/§9 v3.5 stored-value discount: what a point of non-startable value (a
-    # bench player at face, a pick at tranche — one class, priced one way) is
-    # worth against a point of starter value. A strategy DIAL, not an estimate:
-    # the two §2 worked QB cases bracket it to (0, 0.5) and the midpoint was
-    # chosen. Retuning it is this one line; nothing else depends on its value.
-    stored_delta: float = 0.25
 
     # §3 fairness gate. The band tolerances are measured from this league's ~33
     # completed trades; the adjustment they are applied to is the EXACT KTC
@@ -54,7 +47,7 @@ class Params:
     return_presets: tuple[float, ...] = (1.0, 2.5, 5.0, 10.0, 20.0)
     # v3.4.1 per-leg market-return cap presets, percent (the max dial): buckets
     # (−∞,2.5), [2.5,5), [5,10), [10,20), [20,∞) on max(r(buy), r(sell)) where
-    # r(leg) = face ΔW(me) ÷ Σ face v sent on that leg
+    # r(leg) = face ΔF(me) ÷ Σ face v sent on that leg
     leg_cap_presets: tuple[float, ...] = (2.5, 5.0, 10.0, 20.0)
     # v3.4.1 stratified storage: top-N pairs kept PER max-leg bucket, sorted by
     # TOTAL return desc, so any (total floor, leg cap) query has whatever
@@ -62,7 +55,7 @@ class Params:
     # `bands`. (v3.3.1 stratified by total-return band; a leg-cap query cannot
     # be served from that — high totals concentrate lopsidedness in one leg.)
     pairs_per_band: int = 100
-    variants_per_signature: int = 2  # gets kept per (opponent, give, count-signature), ledger ΔW desc
+    variants_per_signature: int = 2  # gets kept per (opponent, give, count-signature), isolation floor desc
     # v3.4 scan bound: gate-passers evaluated per (opponent, give, count-signature)
     # before the top-`variants_per_signature` are taken. The exact KTC gate and the
     # starter-sum re-solve are ~30× the retired adjv comparison, so the bracket is
@@ -70,7 +63,7 @@ class Params:
     variant_scan_cap: int = 3
     pair_scan_budget: int = 40_000  # pair visits per COUNTING pass; counters saturate honestly
     pair_collect_budget: int = 400_000  # pair visits for the stored-pair collection walk
-    top_league_wide: int = 10  # unpaired sell/neutral legs kept as `recommendations` (ΔW desc)
+    top_league_wide: int = 10  # unpaired sell/neutral legs kept as `recommendations` (isolation floor desc)
     watch_max: int = 5  # unpaired buys surfaced as watch-list notes
 
     # §2.2-style lineup strength (league tab + waiver ΔL only; never trades)
@@ -81,7 +74,7 @@ class Params:
     q_flex: float = 0.12
     replacement_fa_rank: int = 3  # KTC value of the Nth-best non-rookie FA per position
 
-    # availability multipliers (lineup display only — never wealth, never ΔW)
+    # availability multipliers (lineup display only — never the trade coordinates)
     u_healthy: float = 1.0
     u_out_short: float = 0.6  # OUT, expected return ≤ u_out_short_weeks
     u_out_long: float = 0.25  # OUT long-term / PUP

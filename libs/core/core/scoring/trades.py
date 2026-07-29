@@ -1,55 +1,62 @@
-"""§2/§3/§5 trades: the v3.5 WEALTH LEDGER (W = starters + δ·stored), the exact
-KTC-calculator fairness gate, enumerate-then-filter pairing behind the user's
-TWO dials (§5 v3.4.1: a floor on TOTAL pair return plus a cap on EACH leg's
-market return — independent dimensions, storage stratified by max-leg bucket
-so any (floor, cap) query has whatever inventory exists), posture as a hard
-pair-pool constraint, fully count-neutral pairs (§5 v3.2: a recommended pair
-nets exactly 0 players AND 0 picks for my side).
+"""§2/§3/§5 trades: the v4 TWO-COORDINATE score (ΔS, ΔF — no blend, no δ), the
+exact KTC-calculator fairness gate, enumerate-then-filter pairing behind the
+user's TWO dials (§5 v3.4.1: a floor on TOTAL pair return plus a cap on EACH
+leg's market return — independent dimensions, storage stratified by max-leg
+bucket so any (floor, cap) query has whatever inventory exists), posture as a
+hard pair-pool constraint, fully count-neutral pairs (§5 v3.2: a recommended
+pair nets exactly 0 players AND 0 picks for my side).
 
-What the score IS (§2, v3.5):
+What the score IS (§2, v4):
 
-- `W(side) = S + δ·T` — `S` = Σ RAW KTC v over the max-Σv legal starting lineup
-  solved over ACTIVE + TAXI (taxi is promote-anytime, §8; IR and empty slots
-  are worth 0), `T` = ALL stored value: non-starting players (bench and
-  non-starting taxi) at face v PLUS owned picks at tranche, one class priced
-  one way at `δ = params.stored_delta`. v3.5 replaced v3.4's `W = S + P`
-  (bench = 0, picks = 100%), whose accounting seam paid ≈ +4,116 for selling a
-  non-starter for a pick of equal face — pure reclassification.
-- The identity the whole module runs on: `T = total_face − S`, so
-  `W = δ·total_face + (1−δ)·S` and `ΔW = δ·Δface + (1−δ)·ΔS`. Face transfers
-  exactly on a leg (§11.1), so `Δface = get.v_sum − give.v_sum` is free, and a
-  starter displaced INTO the bench (or promoted out of it) needs no separate
-  accounting — the reclassification cancels identically.
-- `ΔW` is PER SIDE and is not zero-sum: `dW.them` is the counterparty's own
-  ledger delta, never `−dW.me`. What stays conserved is the face-KTC transfer
-  on every leg (§11.1).
-- A pair's ΔW is the COMBINED delta (both legs applied together), not the sum
-  of the legs' isolation ΔWs — the legs interact through the lineup. Leg cards
-  carry their isolation ΔW, labeled; a buy leg alone can still be negative
-  (less often than under v3.4, where every pick shipped cost its full face).
+- Two parameter-free coordinates per side, both pure roster arithmetic:
+  `ΔS` = change in STARTER value (the max-Σv legal lineup at raw KTC solved
+  over ACTIVE + TAXI — taxi is promote-anytime, §8; IR and empty slots are 0)
+  and `ΔF` = change in TOTAL FACE owned (Σ v in − Σ v out, players and picks
+  alike, picks at tranche). Any single-number ledger is
+  `ΔW(δ) = ΔS + δ·(ΔF − ΔS)` for some stored-value preference δ ∈ [0, 1] — a
+  time preference, not a measurable fact — so v4 reports the endpoints
+  themselves and blends nothing.
+- VERDICT (objective): a spread is better for EVERY rational preference iff
+  `ΔS ≥ 0 AND ΔF ≥ 0`, at least one strict. MAGNITUDE: the interval
+  `[floor, ceiling] = [min(ΔS, ΔF), max(ΔS, ΔF)]` — the floor is the
+  guaranteed gain. RANKING (maximin): floor desc, ceiling desc, ids. A spread
+  failing one coordinate is a PREFERENCE trade and carries the derived
+  breakeven `δ* = ΔS / (ΔS − ΔF)` — labeled, never recommended.
+- Both coordinates are PER SIDE. `ΔF` is exactly zero-sum across the parties
+  of a leg (§11.1: face transfers exactly, so `Δface = get.v_sum − give.v_sum`
+  is free); `ΔS` is not — deployment differs by roster, which is why both
+  sides of a good spread can genuinely gain.
+- A pair's coordinates are COMBINED (both legs applied together): ΔS via one
+  combined starter re-solve — the legs interact through the lineup — and ΔF
+  additive across legs. Leg cards carry their isolation coordinates, labeled;
+  a buy leg alone can still be floor-negative.
 - Only the raw starter-sum solve enters this module from the lineup model
   (§11.2, enforced by an import-graph test): no q insurance weights, no
-  availability multipliers, no replacement lines. `stored_delta` is a TRADE
-  parameter, not a lineup one. Roster legality and taxi routing (§8) stay in
-  model.apply_tx — legality and sequencing only.
+  availability multipliers, no replacement lines — and no δ anywhere. Roster
+  legality and taxi routing (§8) stay in model.apply_tx — legality and
+  sequencing only.
 - The fairness gate is the EXACT reverse-engineered KTC trade-calculator
   adjustment (core.scoring.ktc_adjust), not a fitted consolidation curve.
+- The stored board is HARD-constrained to verdict-true pairs (§11.8b(d)): the
+  stored universe is floor-based return ≥ 1%, and a positive floor IS both
+  coordinates strictly positive — a verdict-violating stored pair is a
+  must-never-emit.
 
 Three engine-bound honesty notes (the raw space is combinatorial — billions of
 pair permutations clear the band on real data):
 
 - Per (counterparty, give-package, count-signature) only the top
-  `variants_per_signature` gate-clean gets by ISOLATION ledger ΔW are pooled,
+  `variants_per_signature` gate-clean gets by ISOLATION FLOOR are pooled,
   chosen from the first `variant_scan_cap` gate-passers in Σv-descending order.
   With distinct counterparties enforced, a partner leg can never collide with
-  the get side, so a higher-ΔW same-signature variant dominates its siblings
+  the get side, so a higher-floor same-signature variant dominates its siblings
   for every pairing — the count-signature diversity the v3.2 matcher starved on
   is preserved in full.
-- The pair walks cross legs ordered by ISOLATION ΔW (a disclosed heuristic —
-  §5 v3.4), while every pair the walks keep is priced by its EXACT combined
-  ΔW. Because the combined ledger is not additive across legs, no walk cutoff
-  can certify that the space above it was fully enumerated: every band count is
-  therefore a VERIFIED FLOOR (`saturated`), never an exact tally.
+- The pair walks cross legs ordered by ISOLATION FLOOR (a disclosed heuristic —
+  §5), while every pair the walks keep is priced by its EXACT combined
+  coordinates. Because the combined floor is not additive across legs, no walk
+  cutoff can certify that the space above it was fully enumerated: every band
+  count is therefore a VERIFIED FLOOR (`saturated`), never an exact tally.
 - Counters saturate honestly at `pair_scan_budget` / `pair_collect_budget`.
 """
 
@@ -139,8 +146,8 @@ class Package:
     # §3.1: asset values DESC — exactly what KTC's calculator sorts before it
     # runs processV over a side
     vals: tuple[float, ...]
-    # §2 v3.5 ledger input: the package's players as raw-value columns in
-    # lineup.POS4 order (the ΔS solve). The stored term needs no per-class
+    # §2 v4 ΔS input: the package's players as raw-value columns in
+    # lineup.POS4 order (the ΔS solve). The ΔF coordinate needs no per-class
     # column — it reads `v_sum`, which already covers players AND picks.
     cols: tuple[tuple[float, ...], ...]
 
@@ -184,54 +191,67 @@ def _packages(league: md.LeagueState, assets: list[Asset]) -> list[Package]:
     return out
 
 
-# ------------------------------------------------------- §2 v3.5 wealth ledger
+# -------------------------------------------- §2 v4 the two-coordinate score
 
 
 def starter_pool(t: md.TeamCtx) -> list:
     """The players `S` is solved over: ACTIVE + TAXI (taxi is promote-anytime,
-    §8). Bench players are in `act` and simply lose the max-Σv solve — under
-    v3.5 they keep earning `δ` of face through `T`. IR players are already out
-    of `act` and never enter: they are in neither term (§11.8)."""
+    §8). Bench players are in `act` and simply lose the max-Σv solve — they
+    count only in the FACE coordinate. IR players are already out of `act` and
+    never enter: they are in neither coordinate (§11.8)."""
     return t.act + t.taxi
 
 
 def team_index(t: md.TeamCtx) -> StarterIndex:
-    """Incremental raw starter-sum evaluator for one team's ledger."""
+    """Incremental raw starter-sum evaluator for one team's ΔS coordinate."""
     return StarterIndex(starter_pool(t))
 
 
 def total_face(t: md.TeamCtx) -> float:
-    """§2 v3.5 Σ face value the ledger sees: every player the S-solve ranges
-    over (active + taxi, IR excluded — §11.8) at raw KTC v, plus every owned
-    pick at tranche. `S` is a subset of it; `T = total_face − S`."""
+    """§2 v4 the F coordinate's LEVEL: Σ face value the side owns — every
+    player the S-solve ranges over (active + taxi, IR excluded — §11.8) at raw
+    KTC v, plus every owned pick at tranche. `ΔF` on a trade is the change in
+    this quantity; `ΔW(1) = ΔF` (the old face ledger's endpoint)."""
     return sum(p.v for p in starter_pool(t)) + t.picks_mv
 
 
-def wealth(t: md.TeamCtx, stored_delta: float) -> float:
-    """§2 v3.5 `W = S + δ·T` for a team — equivalently `δ·total_face +
-    (1−δ)·S`, the identity the ledger deltas are computed from."""
-    s = starter_sum(starter_pool(t))
-    return s + stored_delta * (total_face(t) - s)
+def verdict_of(d_s: float, d_f: float) -> bool:
+    """§2 v4 the objective verdict: better for EVERY rational stored-value
+    preference δ ∈ [0, 1] iff both coordinates are non-negative, at least one
+    strictly positive."""
+    return d_s >= 0.0 and d_f >= 0.0 and (d_s > 0.0 or d_f > 0.0)
+
+
+def breakeven_of(d_s: float, d_f: float) -> float | None:
+    """§2 v4 the derived per-trade breakeven `δ* = ΔS / (ΔS − ΔF)` — reported
+    ONLY for preference trades (verdict false, exactly one coordinate
+    positive): the trade is good for δ beyond δ* in the direction of the
+    positive coordinate. None for verdict-true spreads, for spreads bad at
+    every preference (both ≤ 0), and when ΔS == ΔF (ΔW(δ) is constant — no
+    crossing exists)."""
+    if verdict_of(d_s, d_f) or d_s == d_f:
+        return None
+    if (d_s > 0.0) == (d_f > 0.0):
+        return None  # no coordinate positive: bad for every rational preference
+    return d_s / (d_s - d_f)
 
 
 def _merge4(a: Sequence[Sequence[float]], b: Sequence[Sequence[float]]) -> tuple:
     return (a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3])
 
 
-def ledger_delta(
+def coords_delta(
     index: StarterIndex,
     out_pkgs: Sequence[Package],
     in_pkgs: Sequence[Package],
-    stored_delta: float,
-) -> tuple[float, float, float]:
-    """§2 v3.5 ΔW for ONE side: (ΔS, δ·ΔT, ΔW) when `out_pkgs` leave that roster
-    and `in_pkgs` arrive, all applied together. The second term is already
-    δ-scaled, so `ΔS + δ·ΔT == ΔW` exactly. Per-side — never negated for the
-    counterparty (§11.1).
+) -> tuple[float, float]:
+    """§2 v4 `(ΔS, ΔF)` for ONE side when `out_pkgs` leave that roster and
+    `in_pkgs` arrive, all applied together. Per-side — ΔS is never negated for
+    the counterparty; ΔF is exactly zero-sum across the leg's parties (§11.1).
 
-    Stored value needs no separate bookkeeping: `T = total_face − S`, so what
-    a starter loses to the bench (or the bench gains from a promotion) is
-    already inside `ΔS`, and the only other input is the leg's face delta."""
+    No stored-value bookkeeping exists: what a starter loses to the bench (or
+    the bench gains from a promotion) is already inside `ΔS`, and `ΔF` is the
+    leg's face delta, free by face conservation."""
     out4: tuple = EMPTY4
     in4: tuple = EMPTY4
     d_face = 0.0
@@ -241,31 +261,35 @@ def ledger_delta(
     for pkg in in_pkgs:
         in4 = _merge4(in4, pkg.cols)
         d_face += pkg.v_sum
-    d_s, d_t = index.wealth_delta(out4, in4, d_face, stored_delta)
-    return d_s, d_t, d_s + d_t
+    return index.coords_delta(out4, in4, d_face)
 
 
-def combined_ledger(
+def combined_coords(
     league: md.LeagueState, legs: Sequence[tuple[Package, Package]]
 ) -> dict:
-    """§5 v3.4: the EXACT combined ledger for MY side across `legs`
-    ([(give, get), …]) applied TOGETHER — the number a pair is stored and
-    ranked by. Not the sum of the legs' isolation ΔWs: the legs interact
-    through the starting lineup."""
+    """§5 v4: the EXACT combined coordinates for MY side across `legs`
+    ([(give, get), …]) applied TOGETHER — what a pair is stored and ranked by.
+    ΔS is one combined re-solve (the legs interact through the starting
+    lineup — never the sum of the legs' isolation ΔSs); ΔF is additive.
+    `return_pct` is the §5 v4 floor-based return: guaranteed floor ÷ Σ face v
+    I send across both legs."""
     me_t = league.teams[league.me]
-    d_s, d_t, d_w = ledger_delta(
-        team_index(me_t),
-        [g for g, _ in legs],
-        [t for _, t in legs],
-        league.params.stored_delta,
+    d_s, d_f = coords_delta(
+        team_index(me_t), [g for g, _ in legs], [t for _, t in legs]
     )
     sent = sum(g.v_sum for g, _ in legs)
+    floor = min(d_s, d_f)
     return {
         "dS": round(d_s, 1),
-        "dT": round(d_t, 1),
-        "dW": round(d_w, 1),
+        "dF": round(d_f, 1),
+        "verdict": verdict_of(d_s, d_f),
+        "floor": round(floor, 1),
+        "ceiling": round(max(d_s, d_f), 1),
+        "breakeven": (
+            round(b, 4) if (b := breakeven_of(d_s, d_f)) is not None else None
+        ),
         "sent": round(sent, 1),
-        "return_pct": round(100.0 * d_w / sent, 2) if sent > 0 else None,
+        "return_pct": round(100.0 * floor / sent, 2) if sent > 0 else None,
     }
 
 
@@ -474,7 +498,7 @@ def _asset_dict(a: Asset) -> dict:
         d["unvalued"] = True
     if a.concrete is not None:
         d["concrete"] = round(a.concrete)
-        d["note"] = "rookie-board slot value shown for information — ΔW uses the tranche"
+        d["note"] = "rookie-board slot value shown for information — the coordinates use the tranche"
     return d
 
 
@@ -486,16 +510,16 @@ def build_card(
     leg: dict | None = None,
     ceiling: float | None = None,
 ) -> dict:
-    """The §5/§10 card for one leg. `dW` carries EACH SIDE'S OWN ledger delta
-    (§2 v3.5) — not a zero-sum pair: a good leg can lift both ledgers. What is
-    conserved is the face-KTC transfer (§11.1). Leg ΔW is an ISOLATION figure;
-    a pair's ΔW is the combined one (§5)."""
+    """The §5/§10 card for one leg. `coords` carries EACH SIDE'S OWN (ΔS, ΔF)
+    against its own roster (§2 v4) — ΔF exactly zero-sum across the parties,
+    ΔS not: a good leg can be objectively good for both sides (§11.1). Leg
+    coordinates are ISOLATION figures; a pair's are the combined ones (§5)."""
     params = league.params
-    delta = params.stored_delta
     me_t = league.teams[league.me]
     opp_t = league.teams[opp_name]
-    ds_me, dt_me, dw_me = ledger_delta(team_index(me_t), [give], [get], delta)
-    ds_them, dt_them, dw_them = ledger_delta(team_index(opp_t), [get], [give], delta)
+    ds_me, df_me = coords_delta(team_index(me_t), [give], [get])
+    ds_them, df_them = coords_delta(team_index(opp_t), [get], [give])
+    floor_me, floor_them = min(ds_me, df_me), min(ds_them, df_them)
     gate = gate_info(league, give, get)
     verdicts = leg if leg is not None else legality(league, me_t, opp_t, give, get)
     gate["legal"] = verdicts["legal"]
@@ -533,20 +557,37 @@ def build_card(
         "counterparty": opp_name,
         "give": [_asset_dict(a) for a in give.assets],
         "get": [_asset_dict(a) for a in get.assets],
-        # §2 v3.5: per-side OWN-ledger deltas (never negations of each other),
-        # split into the starter term and the δ-scaled STORED term (bench
-        # players + picks alike) — the two sum to dW exactly
-        "dW": {"me": round(dw_me, 1), "them": round(dw_them, 1)},
-        "dW_parts": {
-            "me": {"dS": round(ds_me, 1), "dT": round(dt_me, 1)},
-            "them": {"dS": round(ds_them, 1), "dT": round(dt_them, 1)},
+        # §2 v4: per-side coordinates against each side's OWN roster. ΔF is
+        # exactly zero-sum across the parties (§11.1); ΔS is not. The ceiling
+        # max(ΔS, ΔF) is derivable from `coords`; `ceiling` on this card stays
+        # the §3 band-edge annotation.
+        "coords": {
+            "me": {"dS": round(ds_me, 1), "dF": round(df_me, 1)},
+            "them": {"dS": round(ds_them, 1), "dF": round(df_them, 1)},
         },
-        "dW_basis": "isolation",  # this leg alone; pairs carry the combined ΔW
-        # §5 leg return on inventory deployed: isolation ΔW(me) ÷ Σv sent, percent
-        "return_pct": round(100 * dw_me / give.v_sum, 2) if give.v_sum > 0 else None,
-        # §5 v3.4.1 leg MARKET return: face ΔW(me) ÷ face Σv sent — the skim the
+        # §2 v4 verdict: objectively good ⟺ ΔS ≥ 0 AND ΔF ≥ 0, one strict
+        "verdict": {
+            "me": verdict_of(ds_me, df_me),
+            "them": verdict_of(ds_them, df_them),
+        },
+        # §2 v4 guaranteed floor min(ΔS, ΔF) — the worst case over every
+        # rational preference
+        "floor": {"me": round(floor_me, 1), "them": round(floor_them, 1)},
+        # §2 v4 breakeven δ* — only on preference trades (verdict false, one
+        # coordinate positive); null everywhere else
+        "breakeven": {
+            "me": (round(b, 4) if (b := breakeven_of(ds_me, df_me)) is not None else None),
+            "them": (
+                round(b, 4) if (b := breakeven_of(ds_them, df_them)) is not None else None
+            ),
+        },
+        "coords_basis": "isolation",  # this leg alone; pairs carry combined coords
+        # §5 v4 leg return on inventory deployed: isolation floor(me) ÷ Σv
+        # sent, percent — the disclosed pre-ranking heuristic
+        "return_pct": round(100 * floor_me / give.v_sum, 2) if give.v_sum > 0 else None,
+        # §5 v3.4.1 leg MARKET return: face ΔF(me) ÷ face Σv sent — the skim the
         # counterparty's own KTC math sees on this single trade; the leg-cap
-        # dial's input (the ledger never enters it)
+        # dial's input (the starter coordinate never enters it)
         "market_return_pct": (
             round(100 * (get.v_sum - give.v_sum) / give.v_sum, 2)
             if give.v_sum > 0
@@ -589,8 +630,8 @@ def build_card(
         }
     if unvalued:
         card["notes"] = [
-            "unvalued assets contribute 0 to ΔW and never enter a starting "
-            "lineup — verify by hand (§11.7)"
+            "unvalued assets contribute 0 to both coordinates and never enter "
+            "a starting lineup — verify by hand (§11.7)"
         ]
     return card
 
@@ -617,10 +658,11 @@ def propose(
     if not g["legal"]:
         reasons.append("post-trade roster illegal (positional minima / size)")
     card["gate"]["verdict"] = "PASS" if not reasons else "FAIL: " + "; ".join(reasons)
-    if 0 < card["dW"]["me"] < league.params.w_min:
+    if 0 < card["floor"]["me"] < league.params.w_min:
         card.setdefault("notes", []).append(
-            f"ΔW +{card['dW']['me']:g} sits inside KTC's ±{league.params.w_min:g} noise "
-            "band — display note only; W_min is not a gate (v3.3)"
+            f"guaranteed floor +{card['floor']['me']:g} sits inside KTC's "
+            f"±{league.params.w_min:g} noise band — display note only; W_min is "
+            "not a gate (v3.3)"
         )
     return card
 
@@ -637,7 +679,7 @@ def propose_by_names(
 
 def card_packages(league: md.LeagueState, card: dict) -> tuple[Package, Package]:
     """Rebuild a leg card's (give, get) packages from its asset keys — the way
-    back from a stored board doc to the ledger arithmetic (CLI + tests)."""
+    back from a stored board doc to the coordinate arithmetic (CLI + tests)."""
     by_key: dict[str, Asset] = {}
     for t in league.teams.values():
         for a in team_assets(league, t).values():
@@ -648,12 +690,13 @@ def card_packages(league: md.LeagueState, card: dict) -> tuple[Package, Package]
     )
 
 
-def pair_ledger(league: md.LeagueState, buy_card: dict, sell_card: dict) -> dict:
-    """§5 v3.4 pair metrics recomputed from two leg cards: the EXACT combined
-    ledger ΔW (both legs applied together) and the return on Σ face v I send
-    across both legs. NOT the sum of the leg ΔWs."""
+def pair_coords(league: md.LeagueState, buy_card: dict, sell_card: dict) -> dict:
+    """§5 v4 pair metrics recomputed from two leg cards: the EXACT combined
+    coordinates (both legs applied together — ΔS one combined re-solve, ΔF
+    additive) plus verdict/floor/ceiling/breakeven and the floor-based return
+    on Σ face v I send across both legs. NOT the sum of the leg figures."""
     legs = [card_packages(league, buy_card), card_packages(league, sell_card)]
-    return combined_ledger(league, legs)
+    return combined_coords(league, legs)
 
 
 # ------------------------------------------- the pair pool + the board (§5 v3.3)
@@ -663,24 +706,24 @@ _POS4 = ("QB", "RB", "WR", "TE")
 _MIN4 = tuple(MIN_POS[p] for p in _POS4)
 
 # leg tuple layout inside PairPool.legs (indices 0-8 are the v3.3 contract and
-# stay put; v3.4 appends the ledger inputs the pair walk needs — v3.5 makes the
-# stored input the leg's FACE delta, `get.v_sum − give.v_sum`, which is all the
-# `W = δ·face + (1−δ)·S` identity needs; v3.4.1 appends the leg's MARKET return
-# — face ΔW(me) ÷ face Σv sent, the §5 leg-cap input)
-L_RET, L_DW, L_SENT, L_NP, L_NK, L_OPP, L_MASK, L_GIVE, L_GET = range(9)
+# stay put; v4 pre-ranks legs by their ISOLATION FLOOR min(ΔS, ΔF) — the
+# disclosed heuristic — so slots 0/1 hold the floor return and the floor;
+# indices 9-11 carry the coordinate inputs the pair walk needs, and 12 the
+# leg's MARKET return — face ΔF(me) ÷ face Σv sent, the §5 leg-cap input)
+L_RET, L_FLOOR, L_SENT, L_NP, L_NK, L_OPP, L_MASK, L_GIVE, L_GET = range(9)
 L_OUT4, L_IN4, L_DFACE, L_MKT = 9, 10, 11, 12
 
 
 @dataclass(slots=True)
 class PairPool:
-    """§5 v3.4 candidate-leg pool: for EVERY (counterparty, give-package,
+    """§5 v4 candidate-leg pool: for EVERY (counterparty, give-package,
     count-signature) combination, the top `variants_per_signature` gate-clean,
-    fleece-clean, cheap-legality-clean gets by ISOLATION ledger ΔW, each
+    fleece-clean, cheap-legality-clean gets by ISOLATION FLOOR, each
     posture-clean when `enforce_posture` (the pair-pool default; the CLI hedge
     finder disables it because the desk treats posture qualitatively).
 
     `index` is MY incremental starter-sum evaluator: the pair walk prices every
-    kept crossing with the EXACT combined ledger through it (§11.10)."""
+    kept crossing with the EXACT combined coordinates through it (§11.10)."""
 
     opp_names: list[str]
     legs: list[tuple]  # see the L_* layout above
@@ -688,26 +731,29 @@ class PairPool:
     opp_pkgs: dict[str, tuple[list[float], list[Package]]]  # Σv-sorted; ceilings
     enforce_posture: bool
     index: StarterIndex
-    stored_delta: float  # §2 v3.5 δ — the ledger's stored-value discount
 
-    def pair_ledger_dw(self, buy_i: int, sell_i: int) -> float:
-        """EXACT combined ledger ΔW(me) for two legs applied TOGETHER (§5 v3.4)
-        — never the sum of their isolation ΔWs. v3.5: one starter re-solve plus
-        the two legs' face deltas, via `ΔW = δ·Δface + (1−δ)·ΔS` (§2)."""
+    def pair_eval(self, buy_i: int, sell_i: int) -> tuple[float, float, float]:
+        """EXACT combined (floor-based return FRACTION, floor, ceiling) for two
+        legs applied TOGETHER (§5 v4) — never assembled from the legs' isolation
+        figures. One combined starter re-solve gives ΔS; ΔF is additive; the
+        return is min(ΔS, ΔF) ÷ Σ face v I send across both legs (denominator
+        stays face KTC)."""
         b, s = self.legs[buy_i], self.legs[sell_i]
         bo, so = b[L_OUT4], s[L_OUT4]
         bi_, si_ = b[L_IN4], s[L_IN4]
-        d = self.stored_delta
-        return (1.0 - d) * self.index.delta(
+        d_s = self.index.delta(
             (bo[0] + so[0], bo[1] + so[1], bo[2] + so[2], bo[3] + so[3]),
             (bi_[0] + si_[0], bi_[1] + si_[1], bi_[2] + si_[2], bi_[3] + si_[3]),
-        ) + d * (b[L_DFACE] + s[L_DFACE])
+        )
+        d_f = b[L_DFACE] + s[L_DFACE]
+        floor = d_s if d_s < d_f else d_f
+        ceiling = d_f if d_s < d_f else d_s
+        return floor / (b[L_SENT] + s[L_SENT]), floor, ceiling
 
     def pair_return(self, buy_i: int, sell_i: int) -> float:
-        """The stored pair's return FRACTION: exact combined ΔW(me) ÷ Σ face v
-        I send across both legs (§5 v3.4 — denominator stays face KTC)."""
-        b, s = self.legs[buy_i], self.legs[sell_i]
-        return self.pair_ledger_dw(buy_i, sell_i) / (b[L_SENT] + s[L_SENT])
+        """The pair's floor-based return FRACTION (§5 v4) — pair_eval's first
+        component, kept as the single-value entry point for tests/CLI."""
+        return self.pair_eval(buy_i, sell_i)[0]
 
 
 def _raw_adj_total(vals_desc: Sequence[float], r_max: float, cap: float) -> float:
@@ -750,13 +796,13 @@ def build_pair_pool(league: md.LeagueState, enforce_posture: bool = True) -> Pai
     per give-package, per get count-signature: walk the Σv window
     [gv ÷ fleece_ratio, gv · fleece_ratio] descending — the whole fleece bracket
     now, because with the return floor retired (v3.4) a leg that ships MORE face
-    value than it receives can still lift the ledger.
+    value than it receives can still have a positive floor inside a pair.
 
     Per (give, count-signature) the scan keeps the top `variants_per_signature`
-    by ISOLATION ledger ΔW among the first `variant_scan_cap` candidates that
-    clear the exact §3.1 gate and cheap positional legality on both sides. Two
-    disclosed bounds (v3.4): the exact gate is ~30× the cost of the retired
-    adjv comparison and the ledger ΔW needs a starter-sum re-solve, so the scan
+    by ISOLATION FLOOR min(ΔS, ΔF) among the first `variant_scan_cap` candidates
+    that clear the exact §3.1 gate and cheap positional legality on both sides.
+    Two disclosed bounds (v3.4): the exact gate is ~30× the cost of the retired
+    adjv comparison and the ΔS coordinate needs a starter-sum re-solve, so the scan
     (a) short-circuits on a cheap NECESSARY condition derived from the
     calculator's own arithmetic — a gate-passer's adjusted gap S obeys
     S ≤ max(500, 0.25·max side total), and S is monotone in the raw-adjustment
@@ -779,7 +825,6 @@ def build_pair_pool(league: md.LeagueState, enforce_posture: bool = True) -> Pai
     K = params.variants_per_signature
     scan_cap = params.variant_scan_cap
     fl = params.fleece_ratio
-    delta = params.stored_delta  # §2 v3.5 stored-value discount
     top_v = league.top_ktc_value
     cap = top_v + 80.0
     g_info = []
@@ -895,21 +940,21 @@ def build_pair_pool(league: md.LeagueState, enforce_posture: bool = True) -> Pai
                     if not _band_ok(params, adj_g, adj_t):
                         continue
                     d_face = t_v - gv
-                    d_s, d_t = my_index.wealth_delta(g.cols, t.cols, d_face, delta)
-                    dw = d_s + d_t
-                    best.append((-dw, t.keys, t, d_face))
+                    d_s, d_f = my_index.coords_delta(g.cols, t.cols, d_face)
+                    floor = d_s if d_s < d_f else d_f
+                    best.append((-floor, t.keys, t, d_face))
                     passers += 1
                     if passers >= scan_cap:
                         break
                 if not best:
                     continue
-                best.sort()  # isolation ΔW desc, deterministic ties on the keys
-                for _neg_dw, _k, t, d_face in best[:K]:
-                    dw = -_neg_dw
+                best.sort()  # isolation floor desc, deterministic ties on the keys
+                for _neg_floor, _k, t, d_face in best[:K]:
+                    floor = -_neg_floor
                     buckets.setdefault((np_, nk), []).append(len(legs))
                     legs.append(
                         (
-                            dw / gv, dw, gv, np_, nk, oi, mask, g, t,
+                            floor / gv, floor, gv, np_, nk, oi, mask, g, t,
                             g.cols, t.cols, d_face,
                             d_face / gv,  # market return (§5 v3.4.1)
                         )
@@ -921,18 +966,18 @@ def build_pair_pool(league: md.LeagueState, enforce_posture: bool = True) -> Pai
         opp_pkgs=opp_pkgs,
         enforce_posture=enforce_posture,
         index=my_index,
-        stored_delta=delta,
     )
 
 
 def _tp_estimate(pool: PairPool, r: float) -> int:
     """Uncorrected two-pointer size of the ≥r pair space in the walk's ORDERING
-    HEURISTIC (§5 v3.4): σ_r(leg) = isolation ΔW − r·Σv sent, and
-    σ_r(buy) + σ_r(sell) ≥ 0 ⟺ the ISOLATION-SUM pair return ≥ r. Exactly the
-    crossing count `_walk_pairs` visits at r — no counterparty / overlap /
+    HEURISTIC (§5 v4): σ_r(leg) = isolation floor − r·Σv sent, and
+    σ_r(buy) + σ_r(sell) ≥ 0 ⟺ the ISOLATION-FLOOR-SUM pair return ≥ r. Exactly
+    the crossing count `_walk_pairs` visits at r — no counterparty / overlap /
     legality corrections; used to place collection cutoffs and to detect sparse
-    markets. Every visited pair is then priced by its EXACT combined ledger, so
-    this is a walk-sizing device, never a claim about the exact space."""
+    markets. Every visited pair is then priced by its EXACT combined
+    coordinates, so this is a walk-sizing device, never a claim about the exact
+    space."""
     legs = pool.legs
     total = 0
     for sig, idxs in pool.buckets.items():
@@ -941,8 +986,8 @@ def _tp_estimate(pool: PairPool, r: float) -> int:
         comp = pool.buckets.get((-sig[0], -sig[1]))
         if not comp:
             continue
-        bs = sorted(legs[i][L_DW] - r * legs[i][L_SENT] for i in idxs)
-        ss = sorted(legs[i][L_DW] - r * legs[i][L_SENT] for i in comp)
+        bs = sorted(legs[i][L_FLOOR] - r * legs[i][L_SENT] for i in idxs)
+        ss = sorted(legs[i][L_FLOOR] - r * legs[i][L_SENT] for i in comp)
         n = len(ss)
         for sb in reversed(bs):
             lo = bisect_left(ss, -sb)
@@ -971,8 +1016,8 @@ def _leg_legal(league: md.LeagueState, me_t: md.TeamCtx, pool: PairPool, i: int,
 
 def _tp_estimate_below(pool: PairPool, r: float) -> int:
     """Mirror of _tp_estimate for the LOW end: uncorrected two-pointer size of
-    the < r heuristic pair space (τ_r(leg) = isolation ΔW − r·Σv sent;
-    τ_r(buy) + τ_r(sell) < 0 ⟺ the isolation-sum pair return < r). Exact on
+    the < r heuristic pair space (τ_r(leg) = isolation floor − r·Σv sent;
+    τ_r(buy) + τ_r(sell) < 0 ⟺ the isolation-floor-sum pair return < r). Exact on
     crossings — the visit count of a below-walk at r. v3.4 retired the per-leg
     return floor, so this space is NOT bounded below by the dial floor: buy legs
     are legitimately negative alone and the below-walk can be as deep as the
@@ -985,8 +1030,8 @@ def _tp_estimate_below(pool: PairPool, r: float) -> int:
         comp = pool.buckets.get((-sig[0], -sig[1]))
         if not comp:
             continue
-        bs = sorted(legs[i][L_DW] - r * legs[i][L_SENT] for i in idxs)
-        ss = sorted(legs[i][L_DW] - r * legs[i][L_SENT] for i in comp)
+        bs = sorted(legs[i][L_FLOOR] - r * legs[i][L_SENT] for i in idxs)
+        ss = sorted(legs[i][L_FLOOR] - r * legs[i][L_SENT] for i in comp)
         for tb in bs:  # ascending τ: the count of complements only shrinks
             lo = bisect_left(ss, -tb)  # sells with τ_s < −τ_b, strictly
             if lo == 0:
@@ -1001,7 +1046,7 @@ def _walk_pairs_below(
     r: float,
     budget: int,
     legal: dict,
-    out: list[tuple[float, float, int, int]],
+    out: list[tuple[float, float, float, int, int]],
 ) -> tuple[int, bool]:
     """Enumerate the VALID pair space at return < r — the exact complement of
     _walk_pairs at r (boundary pairs at exactly r belong to the ≥ walk).
@@ -1018,14 +1063,14 @@ def _walk_pairs_below(
         if not comp_idx:
             continue
         # (τ_r, pool index): ascending sort == lowest pair returns first
-        bs = sorted((legs[i][L_DW] - r * legs[i][L_SENT], i) for i in pool.buckets[sig])
-        ss = sorted((legs[i][L_DW] - r * legs[i][L_SENT], i) for i in comp_idx)
+        bs = sorted((legs[i][L_FLOOR] - r * legs[i][L_SENT], i) for i in pool.buckets[sig])
+        ss = sorted((legs[i][L_FLOOR] - r * legs[i][L_SENT], i) for i in comp_idx)
         ss0 = ss[0][0]
         for tb, bi in bs:
             if tb + ss0 >= 0.0:
                 break  # even the lowest sell keeps this (and any later) buy at ≥ r
             b = legs[bi]
-            b_opp, b_mask, b_dw, b_sent = b[L_OPP], b[L_MASK], b[L_DW], b[L_SENT]
+            b_opp, b_mask, b_fl, b_sent = b[L_OPP], b[L_MASK], b[L_FLOOR], b[L_SENT]
             vb = None
             for ts, si in ss:
                 if tb + ts >= 0.0:
@@ -1042,13 +1087,17 @@ def _walk_pairs_below(
                     break  # illegal buy leg: no pair with it exists
                 if _leg_legal(league, me_t, pool, si, legal) is False:
                     continue
-                # (exact combined return, heuristic crossing return, buy, sell):
-                # the sink bands on the EXACT one; the walks' disjointness is
-                # defined by the heuristic one (§5 v3.4)
+                # (exact combined return, exact ceiling, heuristic crossing
+                # return, buy, sell): the sink bands and RANKS on the EXACT
+                # figures (floor-return desc, ceiling tie-break — §2 v4
+                # maximin); the walks' disjointness is defined by the
+                # heuristic one (§5)
+                ret, _floor, ceil = pool.pair_eval(bi, si)
                 out.append(
                     (
-                        pool.pair_return(bi, si),
-                        (b_dw + s[L_DW]) / (b_sent + s[L_SENT]),
+                        ret,
+                        ceil,
+                        (b_fl + s[L_FLOOR]) / (b_sent + s[L_SENT]),
                         bi,
                         si,
                     )
@@ -1062,7 +1111,7 @@ def _walk_pairs(
     r: float,
     budget: int,
     legal: dict,
-    out: list[tuple[float, float, int, int]],
+    out: list[tuple[float, float, float, int, int]],
 ) -> tuple[int, bool]:
     """Enumerate the VALID pair space at return ≥ r: complementary
     count-signature buckets crossed in σ_r-descending order with early exit;
@@ -1083,14 +1132,14 @@ def _walk_pairs(
         if not comp_idx:
             continue
         # (−σ_r, pool index): ascending sort == σ_r-descending walk, deterministic
-        bs = sorted((r * legs[i][L_SENT] - legs[i][L_DW], i) for i in pool.buckets[sig])
-        ss = sorted((r * legs[i][L_SENT] - legs[i][L_DW], i) for i in comp_idx)
+        bs = sorted((r * legs[i][L_SENT] - legs[i][L_FLOOR], i) for i in pool.buckets[sig])
+        ss = sorted((r * legs[i][L_SENT] - legs[i][L_FLOOR], i) for i in comp_idx)
         ns0 = ss[0][0]
         for nb, bi in bs:
             if nb + ns0 > 0.0:
                 break  # even the best sell can't lift this (or any later) buy to r
             b = legs[bi]
-            b_opp, b_mask, b_dw, b_sent = b[L_OPP], b[L_MASK], b[L_DW], b[L_SENT]
+            b_opp, b_mask, b_fl, b_sent = b[L_OPP], b[L_MASK], b[L_FLOOR], b[L_SENT]
             vb = None
             for ns, si in ss:
                 if nb + ns > 0.0:
@@ -1107,13 +1156,17 @@ def _walk_pairs(
                     break  # illegal buy leg: no pair with it exists
                 if _leg_legal(league, me_t, pool, si, legal) is False:
                     continue
-                # (exact combined return, heuristic crossing return, buy, sell):
-                # the sink bands on the EXACT one; the walks' disjointness is
-                # defined by the heuristic one (§5 v3.4)
+                # (exact combined return, exact ceiling, heuristic crossing
+                # return, buy, sell): the sink bands and RANKS on the EXACT
+                # figures (floor-return desc, ceiling tie-break — §2 v4
+                # maximin); the walks' disjointness is defined by the
+                # heuristic one (§5)
+                ret, _floor, ceil = pool.pair_eval(bi, si)
                 out.append(
                     (
-                        pool.pair_return(bi, si),
-                        (b_dw + s[L_DW]) / (b_sent + s[L_SENT]),
+                        ret,
+                        ceil,
+                        (b_fl + s[L_FLOOR]) / (b_sent + s[L_SENT]),
                         bi,
                         si,
                     )
@@ -1148,14 +1201,14 @@ def _walk_pairs_range(
         comp_idx = pool.buckets.get((-sig[0], -sig[1]))
         if not comp_idx:
             continue
-        bs = sorted((lo_r * legs[i][L_SENT] - legs[i][L_DW], i) for i in pool.buckets[sig])
-        ss = sorted((lo_r * legs[i][L_SENT] - legs[i][L_DW], i) for i in comp_idx)
+        bs = sorted((lo_r * legs[i][L_SENT] - legs[i][L_FLOOR], i) for i in pool.buckets[sig])
+        ss = sorted((lo_r * legs[i][L_SENT] - legs[i][L_FLOOR], i) for i in comp_idx)
         ns0 = ss[0][0]
         for nb, bi in bs:
             if nb + ns0 > 0.0:
                 break
             b = legs[bi]
-            b_opp, b_mask, b_dw, b_sent = b[L_OPP], b[L_MASK], b[L_DW], b[L_SENT]
+            b_opp, b_mask, b_fl, b_sent = b[L_OPP], b[L_MASK], b[L_FLOOR], b[L_SENT]
             vb = None
             for ns, si in ss:
                 if nb + ns > 0.0:
@@ -1164,7 +1217,7 @@ def _walk_pairs_range(
                 if scanned > scan_cap:
                     return visits, False
                 s = legs[si]
-                if b_dw + s[L_DW] >= hi_r * (b_sent + s[L_SENT]):
+                if b_fl + s[L_FLOOR] >= hi_r * (b_sent + s[L_SENT]):
                     continue  # ≥ hi_r: the top walk owns it — budget-free skip
                 visits += 1
                 if visits > budget:
@@ -1177,13 +1230,17 @@ def _walk_pairs_range(
                     break  # illegal buy leg: no pair with it exists
                 if _leg_legal(league, me_t, pool, si, legal) is False:
                     continue
-                # (exact combined return, heuristic crossing return, buy, sell):
-                # the sink bands on the EXACT one; the walks' disjointness is
-                # defined by the heuristic one (§5 v3.4)
+                # (exact combined return, exact ceiling, heuristic crossing
+                # return, buy, sell): the sink bands and RANKS on the EXACT
+                # figures (floor-return desc, ceiling tie-break — §2 v4
+                # maximin); the walks' disjointness is defined by the
+                # heuristic one (§5)
+                ret, _floor, ceil = pool.pair_eval(bi, si)
                 out.append(
                     (
-                        pool.pair_return(bi, si),
-                        (b_dw + s[L_DW]) / (b_sent + s[L_SENT]),
+                        ret,
+                        ceil,
+                        (b_fl + s[L_FLOOR]) / (b_sent + s[L_SENT]),
                         bi,
                         si,
                     )
@@ -1216,14 +1273,14 @@ def _walk_pairs_below_range(
         comp_idx = pool.buckets.get((-sig[0], -sig[1]))
         if not comp_idx:
             continue
-        bs = sorted((legs[i][L_DW] - hi_r * legs[i][L_SENT], i) for i in pool.buckets[sig])
-        ss = sorted((legs[i][L_DW] - hi_r * legs[i][L_SENT], i) for i in comp_idx)
+        bs = sorted((legs[i][L_FLOOR] - hi_r * legs[i][L_SENT], i) for i in pool.buckets[sig])
+        ss = sorted((legs[i][L_FLOOR] - hi_r * legs[i][L_SENT], i) for i in comp_idx)
         ss0 = ss[0][0]
         for tb, bi in bs:
             if tb + ss0 >= 0.0:
                 break
             b = legs[bi]
-            b_opp, b_mask, b_dw, b_sent = b[L_OPP], b[L_MASK], b[L_DW], b[L_SENT]
+            b_opp, b_mask, b_fl, b_sent = b[L_OPP], b[L_MASK], b[L_FLOOR], b[L_SENT]
             vb = None
             for ts, si in ss:
                 if tb + ts >= 0.0:
@@ -1232,7 +1289,7 @@ def _walk_pairs_below_range(
                 if scanned > scan_cap:
                     return visits, False
                 s = legs[si]
-                if b_dw + s[L_DW] < lo_r * (b_sent + s[L_SENT]):
+                if b_fl + s[L_FLOOR] < lo_r * (b_sent + s[L_SENT]):
                     continue  # < lo_r: the below-walk owns it — budget-free skip
                 visits += 1
                 if visits > budget:
@@ -1245,13 +1302,17 @@ def _walk_pairs_below_range(
                     break  # illegal buy leg: no pair with it exists
                 if _leg_legal(league, me_t, pool, si, legal) is False:
                     continue
-                # (exact combined return, heuristic crossing return, buy, sell):
-                # the sink bands on the EXACT one; the walks' disjointness is
-                # defined by the heuristic one (§5 v3.4)
+                # (exact combined return, exact ceiling, heuristic crossing
+                # return, buy, sell): the sink bands and RANKS on the EXACT
+                # figures (floor-return desc, ceiling tie-break — §2 v4
+                # maximin); the walks' disjointness is defined by the
+                # heuristic one (§5)
+                ret, _floor, ceil = pool.pair_eval(bi, si)
                 out.append(
                     (
-                        pool.pair_return(bi, si),
-                        (b_dw + s[L_DW]) / (b_sent + s[L_SENT]),
+                        ret,
+                        ceil,
+                        (b_fl + s[L_FLOOR]) / (b_sent + s[L_SENT]),
                         bi,
                         si,
                     )
@@ -1270,8 +1331,8 @@ class _DropSpans:
         self.sink = sink
         self.spans = spans
 
-    def append(self, t: tuple[float, float, int, int]) -> None:
-        pct = 100.0 * t[1]  # the HEURISTIC return — what the walks partition on
+    def append(self, t: tuple[float, float, float, int, int]) -> None:
+        pct = 100.0 * t[2]  # the HEURISTIC return — what the walks partition on
         for a, b in self.spans:
             if a <= pct < b:
                 return
@@ -1361,13 +1422,17 @@ def bucket_index(
 class _BucketSink:
     """append()-compatible walk output that stratifies on the fly (§5 v3.4.1):
     per MAX-LEG BUCKET a bounded min-heap of the top-`quota` pairs by EXACT
-    combined TOTAL return (deterministic ties), a tally of every valid pair
-    seen, and the bucket × total-return-band count grid the inventory line is
-    served from. Pairs with total return below the lowest floor preset are
-    outside the stored universe — never stored, never counted. The collection
-    walks cover DISJOINT HEURISTIC return ranges, so no pair is ever offered
-    twice and no dedupe structure is needed — and memory stays
-    O(buckets · quota) where full lists would blow the collector's 512MB."""
+    combined floor-based TOTAL return (ceiling desc as tie-break, then
+    deterministic ids — §2 v4 maximin), a tally of every valid pair seen, and
+    the bucket × total-return-band count grid the inventory line is served
+    from. Pairs with floor-based return below the lowest floor preset are
+    outside the stored universe — never stored, never counted; since the
+    lowest preset is positive, everything stored has floor > 0, i.e. BOTH
+    coordinates strictly positive — the §11.8b(d) verdict constraint is
+    enforced here as a hard, explicit guard as well. The collection walks
+    cover DISJOINT HEURISTIC return ranges, so no pair is ever offered twice
+    and no dedupe structure is needed — and memory stays O(buckets · quota)
+    where full lists would blow the collector's 512MB."""
 
     __slots__ = ("buckets", "tbands", "quota", "legs", "heaps", "counts", "grid")
 
@@ -1382,15 +1447,21 @@ class _BucketSink:
         self.tbands = tbands
         self.quota = quota
         self.legs = legs
-        # heap entries (ret, -bi, -si): lexicographic order on the negated-index
-        # tuple exactly inverts the storage sort key (-ret, bi, si), so the
-        # min-heap root is always the worst kept pair
-        self.heaps: list[list[tuple[float, int, int]]] = [[] for _ in buckets]
+        # heap entries (ret, ceiling, -bi, -si): lexicographic order on the
+        # negated-index tuple exactly inverts the storage sort key
+        # (-ret, -ceiling, bi, si), so the min-heap root is always the worst
+        # kept pair under the §2 v4 maximin order
+        self.heaps: list[list[tuple[float, float, int, int]]] = [[] for _ in buckets]
         self.counts: list[int] = [0] * len(buckets)
         self.grid: list[list[int]] = [[0] * len(tbands) for _ in buckets]
 
-    def append(self, t: tuple[float, float, int, int]) -> None:
-        ret, _heur, bi, si = t
+    def append(self, t: tuple[float, float, float, int, int]) -> None:
+        ret, ceil, _heur, bi, si = t
+        if ret <= 0.0:
+            # §11.8b(d) HARD verdict constraint: a non-positive floor means the
+            # pair is not objectively good — must never be stored, whatever the
+            # presets say
+            return
         ti = band_index(self.tbands, round(100.0 * ret, 2))
         if ti is None:
             return  # total below the lowest floor preset: outside the universe
@@ -1401,15 +1472,16 @@ class _BucketSink:
         self.counts[i] += 1
         self.grid[i][ti] += 1
         h = self.heaps[i]
-        e = (ret, -bi, -si)
+        e = (ret, ceil, -bi, -si)
         if len(h) < self.quota:
             heappush(h, e)
         elif e > h[0]:
             heappushpop(h, e)
 
-    def bucket_pairs(self, i: int) -> list[tuple[float, int, int]]:
-        """Stored pairs of bucket i, TOTAL-return-desc with deterministic ties."""
-        return [(e[0], -e[1], -e[2]) for e in sorted(self.heaps[i], reverse=True)]
+    def bucket_pairs(self, i: int) -> list[tuple[float, float, int, int]]:
+        """Stored pairs of bucket i — floor-return desc, ceiling desc,
+        deterministic ids (§2 v4 maximin)."""
+        return [(e[0], e[1], -e[2], -e[3]) for e in sorted(self.heaps[i], reverse=True)]
 
 
 def find_pool_leg(pool: PairPool, opp_name: str, give_keys, get_keys) -> int | None:
@@ -1455,24 +1527,27 @@ def pair_count_deltas(buy_card: dict, sell_card: dict) -> tuple[int, int]:
 
 
 def trade_board(league: md.LeagueState) -> dict:
-    """§5 v3.4.1: the exhaustively-crossed PAIR board behind the user's TWO
-    independent dials — a floor on TOTAL pair return (combined ledger ÷ face Σv
-    sent, §2 v3.5 / §5 v3.4) and a cap on EACH leg's MARKET return (face skim
-    off that leg's counterparty). Storage is STRATIFIED BY MAX-LEG BUCKET:
+    """§5 v4: the exhaustively-crossed PAIR board behind the user's TWO
+    independent dials — a floor on TOTAL pair return (guaranteed floor
+    min(ΔS, ΔF) combined ÷ face Σv sent, §2 v4 / §5) and a cap on EACH leg's
+    MARKET return (face skim off that leg's counterparty). Every stored pair
+    passes the §2 objective verdict — the stored universe is floor-based
+    return ≥ 1%, so both coordinates are strictly positive on everything
+    stored (§11.8b(d), hard). Storage is STRATIFIED BY MAX-LEG BUCKET:
     pairs bucket on max(r(buy), r(sell)) over (−∞,2.5), [2.5,5), [5,10),
-    [10,20), [20,∞) percent, the top `pairs_per_band` per bucket kept by TOTAL return desc, and
-    `pairs` lists every stored pair sorted by total return desc globally (the
-    sort is ALWAYS total-desc; the cap only filters). Every stored pair is
-    fully count-neutral, both legs gate-PASS, posture-clean, distinct
-    counterparties, no shared assets, total return ≥ the lowest floor preset.
-    `bands` carries per-BUCKET honest disclosure ({lo|None, hi|None, stored,
-    count, saturated, by_total} — by_total is the bucket's count per
-    total-return band, so the inventory line is honest for any (floor, cap)
-    combination; every count is a verified floor, v3.4). `counts_by_threshold`
-    and `truncated` stay for ≥-style compat reads on total return.
-    `recommendations` (top unpaired sell/neutral legs by ΔW) and `watch`
-    (unpaired buys) stay as data for the trade-negotiator desk — the web
-    renders pairs only."""
+    [10,20), [20,∞) percent, the top `pairs_per_band` per bucket kept by the
+    §2 maximin order (floor-return desc, ceiling desc, ids), and `pairs`
+    lists every stored pair in the same order globally (the sort is ALWAYS
+    floor-return-desc; the cap only filters). Every stored pair is fully
+    count-neutral, both legs gate-PASS, posture-clean, distinct
+    counterparties, no shared assets. `bands` carries per-BUCKET honest
+    disclosure ({lo|None, hi|None, stored, count, saturated, by_total} —
+    by_total is the bucket's count per total-return band, so the inventory
+    line is honest for any (floor, cap) combination; every count is a
+    verified floor, v3.4). `counts_by_threshold` and `truncated` stay for
+    ≥-style compat reads on total return. `recommendations` (top unpaired
+    sell/neutral legs by isolation floor) and `watch` (unpaired buys) stay as
+    data for the trade-negotiator desk — the web renders pairs only."""
     params = league.params
     presets = sorted(float(p) for p in params.return_presets)
     tbands = return_bands(presets)
@@ -1537,11 +1612,11 @@ def trade_board(league: md.LeagueState) -> dict:
     # bucket × total-band grid, and the top-quota pairs per bucket by TOTAL
     # return — O(buckets · quota) memory (512MB Lambda).
     #
-    # HONESTY (v3.4): the walks are ordered by the legs' ISOLATION ΔWs while
-    # every pair is priced by its EXACT combined ledger. The two orderings do
-    # not agree (lineup interactions), so outside branch 0 no cutoff can prove
-    # a bucket or grid cell was fully enumerated — every count is a VERIFIED
-    # FLOOR.
+    # HONESTY (v3.4/v4): the walks are ordered by the legs' ISOLATION FLOORS
+    # while every pair is priced by its EXACT combined coordinates. The two
+    # orderings do not agree (lineup interactions), so outside branch 0 no
+    # cutoff can prove a bucket or grid cell was fully enumerated — every
+    # count is a VERIFIED FLOOR.
     collect_budget = max(params.pair_collect_budget, budget)
     sink = _BucketSink(buckets, tbands, quota, pool.legs)
     ALL_R = -1e9  # below every crossing: σ_r > 0 for all legs, nothing prunes
@@ -1607,13 +1682,17 @@ def trade_board(league: md.LeagueState) -> dict:
     # exact tally; every other branch leaves every count a verified floor.
     saturated = not exact_all
 
-    # ---- stored pairs: top-quota per bucket by total return; the flat list is
-    # sorted by TOTAL return desc GLOBALLY (§5 v3.4.1: the sort is always
-    # total-desc — the leg-cap dial only filters, it never re-orders) ----
+    # ---- stored pairs: top-quota per bucket; the flat list is sorted by the
+    # §2 v4 maximin order GLOBALLY — floor-based TOTAL return desc, ceiling
+    # desc as tie-break, deterministic ids (the leg-cap dial only filters, it
+    # never re-orders) ----
     bucket_top = [sink.bucket_pairs(i) for i in range(nb)]
-    stored: list[tuple[float, int, int]] = sorted(
+    # the sort key rounds to the DISPLAYED precision (return 2dp, ceiling 1dp)
+    # so the doc's order is exactly the §11.8b(e) maximin order on the numbers
+    # the doc shows — raw-float ties inside a display cell fall to the ids
+    stored: list[tuple[float, float, int, int]] = sorted(
         (t for top in bucket_top for t in top),
-        key=lambda t: (-t[0], t[1], t[2]),
+        key=lambda t: (-round(100.0 * t[0], 2), -round(t[1], 1), t[2], t[3]),
     )
 
     bands_doc = [
@@ -1636,7 +1715,7 @@ def trade_board(league: md.LeagueState) -> dict:
     counts_by_threshold = []
     ntb = len(tbands)
     for k, p in enumerate(presets):
-        n_stored = sum(1 for ret, _, _ in stored if round(100.0 * ret, 2) >= p)
+        n_stored = sum(1 for ret, _, _, _ in stored if round(100.0 * ret, 2) >= p)
         grid_sum = sum(sink.grid[b][j] for b in range(nb) for j in range(k, ntb))
         counts_by_threshold.append(
             {
@@ -1684,7 +1763,7 @@ def trade_board(league: md.LeagueState) -> dict:
     keysets: list[frozenset] = []
     seen_multiset: set[tuple] = set()
     stored_leg_ids: set[int] = set()
-    for ret, bi, si in stored:
+    for ret, _ceil, bi, si in stored:
         mk = (
             legs[bi][L_GIVE].keys, legs[bi][L_GET].keys,
             legs[si][L_GIVE].keys, legs[si][L_GET].keys,
@@ -1708,9 +1787,11 @@ def trade_board(league: md.LeagueState) -> dict:
             )
         at_cap = b["sequencing"].startswith("at the roster cap")
         np_pair, nk_pair = pair_count_deltas(b, s)
-        # §5 v3.4: the pair ledger is the EXACT combined delta (both legs applied
-        # together), never the sum of the legs' isolation ΔWs
-        combined = combined_ledger(
+        # §5 v4: the pair's coordinates are the EXACT combined ones (both legs
+        # applied together — ΔS one combined re-solve, ΔF additive), never
+        # assembled from the legs' isolation figures; the embedded cards keep
+        # their isolation coords
+        combined = combined_coords(
             league,
             [(legs[bi][L_GIVE], legs[bi][L_GET]), (legs[si][L_GIVE], legs[si][L_GET])],
         )
@@ -1724,12 +1805,18 @@ def trade_board(league: md.LeagueState) -> dict:
                 "id": f"P{n}",
                 "buy": b,
                 "sell": s,
+                # §5 v4 floor-based TOTAL return: guaranteed floor ÷ Σ face v
+                # I send across both legs — the floor dial's key and the
+                # primary sort key
                 "return_pct": round(100.0 * ret, 2),
                 "leg_returns": {"buy": mkt_b, "sell": mkt_s},
                 "max_leg_return_pct": mkt_b if mkt_b > mkt_s else mkt_s,
-                "dW_combined": combined["dW"],
-                "dW_combined_parts": {"dS": combined["dS"], "dT": combined["dT"]},
-                "dW_legs_isolated": round(b["dW"]["me"] + s["dW"]["me"], 1),
+                # §2 v4 combined coordinates + derived figures. Every stored
+                # pair is verdict-true by hard constraint (§11.8b(d)).
+                "coords": {"dS": combined["dS"], "dF": combined["dF"]},
+                "verdict": combined["verdict"],
+                "floor": combined["floor"],
+                "ceiling": combined["ceiling"],
                 "net_roster": b["net_roster"]["me"] + s["net_roster"]["me"],
                 "net_players": np_pair,  # exactly 0 by construction (§5 v3.2)
                 "net_picks": nk_pair,  # exactly 0 by construction (§5 v3.2)
@@ -1756,7 +1843,7 @@ def trade_board(league: md.LeagueState) -> dict:
     attempts = 0
     for i in sorted(
         (i for i, leg in enumerate(legs) if leg[L_NP] <= 0 and i not in stored_leg_ids),
-        key=lambda i: (-legs[i][L_DW], i),
+        key=lambda i: (-legs[i][L_FLOOR], i),
     ):
         if len(recommendations) >= params.top_league_wide or attempts >= 200:
             break
@@ -1783,7 +1870,7 @@ def trade_board(league: md.LeagueState) -> dict:
     attempts = 0
     for i in sorted(
         (i for i, leg in enumerate(legs) if leg[L_NP] > 0 and i not in stored_leg_ids),
-        key=lambda i: (-legs[i][L_DW], i),
+        key=lambda i: (-legs[i][L_FLOOR], i),
     ):
         if len(watch) >= params.watch_max or attempts >= 200:
             break
@@ -1800,7 +1887,7 @@ def trade_board(league: md.LeagueState) -> dict:
                 "counterparty": pool.opp_names[leg[L_OPP]],
                 "give": [a.name for a in leg[L_GIVE].assets],
                 "get": [a.name for a in leg[L_GET].assets],
-                "dW": round(leg[L_DW], 1),
+                "floor": round(leg[L_FLOOR], 1),
                 "blocker": (
                     "no clean exit in the stored pairs — needs a non-conflicting "
                     f"sell netting {-leg[L_NP]:+d} players / {-leg[L_NK]:+d} picks"
@@ -1810,17 +1897,25 @@ def trade_board(league: md.LeagueState) -> dict:
 
     notes = [
         "v3.3 enumerate-then-filter: the board is the legal PAIR space behind your "
-        "two dials (v3.4.1): a FLOOR on total pair return (combined ledger ΔW ÷ Σv "
+        "two dials (v3.4.1): a FLOOR on total pair return (guaranteed floor ÷ Σv "
         "you send across both legs) and a CAP on each leg's market return (face "
         "skim off that leg's counterparty) — independent dimensions; every stored "
         "pair nets exactly 0 players / 0 picks for you, always sorted by total "
-        "return desc",
-        "ΔW is the v3.5 wealth ledger — starters at raw KTC over active+taxi plus "
-        "ALL stored value (bench players at face AND picks at tranche, one class) "
-        f"discounted to {100 * params.stored_delta:g}% — and is PER SIDE: a good "
-        "pair can lift both ledgers. A pair's ΔW is the two legs applied TOGETHER; "
-        "each leg card also shows its isolation ΔW, and a buy leg alone can still "
-        "be negative",
+        "return desc (floor-based), ceiling as tie-break",
+        "v4 identity: the guaranteed floor never exceeds the pair's total face "
+        "gain (floor ≤ dF = Σ leg market skims), so the floor-based total return "
+        "is always ≤ the max leg market return — a cap of c% mathematically "
+        "caps the guaranteed total below c% too; sparse low buckets are the "
+        "geometry, not a scan artifact",
+        "the score is two objective coordinates (§2 v4): dS = change in starter "
+        "value (max-Σv lineup at raw KTC over active+taxi) and dF = change in "
+        "total face owned (players + picks at tranche) — no blend, no parameter. "
+        "Every stored pair is objectively good: dS > 0 AND dF > 0, so the gain is "
+        "guaranteed between the floor and the ceiling for every rational "
+        "stored-value preference. Coordinates are PER SIDE (dF zero-sum per leg, "
+        "dS not): a good pair can be good for both parties. A pair's coordinates "
+        "are the two legs applied TOGETHER; each leg card carries its isolation "
+        "coords, and a buy leg alone can still be floor-negative",
         f"stratified storage (v3.4.1): up to {quota} pairs kept per MAX-LEG bucket "
         "(buckets on max(r(buy), r(sell)) at the cap presets), each bucket's top "
         "by TOTAL return — `by_total` on each bucket is its count per total-return "
@@ -1833,7 +1928,7 @@ def trade_board(league: md.LeagueState) -> dict:
         "floor dial; the v3.4.1 leg CAP is the opposite guard, against any single "
         "counterparty giving up too much face value on their leg",
         f"per (counterparty, give-package, count-signature) the top "
-        f"{params.variants_per_signature} gets by ISOLATION ledger ΔW are pooled, "
+        f"{params.variants_per_signature} gets by ISOLATION floor are pooled, "
         f"chosen among the first {params.variant_scan_cap} gate-passers in Σv-desc "
         "order — count-signature coverage is complete; deeper sweetener permutations "
         "are not enumerated",
@@ -1841,8 +1936,8 @@ def trade_board(league: md.LeagueState) -> dict:
         "(§3.1) — `adj_give`/`adj_get` on a card are the numbers your league-mate's "
         "calculator shows",
         "counts marked saturated are verified floors — the pair walk is ordered by "
-        "the legs' isolation ΔWs while pairs are priced by the exact combined "
-        "ledger, so completeness above a cutoff cannot be certified (v3.4)",
+        "the legs' isolation floors while pairs are priced by their exact combined "
+        "coordinates, so completeness above a cutoff cannot be certified (v3.4)",
         "band ceilings on cards are negotiating room, not the opener; anchor asks "
         "open +8% (§3)",
         "book recomputes from fresh rosters after any executed trade",

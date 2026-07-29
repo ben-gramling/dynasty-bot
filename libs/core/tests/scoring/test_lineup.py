@@ -154,7 +154,7 @@ def test_dl_terms_match_solver_diff(league, me):
 
 
 def test_availability_scales_lineup_never_wealth(league, me):
-    """u scales the lineup solver only — the wealth ledger banks full v."""
+    """u scales the lineup solver only — the trade coordinates bank full v."""
     hurt = PlayerV(sid="syn:hurt", name="hurt", pos="WR", v=6000, u=0.25)
     t2 = md.apply_tx(league, me, add_players=[hurt])
     assert t2.players_v_sum - me.players_v_sum == 6000  # full v banked

@@ -10,15 +10,18 @@ const DEFAULT_MIN = 5;
 const LEG_CAP_PRESETS = [2.5, 5, 10, 20];
 
 /**
- * §5 v3.4.1 two-dial filter over the STORED pair list: a floor on TOTAL pair
- * return (presets 1 / 2.5 / 5 / 10 / 20, default 5) and a cap on EACH LEG's
- * market return (presets 2.5 / 5 / 10 / 20 / "No cap", default no cap). The
- * dials are independent dimensions — floor 5% with a 2.5% leg cap is the
- * balanced-legs/high-total query, so no combination is disabled. Filtering is
- * client-side (return_pct ≥ min AND max_leg_return_pct < cap); the list always
- * sorts by TOTAL return desc. The inventory line reads the doc's per-bucket
- * `by_total` grid — verified floors rendered "≥ N" (v3.4: every count is one,
- * by construction — see the note under the inventory line).
+ * §5 two-dial filter over the STORED pair list: a floor on TOTAL pair return
+ * (v4: guaranteed floor over face sent; presets 1 / 2.5 / 5 / 10 / 20,
+ * default 5) and a cap on EACH LEG's market return (presets 2.5 / 5 / 10 /
+ * 20 / "No cap", default no cap). The dials are independent dimensions, so
+ * no combination is disabled — though under v4 the guaranteed total return
+ * never exceeds the max leg market return (floor ≤ ΔF = Σ leg skims), so
+ * tight caps mathematically thin out high floors. Filtering is client-side
+ * (return_pct ≥ min AND max_leg_return_pct < cap); the list always sorts
+ * maximin — floor-based return desc, ceiling as tie-break (§2 v4). The
+ * inventory line reads the doc's per-bucket `by_total` grid — verified
+ * floors rendered "≥ N" (v3.4: every count is one, by construction — see the
+ * note under the inventory line).
  */
 export function PairsBoard({
   pairs,
@@ -54,7 +57,11 @@ export function PairsBoard({
         p.return_pct >= min &&
         (cap === null || (p.max_leg_return_pct ?? Infinity) < cap),
     )
-    .sort((a, b) => b.return_pct - a.return_pct); // ALWAYS total return desc
+    // ALWAYS maximin (§2 v4): floor-based total return desc, ceiling tie-break
+    .sort(
+      (a, b) =>
+        b.return_pct - a.return_pct || (b.ceiling ?? 0) - (a.ceiling ?? 0),
+    );
   const shown = filtered.slice(0, RENDER_CAP);
 
   // inventory from the bucket × total-band grid: a cap preset selects the
@@ -142,8 +149,8 @@ export function PairsBoard({
         <p className="num text-[11.5px] text-ink-muted">
           {filtered.length.toLocaleString("en-US")} stored shown ({filterLabel})
           · inventory: {invSat ? "≥ " : ""}
-          {invCount.toLocaleString("en-US")} legal · sorted by total return ·
-          computed {fmtDateTime(computedAt)}
+          {invCount.toLocaleString("en-US")} legal · sorted by guaranteed
+          return · computed {fmtDateTime(computedAt)}
         </p>
       </div>
 

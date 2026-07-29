@@ -10,14 +10,16 @@ export const metadata: Metadata = {
 };
 
 /**
- * Trades tab (scoring-system.md v3.5): the stratified stored PAIR space
- * behind TWO independent dials — a floor on total pair return (the wealth
- * ledger: starters + 25% of all stored value, per side, never zero-sum) and a
- * cap on each leg's market return. Pairs stay fully count-neutral (exactly 0 players / 0 picks
- * net for our side; a buy never goes out without its exit); the dials (floor
- * presets 1 / 2.5 / 5 / 10 / 20, default 5; leg-cap presets 2.5 / 5 / 10 /
- * 20 / no cap, default no cap — no combination is invalid) filter the stored
- * list client-side while the inventory line comes from the engine's honest
+ * Trades tab (scoring-system.md v4): the stratified stored PAIR space behind
+ * TWO independent dials — a floor on total pair return (v4: the GUARANTEED
+ * floor min(ΔS, ΔF) over face sent — two objective coordinates, no blend, no
+ * parameter) and a cap on each leg's market return. Every stored pair is
+ * objectively good (both coordinates positive — §11.8b(d) hard constraint)
+ * and fully count-neutral (exactly 0 players / 0 picks net for our side; a
+ * buy never goes out without its exit); the dials (floor presets 1 / 2.5 /
+ * 5 / 10 / 20, default 5; leg-cap presets 2.5 / 5 / 10 / 20 / no cap,
+ * default no cap — no combination is invalid) filter the stored list
+ * client-side while the inventory line comes from the engine's honest
  * per-bucket `bands` grid. Unpaired legs and blocked buys stay in Mongo for
  * the trade-negotiator desk but do not render here (user: nothing without an
  * associated hedge). Reads Mongo only — every number is the engine's, never
@@ -70,25 +72,27 @@ export default async function TradesPage() {
           Recommended trades
         </h2>
         <p className="mt-1 text-[12.5px] text-ink-muted">
-          The recommendation unit is the count-neutral pair (§5 v3.3): a buy
-          and its exit, distinct counterparties, no shared assets, netting
-          exactly 0 players and 0 picks for your side — players count wherever
-          they land, picks regardless of year. ΔW is the wealth ledger (§2
-          v3.5): your starting lineup at raw KTC over active + taxi, plus 25%
-          of everything you are storing — bench players at face and picks at
-          tranche are one class, priced the same way, so upgrading the bench
-          counts and swapping a non-starter for a pick of equal value scores
-          about nothing. It is per side, so a good pair can lift both ledgers,
-          and a buy leg on its own can still be negative; the pair number is
-          both legs together. Every
-          leg passes the fairness gate — literally the totals their KTC
-          calculator shows — and respects posture (BUYERs receive players,
-          SELLERs picks). Two independent dials (§5 v3.4.1): the floor is on
-          the TOTAL pair return, the cap is on EACH leg&apos;s market return
-          (the face skim that leg&apos;s counterparty sees) — a low cap with a
-          high floor finds even-looking legs that add up. The list always
-          sorts by total return. Band ceilings on cards are negotiating room,
-          not the opener.
+          The recommendation unit is the count-neutral pair (§5): a buy and
+          its exit, distinct counterparties, no shared assets, netting exactly
+          0 players and 0 picks for your side — players count wherever they
+          land, picks regardless of year. The score is two objective
+          coordinates (§2 v4), no blend, no parameter: starters (ΔS, your
+          max-Σv lineup at raw KTC over active + taxi) and face (ΔF, the
+          total KTC you own, players and picks alike). Every pair here is
+          objectively good — both coordinates rise — so your gain is
+          guaranteed between the floor and the ceiling whatever you think
+          stored future capital is worth; the chip is the guaranteed ΔW, and
+          the ranking is maximin: best guaranteed floor first, ceiling as the
+          tie-break. Coordinates are per side (face is zero-sum on a leg,
+          starters are not), so a trade can be genuinely good for both
+          parties, and a buy leg on its own can be floor-negative; the pair
+          numbers are both legs together. Every leg passes the fairness gate —
+          literally the totals their KTC calculator shows — and respects
+          posture (BUYERs receive players, SELLERs picks). Two independent
+          dials (§5): the floor is on the TOTAL guaranteed return, the cap is
+          on EACH leg&apos;s market return (the face skim that leg&apos;s
+          counterparty sees). Band ceilings on cards are negotiating room, not
+          the opener.
         </p>
         <PairsBoard
           pairs={doc.pairs}

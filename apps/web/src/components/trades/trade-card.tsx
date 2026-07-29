@@ -4,22 +4,25 @@ import { ValueChip } from "@/components/value-chip";
 import { legLabel, ord, postureEvidenceNote } from "./derive";
 
 /**
- * One ranked trade leg (scoring-system.md v3.5 §2–§5): You send / You get at
- * face KTC value, the headline ledger ΔW(you) beside the counterparty's OWN
- * ledger delta (per side, never a negation), the starters/stored split
- * when the doc carries it, the §3 gate strip (KTC-calculator gap, anti-fleece
- * ratio, PASS), the §4 posture shape line with visible holes, and the §5
- * execution notes (sequencing, exclusive-with, anchor ask). The row-per-asset
- * columns keep a 3-for-1 as scannable as a 1-for-1.
+ * One ranked trade leg (scoring-system.md v4 §2–§5): You send / You get at
+ * face KTC value, the headline GUARANTEED FLOOR (min of the two objective
+ * coordinates) with the interval up to the ceiling, both sides' own
+ * coordinates ("starters +X · face +Y" — dF negates across sides, dS does
+ * not), the §3 gate strip (KTC-calculator gap, anti-fleece ratio, PASS), the
+ * §4 posture shape line with visible holes, and the §5 execution notes
+ * (sequencing, exclusive-with, anchor ask). Pre-v4 docs (no `coords`) fall
+ * back to the stored ledger line. The row-per-asset columns keep a 3-for-1 as
+ * scannable as a 1-for-1.
  */
 export function TradeCard({ rec, compact = false }: { rec: TradeRec; compact?: boolean }) {
+  const c = rec.coords;
   return (
     <article className="card" id={`leg-${rec.id}`}>
       <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         {rec.rank !== undefined ? (
           <span
             className="num text-[13px] text-ink-muted"
-            title="Rank: posture fit first, then ΔW(you)"
+            title="Rank: guaranteed floor descending (§2 v4 maximin)"
           >
             {rec.rank}
           </span>
@@ -37,20 +40,26 @@ export function TradeCard({ rec, compact = false }: { rec: TradeRec; compact?: b
         </span>
         <span className="num text-[11px] text-ink-muted">{rec.id}</span>
         <span className="ml-auto flex flex-wrap items-baseline gap-x-2 gap-y-1">
-          <ValueChip label="ΔW you" value={rec.dW.me} emphasis />
-          <span
-            className="text-[11.5px] text-ink-muted"
-            title="Their OWN ledger delta — v3.4 ΔW is per side, not zero-sum: a good trade can lift both (§2)"
-          >
-            their ledger{" "}
-            <span className={`num${rec.dW.them < 0 ? " text-star" : ""}`}>
-              {fmtSigned(rec.dW.them)}
-            </span>
-          </span>
+          {c && rec.floor ? (
+            <>
+              <ValueChip label="guaranteed you" value={rec.floor.me} emphasis />
+              <span
+                className="text-[11.5px] text-ink-muted"
+                title="The §2 v4 interval: your gain lies between the guaranteed floor min(ΔS, ΔF) and the ceiling max(ΔS, ΔF), whatever your stored-value preference — this leg alone"
+              >
+                up to{" "}
+                <span className="num">
+                  {fmtSigned(Math.max(c.me.dS, c.me.dF))}
+                </span>
+              </span>
+            </>
+          ) : rec.dW ? (
+            <ValueChip label="ΔW you" value={rec.dW.me} emphasis />
+          ) : null}
         </span>
       </header>
 
-      <LedgerSplit rec={rec} />
+      <CoordsLines rec={rec} />
 
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
         <AssetColumn title="You send" assets={rec.give} />
@@ -117,7 +126,7 @@ export function TradeCard({ rec, compact = false }: { rec: TradeRec; compact?: b
         {rec.unvalued.length ? (
           <p className="text-ink">
             <WarnTag>unvalued</WarnTag> {rec.unvalued.join(", ")} — no KTC price;
-            contributes 0 to ΔW, verify by hand (§11.7)
+            contributes 0 to both coordinates, verify by hand (§11.7)
           </p>
         ) : null}
       </footer>
@@ -126,26 +135,51 @@ export function TradeCard({ rec, compact = false }: { rec: TradeRec; compact?: b
 }
 
 /**
- * §2 v3.5: where a leg's ledger move comes from — starters (the max-Σv lineup
- * at raw KTC over active + taxi) and stored value (everything else you own:
- * bench players at face AND picks at tranche, counted at 25%). Omitted for
- * board docs written before v3.5, which carry a different split.
+ * §2 v4: both sides' coordinates — "starters +X · face +Y" — with each side's
+ * verdict context. ΔF negates exactly across the sides (face conservation);
+ * ΔS is each side's own deployment, which is why a good trade can be good for
+ * both. Preference sides show their breakeven δ*. Omitted for board docs
+ * written before v4 (they carry the retired ledger split instead).
  */
-function LedgerSplit({ rec }: { rec: TradeRec }) {
-  const parts = rec.dW_parts?.me;
-  if (parts?.dS === undefined || parts?.dT === undefined) return null;
+function CoordsLines({ rec }: { rec: TradeRec }) {
+  const c = rec.coords;
+  if (!c) return null;
   return (
-    <p
-      className="mt-1.5 text-[11.5px] text-ink-muted"
-      title="Stored value is one class (§2 v3.5): a bench player and a draft pick are both value you can't field today, and both count at 25% of face — so swapping one for the other scores ~0"
-    >
-      starters <span className="num">{fmtSigned(parts.dS)}</span> · stored{" "}
-      <span className="num">{fmtSigned(parts.dT)}</span>
-      {rec.dW_basis === "isolation" ? (
-        <span> — this leg alone; pair ΔW is both legs together</span>
-      ) : null}
-    </p>
+    <div className="mt-1.5 space-y-0.5 text-[11.5px] text-ink-muted">
+      <p title="Your two objective coordinates (§2 v4): ΔS = starter value (max-Σv lineup at raw KTC over active + taxi), ΔF = total face owned (players + picks at tranche). No blend, no parameter — the gain is the interval between them.">
+        you: starters <span className="num">{fmtSigned(c.me.dS)}</span> · face{" "}
+        <span className="num">{fmtSigned(c.me.dF)}</span>
+        <SideVerdict rec={rec} side="me" />
+        {rec.coords_basis === "isolation" ? (
+          <span> — this leg alone; the pair combines both legs</span>
+        ) : null}
+      </p>
+      <p title="Their own coordinates against their own roster — dF is the exact negation of yours (face conserves), dS is not (deployment differs), so both sides can genuinely gain (§11.1)">
+        them: starters <span className="num">{fmtSigned(c.them.dS)}</span> · face{" "}
+        <span className="num">{fmtSigned(c.them.dF)}</span>
+        <SideVerdict rec={rec} side="them" />
+      </p>
+    </div>
   );
+}
+
+/** Verdict tail for one side: objectively good, preference (with δ*), or bad. */
+function SideVerdict({ rec, side }: { rec: TradeRec; side: "me" | "them" }) {
+  const good = rec.verdict?.[side];
+  const b = rec.breakeven?.[side];
+  if (good) return <span> — objectively good</span>;
+  if (b !== null && b !== undefined) {
+    return (
+      <span
+        title="Not good for every rational preference — good exactly beyond this stored-value breakeven δ* = ΔS/(ΔS − ΔF) (§2 v4)"
+      >
+        {" "}
+        — preference trade, δ* <span className="num">{b.toFixed(2)}</span>
+      </span>
+    );
+  }
+  if (good === false) return <span> — bad at every preference</span>;
+  return null;
 }
 
 function LegBadge({ rec }: { rec: TradeRec }) {
@@ -207,7 +241,7 @@ function AssetColumn({ title, assets }: { title: string; assets: TradeAsset[] })
               {a.unvalued ? (
                 <span
                   className="ml-1.5 rounded border border-line bg-chip px-1 text-[9.5px] uppercase tracking-[0.08em] text-ink-muted"
-                  title="No KTC price on record — contributes 0 to ΔW (§11.7)"
+                  title="No KTC price on record — contributes 0 to both coordinates (§11.7)"
                 >
                   unvalued
                 </span>

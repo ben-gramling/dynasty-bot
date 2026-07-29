@@ -14,7 +14,7 @@ export interface ScoringMeta {
   week: number;
   draft_status: string;
   current_year: number;
-  /** Noise floor: trades below this ΔW are inside KTC's own error bars (§2). */
+  /** Noise floor: guaranteed floors below this are inside KTC's error bars (§2). */
   w_min: number;
   replacement: Record<string, number>;
   unvalued_rostered: string[];
@@ -124,12 +124,20 @@ export interface TradeGate {
 }
 
 /**
- * §2 v3.5 ledger split: `dS` is the change in the max-Σv starting lineup at raw
- * KTC (active + taxi; IR never counts), `dT` the change in STORED value —
- * non-starting players at face AND picks at tranche, one class — already
- * discounted by δ = 0.25, so `dS + dT === dW`. Both fields optional: board docs
- * written before v3.5 carry `{dS, dP}` (bench = 0, picks = 100%) and render
- * without the split rather than mislabelling it.
+ * §2 v4 the two objective coordinates: `dS` is the change in STARTER value —
+ * the max-Σv legal lineup at raw KTC over active + taxi (IR never counts) —
+ * and `dF` the change in TOTAL FACE owned (players + picks at tranche).
+ * Parameter-free; the verdict, floor, ceiling and breakeven all derive from
+ * them (ceiling = max(dS, dF)).
+ */
+export interface Coords {
+  dS: number;
+  dF: number;
+}
+
+/**
+ * Pre-v4 ledger split (v3.5 `{dS, dT}` — dT already δ-discounted). Kept ONLY
+ * so board docs written before v4 still render; never present on v4 docs.
  */
 export interface LedgerParts {
   dS?: number;
@@ -155,20 +163,38 @@ export interface TradeRec {
   give: TradeAsset[];
   get: TradeAsset[];
   /**
-   * §2 v3.5 wealth ledger, PER SIDE and NOT zero-sum: each number is that
-   * side's own `W = S + δ·T` delta (starters, plus all stored value at 25% of
-   * face), so a good leg can lift both. (Pre-v3.4 board docs carried
-   * `them = −me`; nothing here assumes it.)
+   * §2 v4 the two coordinates, PER SIDE against each side's own roster. `dF`
+   * is exactly zero-sum across the parties of a leg (face conservation);
+   * `dS` is not — deployment differs by roster, so a good leg can be
+   * objectively good for BOTH sides. Absent on pre-v4 docs (render `dW`
+   * instead).
    */
-  dW: { me: number; them: number };
-  /** Optional §2 v3.5 split of `dW` into starters (`dS`) and stored (`dT`). */
+  coords?: { me: Coords; them: Coords };
+  /** §2 v4 objective verdict per side: dS ≥ 0 AND dF ≥ 0, one strict. */
+  verdict?: { me: boolean; them: boolean };
+  /** §2 v4 guaranteed floor per side: min(dS, dF) — the worst case over
+   * every rational preference. Ceiling derives as max(dS, dF) from coords. */
+  floor?: { me: number; them: number };
+  /**
+   * §2 v4 breakeven δ* = dS / (dS − dF), per side — present ONLY on
+   * preference trades (verdict false, exactly one coordinate positive);
+   * null otherwise.
+   */
+  breakeven?: { me: number | null; them: number | null };
+  /** "isolation" on leg cards: this leg alone. Pairs carry combined coords. */
+  coords_basis?: string;
+  /**
+   * Pre-v4 wealth ledger (v3.4/v3.5 docs): per-side ΔW, its split, and its
+   * basis. Never present on v4 docs — kept optional so old boards render.
+   */
+  dW?: { me: number; them: number };
   dW_parts?: {
     me: LedgerParts;
     them: LedgerParts;
   };
-  /** "isolation" on leg cards: this leg alone. Pairs carry the combined ΔW. */
   dW_basis?: string;
-  /** §5 v3.3 leg return on inventory deployed: ΔW(me) ÷ Σv sent, percent. */
+  /** §5 v4 leg return on inventory deployed: isolation floor(me) ÷ Σv sent,
+   * percent (pre-v4 docs: ΔW-based — same field, same rendering). */
   return_pct: number | null;
   /**
    * §5 v3.4.1 leg MARKET return, percent: face ΔW(me) ÷ face Σv sent on this
@@ -217,9 +243,10 @@ export interface TradePair {
   buy: TradeRec;
   sell: TradeRec;
   /**
-   * §5 v3.3 TOTAL return on inventory deployed, percent: combined ΔW(me) ÷ Σv
-   * of every asset I send across both legs — the floor dial's filter key and
-   * the ONLY sort key (v3.4.1: the board always sorts by total return desc).
+   * §5 v4 TOTAL return on inventory deployed, percent: guaranteed floor
+   * min(dS, dF) combined ÷ Σv of every asset I send across both legs — the
+   * floor dial's filter key and the primary sort key (ceiling desc as
+   * tie-break; the board always ships in maximin order).
    */
   return_pct: number;
   /**
@@ -230,13 +257,23 @@ export interface TradePair {
   leg_returns?: { buy: number; sell: number };
   max_leg_return_pct?: number;
   /**
-   * §5 v3.4: my ledger delta with BOTH legs applied together. Not the sum of
-   * the legs' isolation ΔWs — they interact through the starting lineup.
+   * §2 v4 combined coordinates, my side, BOTH legs applied together: dS via
+   * one combined lineup solve (the legs interact), dF additive across legs.
+   * Absent on pre-v4 docs (render `dW_combined` instead).
    */
-  dW_combined: number;
-  /** Optional starters/stored split of `dW_combined` (v3.5 docs only). */
+  coords?: Coords;
+  /** §2 v4: true on every stored pair (hard constraint §11.8b(d)). */
+  verdict?: boolean;
+  /** §2 v4 the guaranteed gain: min(dS, dF) combined. */
+  floor?: number;
+  /** §2 v4 the best case: max(dS, dF) combined. */
+  ceiling?: number;
+  /**
+   * Pre-v4 combined wealth ledger (v3.4/v3.5 docs) — kept optional so old
+   * boards render; never present on v4 docs.
+   */
+  dW_combined?: number;
   dW_combined_parts?: LedgerParts;
-  /** The legs' isolation ΔWs added up — shown for contrast, never the score. */
   dW_legs_isolated?: number;
   /** Combined Δ(active roster) — sequencing context only. */
   net_roster: number;
@@ -294,12 +331,15 @@ export interface TruncationInfo {
   total_saturated: boolean;
 }
 
-/** Unpaired buy — never a recommendation (§5 v3.2); one-line blocker only. */
+/** Unpaired buy — never a recommendation (§5 v3.2); one-line blocker only.
+ * v4 docs carry `floor` (isolation guaranteed floor); pre-v4 docs carried
+ * `dW`. The web renders neither — desk data only. */
 export interface WatchEntry {
   counterparty: string;
   give: string[];
   get: string[];
-  dW: number;
+  floor?: number;
+  dW?: number;
   blocker: string;
 }
 

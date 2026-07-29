@@ -48,15 +48,18 @@ def test_top_level_shape(result):
     assert 0 <= len(tr["recommendations"]) <= 10  # secondary: building blocks
     assert isinstance(tr["watch"], list) and isinstance(tr["notes"], list)
     for pair in tr["pairs"]:
-        # v3.4 adds the ledger split of the combined ΔW (v3.5: starters +
-        # stored) and the legs' isolation sum; v3.4.1 adds each leg's market
-        # return and their max (the cap key)
+        # v4: combined coordinates + verdict/floor/ceiling replace the blended
+        # ledger fields; v3.4.1's leg market returns and their max (the cap
+        # key) stay
         assert set(pair) == {
             "id", "buy", "sell", "return_pct", "leg_returns", "max_leg_return_pct",
-            "dW_combined", "dW_combined_parts", "dW_legs_isolated", "net_roster",
+            "coords", "verdict", "floor", "ceiling", "net_roster",
             "net_players", "net_picks", "fit_summary", "sequencing", "overlaps",
         }
-        assert set(pair["dW_combined_parts"]) == {"dS", "dT"}
+        assert set(pair["coords"]) == {"dS", "dF"}
+        assert pair["verdict"] is True  # §11.8b(d): hard storage constraint
+        assert pair["floor"] == min(pair["coords"].values())
+        assert pair["ceiling"] == max(pair["coords"].values())
         assert set(pair["leg_returns"]) == {"buy", "sell"}
         assert pair["max_leg_return_pct"] == max(pair["leg_returns"].values())
         assert pair["net_players"] == 0 and pair["net_picks"] == 0  # §5 v3.2
@@ -66,25 +69,34 @@ def test_card_schema_matches_contract(result):
     """§5/§10 field census on every displayed trade card (pair legs + sell list)."""
     for card in board_legs(result["trade_recs"]):
         for key in (
-            "id", "action", "counterparty", "give", "get", "dW", "dW_parts",
-            "dW_basis", "market_return_pct", "gate", "posture", "holes",
-            "net_roster", "net_players", "net_picks", "standalone", "leg_type",
-            "sequencing", "ceiling", "taxi_stashed", "anchor_ask", "dip_notes",
-            "unvalued", "exclusive_with",
+            "id", "action", "counterparty", "give", "get", "coords", "verdict",
+            "floor", "breakeven", "coords_basis", "market_return_pct", "gate",
+            "posture", "holes", "net_roster", "net_players", "net_picks",
+            "standalone", "leg_type", "sequencing", "ceiling", "taxi_stashed",
+            "anchor_ask", "dip_notes", "unvalued", "exclusive_with",
         ):
             assert key in card, key
         assert card["action"] == "TRADE"
         assert card["leg_type"] in ("buy", "sell", "neutral")
-        assert set(card["dW"]) == {"me", "them"}
-        # §2 v3.5: each side's own ledger, split into the starter term and
-        # the δ-scaled STORED term (bench players AND picks) — they sum to ΔW
-        assert set(card["dW_parts"]) == {"me", "them"}
+        # §2 v4: each side's own coordinates, verdict, guaranteed floor, and
+        # (preference trades only) the derived breakeven δ*
+        for field in ("coords", "verdict", "floor", "breakeven"):
+            assert set(card[field]) == {"me", "them"}, field
         for side in ("me", "them"):
-            assert set(card["dW_parts"][side]) == {"dS", "dT"}
-            assert card["dW"][side] == round(
-                card["dW_parts"][side]["dS"] + card["dW_parts"][side]["dT"], 1
+            c = card["coords"][side]
+            assert set(c) == {"dS", "dF"}
+            assert card["floor"][side] == round(min(c["dS"], c["dF"]), 1)
+            assert card["verdict"][side] == (
+                c["dS"] >= 0 and c["dF"] >= 0 and (c["dS"] > 0 or c["dF"] > 0)
             )
-        assert card["dW_basis"] == "isolation"
+            b = card["breakeven"][side]
+            if card["verdict"][side]:
+                assert b is None  # verdicts never carry breakevens
+            if b is not None:
+                assert 0.0 < b < 1.0
+        # ΔF zero-sum across the parties of every leg (§11.1)
+        assert card["coords"]["me"]["dF"] == -card["coords"]["them"]["dF"]
+        assert card["coords_basis"] == "isolation"
         assert set(card["net_players"]) == {"me", "them"}  # §5 v3.2 count deltas
         assert set(card["net_picks"]) == {"me", "them"}
         assert isinstance(card["standalone"], bool)
@@ -112,6 +124,8 @@ def test_notes_mention_execution_protocol(result):
     assert any("fire-sale" in n for n in notes)
     assert any("0 players / 0 picks" in n for n in notes)  # §5 pair unit
     assert any("two dials" in n for n in notes)  # §5 v3.4.1 floor + leg cap
+    assert any("two objective coordinates" in n for n in notes)  # §2 v4
+    assert any("objectively good" in n for n in notes)  # §11.8b(d) verdict
     assert any("stratified storage" in n for n in notes)  # v3.4.1 per-bucket quota
     assert any("posture is a hard engine constraint" in n for n in notes)
     assert any("saturated" in n for n in notes)  # honest-counter semantics

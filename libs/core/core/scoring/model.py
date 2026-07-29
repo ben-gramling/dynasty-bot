@@ -1,7 +1,7 @@
 """League/team state built from a Snapshot: crosswalk join, replacement lines,
 pick pricing, lineups (strength map + waiver ΔL only), posture, and the taxi/roster
-mechanics (§8) that gate trade legality. Nothing here feeds the v3.5 trade
-ledger except raw KTC values: the `solve()` lineup built here is the league-tab /
+mechanics (§8) that gate trade legality. Nothing here feeds the v4 trade
+coordinates except raw KTC values: the `solve()` lineup built here is the league-tab /
 waiver model (q, u, replacement) and never enters the trade path (§11.2), which
 reads `lineup.starter_sum` over `act + taxi` instead."""
 
