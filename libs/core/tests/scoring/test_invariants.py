@@ -267,23 +267,27 @@ RAW_STARTER_API = {"EMPTY4", "StarterIndex", "pos_columns", "starter_sum"}
 
 
 def test_trade_path_imports_only_the_raw_starter_solve():
-    """§11.2 AST-level: `trades.py` may import the RAW starter-sum solve and its
-    incremental evaluator from `lineup` — and nothing else. `solve`,
+    """§11.2 AST-level: the whole v5 trade path — `trades.py` plus the finder
+    and the constraint compiler — may import the RAW starter-sum solve and its
+    incremental evaluator from `lineup`, and nothing else. `solve`,
     `removal_dl`, `diff_terms`, `Lineup` (the q / u / replacement machinery)
     must never appear. `posture.py` still imports nothing from the package."""
-    tree = ast.parse((SCORING / "trades.py").read_text())
-    imported: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            assert not any("lineup" in a.name for a in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            if "lineup" in (node.module or ""):
-                imported.update(a.name for a in node.names)
-            else:
-                assert not any("lineup" in a.name for a in node.names)
-    assert imported == RAW_STARTER_API, imported
     banned = {"solve", "removal_dl", "diff_terms", "Lineup", "GROUPS", "GROUP_N"}
-    assert not (imported & banned)
+    for fname in ("trades.py", "finder.py", "constraints.py"):
+        tree = ast.parse((SCORING / fname).read_text())
+        imported: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                assert not any("lineup" in a.name for a in node.names), fname
+            elif isinstance(node, ast.ImportFrom):
+                if "lineup" in (node.module or ""):
+                    imported.update(a.name for a in node.names)
+                else:
+                    assert not any("lineup" in a.name for a in node.names), fname
+        assert imported <= RAW_STARTER_API, (fname, imported)
+        if fname == "trades.py":
+            assert imported == RAW_STARTER_API, imported
+        assert not (imported & banned), fname
 
     tree = ast.parse((SCORING / "posture.py").read_text())
     for node in ast.walk(tree):
@@ -468,7 +472,8 @@ def test_pairs_v4_contract(result, params, league):
     return_pct is the guaranteed floor over face Σv sent. Pairs are unique by
     their asset multisets."""
     pairs = result["trade_recs"]["pairs"]
-    assert 0 < len(pairs) <= params.pairs_per_band * len(params.return_presets)
+    # v5 union storage: ≤ 3 heaps × quota × the five favor buckets
+    assert 0 < len(pairs) <= 3 * params.pairs_per_band * (len(params.favor_band_edges) + 1)
     keys = lambda c: {a["key"] for a in c["give"] + c["get"]}
     seen_multisets = set()
     for pair in pairs:
@@ -504,18 +509,20 @@ def test_pairs_v4_contract(result, params, league):
         assert got["floor"] == pair["floor"]
         assert got["ceiling"] == pair["ceiling"]
         assert got["return_pct"] == pair["return_pct"]
-        assert got["sent"] == sum(
+        assert got["sent"] == pair["sent"] == sum(
             a["v"] for leg in (pair["buy"], pair["sell"]) for a in leg["give"]
         )
-        # §5 v3.4.1: the per-leg MARKET returns are pure face arithmetic on the
-        # embedded cards — face ΔF(me) ÷ face Σv sent on that leg
+        # §4a v5: the pair's favor figures are exactly its legs' card favors
+        # (each derived from the gate's own adjusted totals, §11.12(a)) and
+        # min() of them; the informational market_return_pct stays pure face
+        # arithmetic on the embedded cards
         for tag in ("buy", "sell"):
             leg = pair[tag]
             sent = sum(a["v"] for a in leg["give"])
             face_df = sum(a["v"] for a in leg["get"]) - sent
-            assert pair["leg_returns"][tag] == round(100.0 * face_df / sent, 2)
-            assert leg["market_return_pct"] == pair["leg_returns"][tag]
-        assert pair["max_leg_return_pct"] == max(pair["leg_returns"].values())
+            assert leg["market_return_pct"] == round(100.0 * face_df / sent, 2)
+            assert pair["favor"][tag] == leg["favor"] == leg["gate"]["favor"]
+        assert pair["favor"]["min"] == min(pair["favor"]["buy"], pair["favor"]["sell"])
 
 
 def test_pair_coords_are_combined_not_the_leg_sum(result, league):
@@ -560,24 +567,30 @@ def test_pair_coords_are_combined_not_the_leg_sum(result, league):
 
 
 def test_verdict_false_pair_never_stored_even_if_offered():
-    """§11.8b(d) at the storage layer: the bucket sink hard-rejects any pair
-    whose guaranteed floor is not strictly positive — even if a walk offered
-    it, it is neither stored nor counted. (Floor > 0 ⟺ both coordinates > 0
-    ⟺ verdict with both strict; the stored universe's 1% floor preset would
-    also exclude it, but the guard must not depend on the presets.)"""
+    """§11.8b(d)/§11.12(g) at the storage layer: the bucket sink hard-rejects
+    any pair whose guaranteed floor is not strictly positive — even if a walk
+    offered it, it is neither stored nor counted. (Floor > 0 ⟺ both
+    coordinates > 0 ⟺ verdict with both strict; the stored universe's 1% floor
+    preset would also exclude it, but the guard must not depend on the
+    presets.)"""
     legs = [
-        # minimal fake leg tuples: only L_SENT (2) and L_MKT (12) are read
-        (0.0, 0.0, 100.0, 1, -1, 0, 0, None, None, None, None, 0.0, 0.01),
-        (0.0, 0.0, 100.0, -1, 1, 1, 0, None, None, None, None, 0.0, 0.01),
+        # minimal fake leg tuples: only L_SENT (2) and L_FAVOR (12) are read
+        (0.0, 0.0, 100.0, 1, -1, 0, 0, None, None, None, None, 0.0, -2.5),
+        (0.0, 0.0, 100.0, -1, 1, 1, 0, None, None, None, None, 0.0, 1.5),
     ]
-    buckets = tr.leg_buckets((2.5, 5.0, 10.0, 20.0))
+    buckets = tr.favor_buckets((-10.0, -5.0, 0.0, 5.0))
     tbands = tr.return_bands((1.0, 2.5, 5.0, 10.0, 20.0))
     sink = tr._BucketSink(buckets, tbands, quota=10, legs=legs)
-    sink.append((-0.05, 10.0, -0.05, 0, 1))  # floor-negative: verdict false
-    sink.append((0.0, 500.0, 0.0, 0, 1))  # floor exactly 0: not objectively good
-    assert sum(sink.counts) == 0 and all(not h for h in sink.heaps)
-    sink.append((0.05, 10.0, 0.05, 0, 1))  # floor-positive: stored and counted
+    sink.append((-0.05, 10.0, -0.05, 0, 1, -5.0, 10.0))  # floor-negative: verdict false
+    sink.append((0.0, 500.0, 0.0, 0, 1, 0.0, 500.0))  # floor exactly 0: not objectively good
+    assert sum(sink.counts) == 0
+    assert all(not h for hs in (sink.h_ret, sink.h_ds, sink.h_df) for h in hs)
+    sink.append((0.05, 10.0, 0.05, 0, 1, 5.0, 10.0))  # floor-positive: stored and counted
     assert sum(sink.counts) == 1
+    # bucketed on favor min = min(−2.5, 1.5) = −2.5 → the [−5, 0) bucket
+    assert sink.counts[2] == 1
+    # …and the stored union carries it once, despite living in three heaps
+    assert sink.bucket_pairs(2) == [(0.05, 10.0, 0, 1)]
 
 
 def test_buy_legs_are_allowed_to_be_floor_negative_alone(result, pool, league):

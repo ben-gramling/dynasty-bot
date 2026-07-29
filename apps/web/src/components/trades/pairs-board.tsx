@@ -7,69 +7,106 @@ import { PairCard } from "./pair-card";
 
 const RENDER_CAP = 50;
 const DEFAULT_MIN = 5;
-const LEG_CAP_PRESETS = [2.5, 5, 10, 20];
+// Fallbacks for docs that predate the v5 preset fields (§9).
+const FAVOR_PRESETS = [-10, -5, 0, 2.5, 5];
+const DELTA_PRESETS = [0, 0.25, 0.5, 0.75, 1];
+
+const MINUS = "−";
+
+/** Favor preset label in KTC variance units: "−10", "0", "+2.5". */
+function fmtFavor(f: number): string {
+  const s = String(f).replace("-", MINUS);
+  return f > 0 ? `+${s}` : s;
+}
 
 /**
- * §5 two-dial filter over the STORED pair list: a floor on TOTAL pair return
- * (v4: guaranteed floor over face sent; presets 1 / 2.5 / 5 / 10 / 20,
- * default 5) and a cap on EACH LEG's market return (presets 2.5 / 5 / 10 /
- * 20 / "No cap", default no cap). The dials are independent dimensions, so
- * no combination is disabled — though under v4 the guaranteed total return
- * never exceeds the max leg market return (floor ≤ ΔF = Σ leg skims), so
- * tight caps mathematically thin out high floors. Filtering is client-side
- * (return_pct ≥ min AND max_leg_return_pct < cap); the list always sorts
- * maximin — floor-based return desc, ceiling as tie-break (§2 v4). The
- * inventory line reads the doc's per-bucket `by_total` grid — verified
- * floors rendered "≥ N" (v3.4: every count is one, by construction — see the
- * note under the inventory line).
+ * §4a/§5 v5 view score, percent: return(δ) = (ΔS + δ·(ΔF − ΔS)) ÷ Σ face v
+ * sent — re-scored client-side from each stored pair's exact coordinates
+ * (never recomputed from rosters). δ = null is the robust view: the stored
+ * guaranteed-floor return (§2 v4 maximin). Pre-v5 docs lack coords/sent and
+ * always serve the robust figure. NOTE ΔW(δ) is bounded below by the floor
+ * for every δ, so return(δ) ≥ the robust return on every pair — a δ view can
+ * only widen the list past a given floor, never shrink it.
+ */
+function returnAt(p: TradePair, delta: number | null): number {
+  if (delta !== null && p.coords && typeof p.sent === "number" && p.sent > 0) {
+    const w = p.coords.dS + delta * (p.coords.dF - p.coords.dS);
+    return (100 * w) / p.sent;
+  }
+  return p.return_pct;
+}
+
+/**
+ * §5 v5: the finder's THREE dials over the STORED pair list — a δ SELECTOR
+ * (robust default + presets 0/0.25/0.5/0.75/1; return(δ) re-scored instantly
+ * from stored coordinates, a labeled preference VIEW — the objective verdict
+ * on every card never changes), a floor on TOTAL return(δ) (robust mode =
+ * guaranteed-floor return; presets 1/2.5/5/10/20%, default 5), and a
+ * counterparty-favorability FLOOR on the pair's min(f_buy, f_sell) (presets
+ * −10/−5/0/+2.5/+5/no floor, KTC's own calculator variance units — ±5 is
+ * literally the calculator's FAIR window; replaces the v3.4.1 leg cap, whose
+ * raw skim diverges from the calculator by up to 14 pts). Filtering and
+ * sorting are client-side and O(stored): return(δ) desc, ceiling tie-break.
+ * The inventory line reads the doc's favor-bucket × robust-return `by_total`
+ * grid — verified floors rendered "≥ N"; a favor floor between bucket edges
+ * (+2.5) counts only fully-covered buckets and a δ view counts on robust
+ * return (a floor either way, see the note under the line).
  */
 export function PairsBoard({
   pairs,
   presets,
+  favorPresets,
+  deltaPresets,
   bands,
   computedAt,
 }: {
   pairs: TradePair[];
   presets: number[];
+  favorPresets?: number[] | null;
+  deltaPresets?: number[] | null;
   bands: BandInfo[];
   computedAt: string;
 }) {
   const [min, setMin] = useState<number>(
     presets.includes(DEFAULT_MIN) ? DEFAULT_MIN : presets[0],
   );
-  const [cap, setCap] = useState<number | null>(null); // null = no leg cap
+  const [delta, setDelta] = useState<number | null>(null); // null = robust
+  const [favorMin, setFavorMin] = useState<number | null>(null); // null = no floor
 
+  const favorList = favorPresets?.length ? favorPresets : FAVOR_PRESETS;
+  const deltaList = deltaPresets?.length ? deltaPresets : DELTA_PRESETS;
   const bucketList = bands ?? [];
-  const capOptions: (number | null)[] = [
-    ...(bucketList.length
-      ? bucketList.filter((b) => b.hi !== null).map((b) => b.hi as number)
-      : LEG_CAP_PRESETS),
-    null,
-  ];
 
   const fmtPct = (p: number): string => `${p}%`;
-  const filterLabel =
-    cap === null ? `total ${min}%+, no leg cap` : `total ${min}%+, legs < ${cap}%`;
+  const filterLabel = `total ${min}%+ ${
+    delta === null ? "robust" : `at δ=${delta}`
+  }, ${favorMin === null ? "no favor floor" : `favor ≥ ${fmtFavor(favorMin)}`}`;
 
-  const filtered = [...pairs]
-    .filter(
-      (p) =>
-        p.return_pct >= min &&
-        (cap === null || (p.max_leg_return_pct ?? Infinity) < cap),
-    )
-    // ALWAYS maximin (§2 v4): floor-based total return desc, ceiling tie-break
-    .sort(
-      (a, b) =>
-        b.return_pct - a.return_pct || (b.ceiling ?? 0) - (a.ceiling ?? 0),
-    );
+  const passesFavor = (p: TradePair): boolean =>
+    favorMin === null || (p.favor?.min ?? -Infinity) >= favorMin;
+
+  const scored = pairs.map((p) => ({ p, r: returnAt(p, delta) }));
+  const filtered = scored
+    .filter(({ p, r }) => r >= min && passesFavor(p))
+    // return(δ) desc, ceiling tie-break (§5 v5); robust δ = the shipped
+    // maximin order (§2 v4)
+    .sort((a, b) => b.r - a.r || (b.p.ceiling ?? 0) - (a.p.ceiling ?? 0));
   const shown = filtered.slice(0, RENDER_CAP);
 
-  // inventory from the bucket × total-band grid: a cap preset selects the
-  // buckets with hi ≤ cap; the floor selects the grid columns with lo ≥ min
-  // (floor presets coincide with the total-band los)
+  // inventory from the favor-bucket × robust-return grid: the favor floor
+  // selects the buckets with lo ≥ floor (a floor strictly inside a bucket —
+  // the +2.5 preset — leaves that bucket out, so the count stays a floor);
+  // the return floor selects the grid columns with lo ≥ min (floor presets
+  // coincide with the robust band los). In a δ view the same columns are a
+  // floor for return(δ) ≥ min, since return(δ) ≥ robust return on every pair.
   const selected = bucketList.filter(
-    (b) => cap === null || (b.hi !== null && b.hi <= cap),
+    (b) => favorMin === null || (b.lo !== null && b.lo >= favorMin),
   );
+  const partialBucket =
+    favorMin !== null &&
+    bucketList.some(
+      (b) => (b.lo ?? -Infinity) < favorMin && (b.hi === null || favorMin < b.hi),
+    );
   const minIdx = presets.findIndex((p) => p >= min);
   const invCount = selected.reduce(
     (n, b) =>
@@ -79,19 +116,64 @@ export function PairsBoard({
         : b.count),
     0,
   );
-  const invSat = selected.some((b) => b.saturated);
+  const invSat =
+    selected.some((b) => b.saturated) || partialBucket || delta !== null;
 
   // empty-state honesty: how many stored pairs each loosening would expose
-  const withoutCap = pairs.filter((p) => p.return_pct >= min).length;
-  const withoutFloor = pairs.filter(
-    (p) => cap === null || (p.max_leg_return_pct ?? Infinity) < cap,
-  ).length;
+  const withoutFavor = scored.filter(({ r }) => r >= min).length;
+  const withoutFloor = pairs.filter(passesFavor).length;
 
   return (
     <div>
       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
         <div className="flex items-center gap-1.5">
-          <span className="text-[11.5px] text-ink-muted">Min total</span>
+          <span
+            className="text-[11.5px] text-ink-muted"
+            title="δ is a stored-value preference (win-now 0 ↔ win-later 1), never a score parameter: return(δ) = (ΔS + δ·(ΔF − ΔS)) ÷ Σv sent, re-scored instantly from each stored pair's exact coordinates. A labeled preference VIEW — robust (default) is the v4 guaranteed-floor return, good at every δ; the objective verdict on every card is unchanged (§4a)."
+          >
+            δ view
+          </span>
+          <div
+            role="group"
+            aria-label="Delta view"
+            className="inline-flex overflow-hidden rounded-md border border-line"
+          >
+            <button
+              type="button"
+              aria-pressed={delta === null}
+              onClick={() => setDelta(null)}
+              className={`px-2.5 py-1 text-[12px] transition-colors ${
+                delta === null
+                  ? "bg-sky-deep font-medium text-white"
+                  : "bg-surface text-ink-muted hover:bg-chip"
+              }`}
+            >
+              robust
+            </button>
+            {deltaList.map((d) => (
+              <button
+                key={d}
+                type="button"
+                aria-pressed={d === delta}
+                onClick={() => setDelta(d)}
+                className={`num px-2.5 py-1 text-[12px] transition-colors ${
+                  d === delta
+                    ? "bg-sky-deep font-medium text-white"
+                    : "bg-surface text-ink-muted hover:bg-chip"
+                }`}
+              >
+                {String(d)}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span
+            className="text-[11.5px] text-ink-muted"
+            title="Floor on TOTAL pair return at the selected δ. Robust (default): the guaranteed-floor return — min(ΔS, ΔF) combined over Σv you send across both legs (§2 v4)."
+          >
+            Min total
+          </span>
           <div
             role="group"
             aria-label="Minimum return"
@@ -117,30 +199,30 @@ export function PairsBoard({
         <div className="flex items-center gap-1.5">
           <span
             className="text-[11.5px] text-ink-muted"
-            title="v3.4.1: caps EACH leg's market return — the face skim that leg's counterparty sees. Independent of the total floor: a low cap with a high floor is the balanced-legs query."
+            title="Counterparty favorability floor (§4a v5), in KTC's own calculator VARIANCE UNITS: per leg, favor = the signed skew toward that counterparty, from the SAME adjusted totals as the fairness gate — ±5 means their calculator literally says FAIR at default variance, favor > 0 skews to them. The floor applies to the pair's min(f_buy, f_sell), the least-happy counterparty; it replaces the v3.4.1 per-leg market-return cap (the raw skim diverges from the calculator by up to 14 pts). The §3 band stays the hard outer bound — favor selects within it."
           >
-            Leg cap
+            Favor floor
           </span>
           <div
             role="group"
-            aria-label="Max per-leg return"
+            aria-label="Favorability floor"
             className="inline-flex overflow-hidden rounded-md border border-line"
           >
-            {capOptions.map((c) => {
-              const active = c === cap;
+            {[...favorList, null].map((f) => {
+              const active = f === favorMin;
               return (
                 <button
-                  key={c === null ? "nocap" : c}
+                  key={f === null ? "nofloor" : f}
                   type="button"
                   aria-pressed={active}
-                  onClick={() => setCap(c)}
+                  onClick={() => setFavorMin(f)}
                   className={`num px-2.5 py-1 text-[12px] transition-colors ${
                     active
                       ? "bg-sky-deep font-medium text-white"
                       : "bg-surface text-ink-muted hover:bg-chip"
                   }`}
                 >
-                  {c === null ? "No cap" : fmtPct(c)}
+                  {f === null ? "No floor" : fmtFavor(f)}
                 </button>
               );
             })}
@@ -149,19 +231,31 @@ export function PairsBoard({
         <p className="num text-[11.5px] text-ink-muted">
           {filtered.length.toLocaleString("en-US")} stored shown ({filterLabel})
           · inventory: {invSat ? "≥ " : ""}
-          {invCount.toLocaleString("en-US")} legal · sorted by guaranteed
-          return · computed {fmtDateTime(computedAt)}
+          {invCount.toLocaleString("en-US")} legal ·{" "}
+          {delta === null
+            ? "sorted by guaranteed return"
+            : `sorted by return(δ=${delta})`}{" "}
+          · computed {fmtDateTime(computedAt)}
         </p>
       </div>
 
+      {delta !== null ? (
+        <p className="mt-2 text-[11.5px] font-medium text-ink">
+          preference view at δ={delta} — return(δ) is re-scored from each
+          stored pair&apos;s exact coordinates; the §2 objective verdict and
+          the guaranteed floor on every card are unchanged (§4a).
+        </p>
+      ) : null}
+
       {invSat ? (
         <p className="mt-2 text-[11.5px] text-ink-muted">
-          Inventory marked ≥ is a verified floor — the legal pair space behind
-          this filter runs deeper than the collection budget, and the walk
-          crosses legs by their isolation ΔW while pairs are priced by the
-          exact combined ledger, so completeness above a cutoff cannot be
-          certified (§5 v3.4). Only each max-leg bucket&apos;s stored top (by
-          total return) is listed.
+          Inventory marked ≥ is a verified floor — the collection walk crosses
+          legs by their isolation floors while pairs are priced by the exact
+          combined coordinates, so completeness above a cutoff cannot be
+          certified (§5); a favor floor between bucket edges (+2.5) counts
+          only fully-covered favor buckets, and a δ view counts on robust
+          return (return(δ) is never below it). Only each favor bucket&apos;s
+          stored union (tops by robust return, ΔS, ΔF) is listed.
         </p>
       ) : null}
 
@@ -174,8 +268,8 @@ export function PairsBoard({
             </p>
           ) : null}
           <div className="mt-3 space-y-3">
-            {shown.map((pair) => (
-              <PairCard key={pair.id} pair={pair} />
+            {shown.map(({ p }) => (
+              <PairCard key={p.id} pair={p} />
             ))}
           </div>
         </>
@@ -183,10 +277,11 @@ export function PairsBoard({
         <div className="card mt-3">
           <p className="text-ink-muted">
             No stored pairs with {filterLabel} today —{" "}
-            {withoutCap > 0 || withoutFloor > 0 ? (
+            {withoutFavor > 0 || withoutFloor > 0 ? (
               <>
-                removing the leg cap exposes {withoutCap.toLocaleString("en-US")}{" "}
-                stored, dropping the floor to {presets[0]}% exposes{" "}
+                removing the favor floor exposes{" "}
+                {withoutFavor.toLocaleString("en-US")} stored, dropping the
+                return floor to {presets[0]}% exposes{" "}
                 {withoutFloor.toLocaleString("en-US")}. Loosen a dial, or hold.
               </>
             ) : (

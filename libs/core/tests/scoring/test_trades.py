@@ -105,6 +105,10 @@ def test_worked_example_1_sell_leg(league):
     assert g["band_ok"] is False
     assert g["raw_ratio"] == 1.17 and g["ratio_ok"]
     assert g["verdict"] == "FAIL: outside fairness band (gap 36.8% > band)"
+    # §4a v5 favor from the SAME adjusted totals: 100·(7,799−12,339)/20,138 =
+    # −22.54 → −22.5 in the calculator's own 1-decimal quantization; negative
+    # = skewed to ME (they'd never take it, which is also why the band fails)
+    assert card["favor"] == g["favor"] == -22.5
     assert card["leg_type"] == "sell"
     assert card["net_roster"] == {"me": -2, "them": 2}
     # §5 v3.2 count deltas: 2 players out, 2 picks in — a building block, not
@@ -296,14 +300,19 @@ def test_stored_conversion_floor_zero(league):
         assert min(d_s, d_f) == min(0.0, pick_v - bench.v)
 
 
-def test_hunter_for_a_2027_second_never_enters_the_board(league, result):
+def test_hunter_for_a_2027_second_conversion_earns_no_floor(league, result):
     """§11.8b(b) pinned on the COMMITTED fixtures. Travis Hunter (4,061) is on
     my bench; selling him for ronakpatel32's 2027 2nd (4,139) is
     (ΔS 0, ΔF +78) — verdict true but floor 0, floor-based return 0.00% —
-    below the 1% stored universe, so the conversion NEVER enters the stored
-    board. v3.4 paid the pick's entire face (+4,139) for this same trade; the
-    exploit stays dead parameter-free. The gate passed then and passes now, so
-    the seam really was reachable."""
+    below the 1% stored universe, so the NAKED conversion never earns a board
+    slot. v3.4 paid the pick's entire face (+4,139) for this same trade; the
+    exploit stays dead parameter-free. v5's per-bucket dF-top union may
+    legitimately store a PAIR that carries this leg (the δ→1 view wants
+    face-adding inventory, §5), but every such pair is verdict-true with a
+    ≥ 1% robust floor earned by its PARTNER: mathematically the conversion
+    moves the pair's guaranteed floor by AT MOST its own +78 face edge —
+    never the pick's 4,139 face — because combined ΔS ≤ the partner's ΔS
+    (Hunter only back-fills) while combined ΔF = partner ΔF + 78."""
     mine = tr.team_assets(league, league.teams[league.me])
     ron = tr.team_assets(league, league.teams["ronakpatel32"])
     hunter, second = mine["Travis Hunter"], ron["2027 R2 (own)"]
@@ -318,12 +327,16 @@ def test_hunter_for_a_2027_second_never_enters_the_board(league, result):
     assert card["return_pct"] == 0.0  # floor-based: below every preset
     # what v3.4 would have paid for the same trade: ΔS + the pick's full face
     assert card["coords"]["me"]["dS"] + second.v == 4139.0
-    # and the conversion leg appears in NO stored pair on the fixture board
+    # any stored pair carrying the conversion leg owes its floor to the partner
     conv = ({hunter.key}, {second.key})
     for pair in result["trade_recs"]["pairs"]:
-        for leg in (pair["buy"], pair["sell"]):
+        for tag, other in (("buy", "sell"), ("sell", "buy")):
+            leg = pair[tag]
             legk = ({a["key"] for a in leg["give"]}, {a["key"] for a in leg["get"]})
-            assert legk != conv
+            if legk != conv:
+                continue
+            assert pair["verdict"] is True and pair["return_pct"] >= 1.0
+            assert pair["floor"] <= pair[other]["floor"]["me"] + 78.0 + 1e-6, pair["id"]
 
 
 def test_interval_endpoints_are_the_delta_extremes(league):
@@ -356,6 +369,37 @@ def test_interval_endpoints_are_the_delta_extremes(league):
         hi = max(d_s_direct, d_f_direct)
         for delta in (0.0, 0.25, 0.5, 0.75, 1.0):
             assert lo - 1e-9 <= _blend(d_s_direct, d_f_direct, delta) <= hi + 1e-9
+
+
+def test_favor_is_the_gates_own_metric_11_12a(result, league):
+    """§11.12(a): `favor` derives from the SAME adjusted totals as the gate —
+    one source of truth — and `|f| ≤ 5 ⟺ check_equality(adjT1, adjT2, 5)`,
+    the port's own FAIR test at the calculator's default variance. Verified
+    over every displayed board leg (fresh recompute, no stored figures) and a
+    systematic sample of raw package crossings including |f| near the 5.0
+    boundary."""
+    for card in board_legs(result["trade_recs"])[:25]:
+        give, get = tr.card_packages(league, card)
+        a1, a2 = tr.adjusted_gap(league, give, get)
+        f = tr.favor_of(a1, a2)
+        assert card["favor"] == round(f, 2), card["id"]
+        assert (abs(f) <= 5.0) == ka.check_equality(a1, a2, 5), card["id"]
+        # sign convention: + = counterparty wins = they RECEIVE more adjusted
+        assert (f > 0) == (a1 > a2) or f == 0.0
+    # raw-crossing sample: the iff must hold everywhere, not just on winners
+    me_t = league.teams[league.me]
+    my_pkgs = tr._packages(league, tr.give_list(league, me_t))[::151]
+    opp_pkgs = tr._packages(league, tr.give_list(league, league.teams["jaketoppen"]))[::67]
+    assert my_pkgs and opp_pkgs
+    near_boundary = 0
+    for g in my_pkgs:
+        for t in opp_pkgs:
+            a1, a2 = tr.adjusted_gap(league, g, t)
+            f = tr.favor_of(a1, a2)
+            assert (abs(f) <= 5.0) == ka.check_equality(a1, a2, 5), (g.keys, t.keys)
+            if 4.0 <= abs(f) <= 6.0:
+                near_boundary += 1
+    assert near_boundary > 0  # the boundary region is genuinely exercised
 
 
 def test_fleece_never_on_board(result):
@@ -476,10 +520,12 @@ def test_trade_board_disabled_after_deadline(snapshot, params):
     assert board["disabled"] is True
     assert board["recommendations"] == [] and board["pairs"] == [] and board["watch"] == []
     assert board["truncated"] is None
+    assert board["favor_presets"] == [-10.0, -5.0, 0.0, 2.5, 5.0]
+    assert board["delta_presets"] == [0.0, 0.25, 0.5, 0.75, 1.0]
     assert [e["count"] for e in board["counts_by_threshold"]] == [0] * len(board["presets"])
     assert [(b["stored"], b["count"], b["saturated"]) for b in board["bands"]] == [
         (0, 0, False)
-    ] * len(board["presets"])
+    ] * 5  # the five favor buckets (v5)
 
 
 def test_below_noise_floor_note(league):
@@ -670,57 +716,54 @@ def test_posture_is_a_hard_pair_pool_constraint(league, pool, result):
 
 
 def test_board_pairs_verdict_true_and_honest_on_fixture(result, params):
-    """§5 v4 on the committed fixture. The verdict constraint reshapes the
-    board: 261 pairs survive (v3.5 stored 500) — the two low max-leg buckets
-    are EMPTY and [5,10) holds only 61, because the v4 identity
-    floor ≤ ΔF = Σ leg skims caps the guaranteed total return at the max leg
-    market return: balanced-legs pairs cannot carry a large GUARANTEED total
-    any more. Every count is a saturated verified floor (the walk orders legs
-    by their isolation floors while pairs are priced by the exact combined
-    coordinates, so no cutoff can certify completeness)."""
+    """§5 v5 / §11.12(g) on the committed fixture. Storage is stratified by
+    FAVOR bucket (pair favor = min(f_buy, f_sell)): 886 pairs survive as the
+    per-bucket unions of tops by robust return / dS / dF. The two HIGH-favor
+    buckets ([0,5) and [5,∞)) are EMPTY — a pair where BOTH counterparties'
+    calculators read the leg as fair-or-better while I still keep a ≥1%
+    guaranteed floor return did not surface within the walk budget: my
+    guaranteed floor is bounded by my raw face gain, which is the negation of
+    the counterparties' — edge on my side of the calculator's metric is where
+    stored-universe pairs live. Every count is a saturated verified floor
+    (the walk orders legs by their isolation floors while pairs are priced by
+    the exact combined coordinates, so no cutoff can certify completeness)."""
     doc = result["trade_recs"]
     bands = doc["bands"]
     assert doc["presets"] == [1.0, 2.5, 5.0, 10.0, 20.0]
-    assert doc["leg_cap_presets"] == [2.5, 5.0, 10.0, 20.0]
+    assert doc["favor_presets"] == [-10.0, -5.0, 0.0, 2.5, 5.0]
     # fixture pin: the global top pair is a genuine both-coordinates gain —
-    # guaranteed +1,783, at best +1,895
+    # guaranteed +1,783, at best +1,895 — and both legs sit outside their
+    # counterparties' FAIR window in MY favor (the geometry above)
     top = doc["pairs"][0]
     assert top["return_pct"] == 19.39
     assert top["coords"] == {"dS": 1783.0, "dF": 1895.0}
     assert (top["floor"], top["ceiling"]) == (1783.0, 1895.0)
     assert top["verdict"] is True
-    assert top["leg_returns"] == {"buy": 34.17, "sell": -8.06}
-    assert top["max_leg_return_pct"] == 34.17
-    assert len(doc["pairs"]) == sum(b["stored"] for b in bands) == 261
-    assert [b["stored"] for b in bands] == [0, 0, 61, 100, 100]
+    assert top["favor"] == {"buy": -8.6, "sell": -10.8, "min": -10.8}
+    assert top["sent"] == 9195.0
+    assert len(doc["pairs"]) == sum(b["stored"] for b in bands) == 886
+    assert [b["stored"] for b in bands] == [300, 300, 286, 0, 0]
     for b in bands:
-        assert b["stored"] <= params.pairs_per_band == 100
+        # v5 union storage: at most 3 top-quota heaps' worth per bucket
+        assert b["stored"] <= 3 * params.pairs_per_band
         assert b["count"] >= b["stored"]
         assert b["saturated"] is True  # verified floors throughout (v3.4)
         assert sum(b["by_total"]) == b["count"]  # the grid partitions the bucket
-    # §11.8b(d): EVERY stored pair is verdict-true, both coordinates strictly
-    # positive, interval consistent, and the v4 identity holds: the
-    # floor-based total return never exceeds the max leg market return
+    # §11.8b(d)/§11.12(g): EVERY stored pair is verdict-true, both coordinates
+    # strictly positive, interval consistent, favor consistent with its cards
     for pair in doc["pairs"]:
         assert pair["verdict"] is True
         assert pair["coords"]["dS"] > 0 and pair["coords"]["dF"] > 0
         assert pair["floor"] == min(pair["coords"]["dS"], pair["coords"]["dF"])
         assert pair["ceiling"] == max(pair["coords"]["dS"], pair["coords"]["dF"])
-        assert pair["return_pct"] <= pair["max_leg_return_pct"] + 0.01
+        assert pair["favor"]["buy"] == pair["buy"]["favor"]
+        assert pair["favor"]["sell"] == pair["sell"]["favor"]
+        assert pair["favor"]["min"] == min(pair["favor"]["buy"], pair["favor"]["sell"])
         assert tr.pair_count_deltas(pair["buy"], pair["sell"]) == (0, 0)
         assert pair["return_pct"] >= doc["presets"][0]
-    # the flagship balanced-legs query (total ≥ 5%, legs < 2.5%) is now
-    # STRUCTURALLY empty — a guaranteed 5% total needs a ≥5% face skim
-    # somewhere: min(ΔS, ΔF) ≥ 5%·sent forces ΔF ≥ 5%·sent, and ΔF is the
-    # Σ of the legs' skims, each < 2.5% of its sent under the cap
-    flagship = [
-        p for p in doc["pairs"]
-        if p["return_pct"] >= 5.0 and p["max_leg_return_pct"] < 2.5
-    ]
-    assert flagship == []
     t = doc["truncated"]
-    assert t is not None and t["stored"] == 261
-    assert t["total"] >= 261 and t["total_saturated"] is True
+    assert t is not None and t["stored"] == 886
+    assert t["total"] >= 886 and t["total_saturated"] is True
     for card in doc["recommendations"]:
         assert card["leg_type"] in ("sell", "neutral")
         if card["standalone"]:
@@ -733,12 +776,13 @@ def test_board_pairs_verdict_true_and_honest_on_fixture(result, params):
         assert "players" in w["blocker"] and "picks" in w["blocker"]
 
 
-def test_return_bands_and_bucket_math():
-    """v3.4.1 filter math pinned: total-return bands derive from the floor
-    presets as half-open [lo, hi) intervals (open top); max-leg BUCKETS derive
-    from the cap presets as half-open intervals open at BOTH ends — buy legs
-    are normally negative in market return, so the bottom bucket must reach
-    −∞. A cap preset `c` selects exactly the buckets with hi ≤ c."""
+def test_return_bands_and_favor_bucket_math():
+    """v5 filter math pinned: total-return bands derive from the floor presets
+    as half-open [lo, hi) intervals (open top); FAVOR buckets derive from the
+    §5 band edges as half-open intervals open at BOTH ends — a leg can skew
+    arbitrarily far toward me (favor → −∞) or toward them. The favor dial is
+    a FLOOR: a floor at a bucket edge selects exactly the buckets with
+    lo ≥ that edge."""
     bands = tr.return_bands((1.0, 2.5, 5.0, 10.0, 20.0))
     assert bands == [(1.0, 2.5), (2.5, 5.0), (5.0, 10.0), (10.0, 20.0), (20.0, None)]
     assert tr.band_index(bands, 19.39) == 3  # pinned fixture pair total (v4 top)
@@ -748,35 +792,40 @@ def test_return_bands_and_bucket_math():
     assert tr.band_index(bands, 1.0) == 0
     assert tr.band_index(bands, 0.99) is None  # below the lowest preset: no band
 
-    buckets = tr.leg_buckets((2.5, 5.0, 10.0, 20.0))
+    buckets = tr.favor_buckets((-10.0, -5.0, 0.0, 5.0))
     assert buckets == [
-        (None, 2.5), (2.5, 5.0), (5.0, 10.0), (10.0, 20.0), (20.0, None),
+        (None, -10.0), (-10.0, -5.0), (-5.0, 0.0), (0.0, 5.0), (5.0, None),
     ]
-    assert tr.bucket_index(buckets, -100.0) == 0  # a pure-spend buy leg
-    assert tr.bucket_index(buckets, 0.0) == 0
-    assert tr.bucket_index(buckets, 2.49) == 0
-    assert tr.bucket_index(buckets, 2.5) == 1  # the cap is exclusive at c
-    assert tr.bucket_index(buckets, 4.99) == 1
-    assert tr.bucket_index(buckets, 34.17) == 4  # pinned fixture max leg (v4 top)
-    # cap-selection identity: max_leg < c ⟺ bucket.hi ≤ c, for every preset
-    for c in (2.5, 5.0, 10.0, 20.0):
-        selected = {i for i, (_lo, hi) in enumerate(buckets) if hi is not None and hi <= c}
-        for m in (-3.0, 0.0, 2.49, 2.5, 4.99, 5.0, 9.99, 10.0, 19.99, 20.0, 34.17):
-            assert (tr.bucket_index(buckets, m) in selected) == (m < c), (c, m)
+    assert tr.bucket_index(buckets, -22.5) == 0  # §10.1's leg, my way entirely
+    assert tr.bucket_index(buckets, -10.8) == 0  # pinned fixture top-pair min
+    assert tr.bucket_index(buckets, -10.0) == 1  # half-open at the edge
+    assert tr.bucket_index(buckets, -5.01) == 1
+    assert tr.bucket_index(buckets, -5.0) == 2
+    assert tr.bucket_index(buckets, -0.1) == 2
+    assert tr.bucket_index(buckets, 0.0) == 3  # their calculator says FAIR
+    assert tr.bucket_index(buckets, 4.99) == 3
+    assert tr.bucket_index(buckets, 5.0) == 4  # skewed to them beyond FAIR
+    assert tr.bucket_index(buckets, 22.5) == 4
+    # floor-selection identity: favor_min ≥ e ⟺ bucket.lo ≥ e, at every edge
+    for e in (-10.0, -5.0, 0.0, 5.0):
+        selected = {i for i, (lo, _hi) in enumerate(buckets) if lo is not None and lo >= e}
+        for m in (-22.5, -10.01, -10.0, -5.01, -5.0, -0.1, 0.0, 2.5, 4.99, 5.0, 22.5):
+            assert (tr.bucket_index(buckets, m) in selected) == (m >= e), (e, m)
 
 
 def test_bucket_storage_invariant(result, params):
-    """v3.4.1 stratification: every stored pair's MAX LEG market return sits
-    inside its bucket, per-bucket storage is capped at the quota, each
-    bucket's stored pairs read TOTAL-return-desc, and the flat list is sorted
-    by total return desc globally (the cap dial filters, never re-orders)."""
+    """v5 stratification (§11.12(g)): every stored pair's FAVOR MIN sits
+    inside its bucket, per-bucket storage is capped at the 3-heap union bound,
+    each bucket's stored pairs read robust-return-desc, and the flat list is
+    sorted by robust return desc globally (the favor dial filters, the δ dial
+    re-sorts client-side — neither re-orders the stored doc)."""
     doc = result["trade_recs"]
     bands = doc["bands"]
     edges = [(b["lo"], b["hi"]) for b in bands]
     by_bucket: dict[int, list[float]] = {i: [] for i in range(len(bands))}
     for p in doc["pairs"]:
-        m = p["max_leg_return_pct"]
-        assert m == max(p["leg_returns"]["buy"], p["leg_returns"]["sell"])
+        m = p["favor"]["min"]
+        assert m == min(p["favor"]["buy"], p["favor"]["sell"])
         i = tr.bucket_index(edges, m)
         lo, hi = edges[i]
         assert lo is None or m >= lo
@@ -784,13 +833,15 @@ def test_bucket_storage_invariant(result, params):
         by_bucket[i].append(p["return_pct"])
     for i, b in enumerate(bands):
         got = by_bucket[i]
-        assert len(got) == b["stored"] <= params.pairs_per_band
-        assert got == sorted(got, reverse=True)  # total-desc within the bucket
+        assert len(got) == b["stored"] <= 3 * params.pairs_per_band
+        assert got == sorted(got, reverse=True)  # robust-desc within the bucket
         assert b["count"] >= b["stored"]
-        if not b["saturated"]:
-            assert b["stored"] == min(params.pairs_per_band, b["count"])
+        if not b["saturated"] and b["count"] <= params.pairs_per_band:
+            # a complete walk over a small bucket keeps everything: each heap
+            # holds the whole bucket, so the union is the exact tally
+            assert b["stored"] == b["count"]
     rets = [p["return_pct"] for p in doc["pairs"]]
-    assert rets == sorted(rets, reverse=True)  # global sort: total return desc
+    assert rets == sorted(rets, reverse=True)  # global sort: robust return desc
     assert len(doc["pairs"]) == sum(b["stored"] for b in bands)
 
 
@@ -812,10 +863,10 @@ def test_counts_by_threshold_consistency(result):
 
 
 def test_grid_consistent_with_buckets_and_thresholds(result):
-    """v3.4.1 grid honesty: each bucket's `by_total` row partitions its count
-    exactly; the grid's columns at or above a floor preset sum (across every
-    bucket) to that threshold's count; and every (floor, cap) cell read is a
-    floor for the stored pairs matching both dials."""
+    """v5 grid honesty: each favor bucket's `by_total` row partitions its
+    count exactly; the grid's columns at or above a floor preset sum (across
+    every bucket) to that threshold's count; and every (return floor, favor
+    floor) cell read is a floor for the stored pairs matching both dials."""
     doc = result["trade_recs"]
     bands = doc["bands"]
     presets = doc["presets"]
@@ -828,21 +879,22 @@ def test_grid_consistent_with_buckets_and_thresholds(result):
         assert e["count"] >= col_sum
         n_stored = sum(1 for p in doc["pairs"] if p["return_pct"] >= e["threshold"])
         assert e["count"] == max(col_sum, n_stored)
-    # any (floor, cap) inventory read dominates the stored pairs behind it
-    for cap in (2.5, 5.0, 10.0, 20.0, None):
+    # any (return floor, favor floor) inventory read dominates the stored
+    # pairs behind it — favor floors at the bucket edges select whole buckets
+    for fmin in (-10.0, -5.0, 0.0, 5.0, None):
         for k, floor_p in enumerate(presets):
             inv = sum(
                 sum(b["by_total"][k:])
                 for b in bands
-                if cap is None or (b["hi"] is not None and b["hi"] <= cap)
+                if fmin is None or (b["lo"] is not None and b["lo"] >= fmin)
             )
             n_stored = sum(
                 1
                 for p in doc["pairs"]
                 if p["return_pct"] >= floor_p
-                and (cap is None or p["max_leg_return_pct"] < cap)
+                and (fmin is None or p["favor"]["min"] >= fmin)
             )
-            assert inv >= n_stored, (cap, floor_p)
+            assert inv >= n_stored, (fmin, floor_p)
 
 
 def test_forced_per_bucket_truncation_honesty(snapshot):
@@ -857,11 +909,11 @@ def test_forced_per_bucket_truncation_honesty(snapshot):
     bands = board["bands"]
     assert any(b["saturated"] for b in bands)  # the fixture space is deep
     for b in bands:
-        assert b["stored"] <= 2
+        assert b["stored"] <= 3 * 2  # union of three 2-deep heaps (v5)
         assert b["count"] >= b["stored"]
         assert sum(b["by_total"]) == b["count"]
-        if not b["saturated"]:
-            assert b["stored"] == min(2, b["count"])
+        if not b["saturated"] and b["count"] <= 2:
+            assert b["stored"] == b["count"]
     assert len(board["pairs"]) == sum(b["stored"] for b in bands) > 0
     assert [p["id"] for p in board["pairs"]] == [
         f"P{i + 1}" for i in range(len(board["pairs"]))
@@ -870,7 +922,7 @@ def test_forced_per_bucket_truncation_honesty(snapshot):
     assert rets == sorted(rets, reverse=True)
     edges = [(b["lo"], b["hi"]) for b in bands]
     for p in board["pairs"]:
-        i = tr.bucket_index(edges, p["max_leg_return_pct"])
+        i = tr.bucket_index(edges, p["favor"]["min"])
         assert bands[i]["stored"] > 0
     t = board["truncated"]
     assert t is not None and t["stored"] == len(board["pairs"])

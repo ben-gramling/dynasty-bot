@@ -1,18 +1,29 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * Trades tab against the live seeded DB (scoring v4, two-dial pairs page): a
- * TOTAL-return floor (v4: floor-based — the guaranteed gain min(ΔS, ΔF) over
- * face sent) and a PER-LEG market-return cap filter the stored pairs —
- * independent dimensions, no combination disabled, the list always in
- * maximin order (guaranteed return desc, ceiling tie-break). The inventory
- * line comes from the engine's honest per-bucket `bands` grid (saturated
- * counts render "≥ N" — verified floors, never estimates), cards render BOTH
- * sides' own coordinates ("starters +X · face +Y" — ΔF zero-sum per leg, ΔS
- * per side) with the guaranteed interval and each leg's market return, and
- * NOTHING that isn't a pair renders: no unpaired-legs section, no watch
- * list, no standalone cards. Market map still points into the League tab.
+ * Trades tab against the live seeded DB (scoring v5, three-dial pairs page —
+ * the finder's sliders over stored inventory, §4a/§5): a δ SELECTOR (robust
+ * default + presets 0/0.25/0.5/0.75/1 — return(δ) re-scored client-side from
+ * each stored pair's exact coordinates, a labeled preference VIEW), a floor
+ * on TOTAL return(δ) (robust = the guaranteed floor min(ΔS, ΔF) over face
+ * sent), and a counterparty-favorability FLOOR on the pair's min(f_buy,
+ * f_sell) in KTC's own calculator variance units (±5 = their calculator
+ * literally says FAIR; replaces the v3.4.1 per-leg market-return cap). No
+ * dial combination disables; the list sorts by return(δ) desc, ceiling
+ * tie-break. The inventory line comes from the engine's honest favor-bucket ×
+ * robust-return `bands` grid (floors render "≥ N" — verified floors, never
+ * estimates), cards render BOTH sides' own coordinates ("starters +X · face
+ * +Y" — ΔF zero-sum per leg, ΔS per side) with the guaranteed interval, a
+ * per-leg favor chip, and the pair favor line, and NOTHING that isn't a pair
+ * renders: no unpaired-legs section, no watch list, no standalone cards.
+ * Market map still points into the League tab.
+ *
+ * getByText/getByRole name matching is substring + case-insensitive — every
+ * chip-label probe passes exact: true (or an anchored regex).
  */
+
+/** One leg favor chip: FAIR inside the calculator's ±5 window, else named. */
+const FAVOR_CHIP = /^(their calculator: FAIR|favors them \+[\d.]+|favors you [\d.]+)$/;
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/trades");
@@ -39,98 +50,164 @@ test("only pairs render — no unpaired legs, no watch list", async ({
   expect(await sections.count()).toBe(2);
 });
 
-test("dial controls present with defaults: floor 5%, leg cap No cap", async ({
+test("three dial controls with defaults: robust δ, floor 5%, no favor floor", async ({
   page,
 }) => {
+  const dG = page.getByRole("group", { name: "Delta view" });
   const minG = page.getByRole("group", { name: "Minimum return" });
-  const capG = page.getByRole("group", { name: "Max per-leg return" });
+  const fG = page.getByRole("group", { name: "Favorability floor" });
+  await expect(dG).toBeVisible();
   await expect(minG).toBeVisible();
-  await expect(capG).toBeVisible();
+  await expect(fG).toBeVisible();
+  for (const label of ["robust", "0", "0.25", "0.5", "0.75", "1"]) {
+    await expect(dG.getByRole("button", { name: label, exact: true })).toBeVisible();
+  }
   for (const label of ["1%", "2.5%", "5%", "10%", "20%"]) {
     await expect(minG.getByRole("button", { name: label, exact: true })).toBeVisible();
   }
-  for (const label of ["2.5%", "5%", "10%", "20%", "No cap"]) {
-    await expect(capG.getByRole("button", { name: label, exact: true })).toBeVisible();
+  for (const label of ["−10", "−5", "0", "+2.5", "+5", "No floor"]) {
+    await expect(fG.getByRole("button", { name: label, exact: true })).toBeVisible();
   }
+  await expect(
+    dG.getByRole("button", { name: "robust", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
   await expect(minG.getByRole("button", { name: "5%", exact: true })).toHaveAttribute(
     "aria-pressed",
     "true",
   );
   await expect(
-    capG.getByRole("button", { name: "No cap", exact: true }),
+    fG.getByRole("button", { name: "No floor", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
-  // The inventory line reads from the engine's bucket × total-band grid.
+  // The inventory line reads from the engine's favor-bucket × robust-return
+  // grid; robust default sorts by the guaranteed return.
   await expect(
     page.getByText(
-      /stored shown \(total 5%\+, no leg cap\) · inventory: (≥ )?[\d,]+ legal/,
+      /stored shown \(total 5%\+ robust, no favor floor\) · inventory: (≥ )?[\d,]+ legal · sorted by guaranteed return/,
     ),
   ).toBeVisible();
+  // No preference view is active by default.
+  expect(await page.getByText(/preference view at δ=/).count()).toBe(0);
 });
 
-test("the leg cap filters on each leg's market return", async ({ page }) => {
-  const capG = page.getByRole("group", { name: "Max per-leg return" });
-  const line = page.getByText(/stored shown \(total .*\) · inventory:/);
-  const before = await line.textContent();
-  await capG.getByRole("button", { name: "10%", exact: true }).click();
+test("the favor floor filters on the pair's least-happy counterparty", async ({
+  page,
+}) => {
+  const fG = page.getByRole("group", { name: "Favorability floor" });
+  await fG.getByRole("button", { name: "−5", exact: true }).click();
   await expect(
-    capG.getByRole("button", { name: "10%", exact: true }),
+    fG.getByRole("button", { name: "−5", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
-  const after = page.getByText(
-    /stored shown \(total 5%\+, legs < 10%\) · inventory:/,
-  );
-  await expect(after).toBeVisible();
-  expect(await after.textContent()).not.toBe(before);
+  await expect(
+    page.getByText(
+      /stored shown \(total 5%\+ robust, favor ≥ −5\) · inventory:/,
+    ),
+  ).toBeVisible();
   const section = page.locator('section[aria-labelledby="pairs"]');
-  // Top-level pair cards only: anchor on the pair heading (embedded leg
-  // articles carry their own coordinate lines).
   const cards = section
     .locator("article")
     .filter({ has: page.getByRole("heading", { name: "Buy + sell" }) });
   const n = await cards.count();
+  if (n === 0) {
+    // Honest empty state: quantified loosenings, or nothing survives alone.
+    await expect(
+      section.getByText(
+        /No stored pairs with total 5%\+ robust, favor ≥ −5 today — (removing the favor floor exposes [\d,]+ stored, dropping the return floor to [\d.]+% exposes [\d,]+|and no stored pair survives either dial alone)/,
+      ),
+    ).toBeVisible();
+    return;
+  }
   for (let i = 0; i < Math.min(n, 5); i++) {
-    const card = cards.nth(i);
-    // v3.4.1: EVERY leg's market return respects the cap (rendered at 1 dp,
-    // so allow the rounding window), while the TOTAL return may exceed it —
-    // and the sort stays total-desc regardless of the cap.
-    const legTxt = await card.getByText(/legs: buy /).first().textContent();
-    const m = /legs: buy ([+−][\d.,]+)% · sell ([+−][\d.,]+)% market/.exec(
-      legTxt ?? "",
-    );
+    // v5: every rendered pair's favor min (the least-happy counterparty, in
+    // KTC's own variance units) respects the floor — rendered at 1 dp, so
+    // allow the rounding window.
+    const favTxt = await cards.nth(i).getByText(/favor: buy /).first().textContent();
+    const m = / min ([+−][\d.,]+)$/.exec(favTxt ?? "");
     expect(m).not.toBeNull();
-    const legs = [m![1], m![2]].map((s) =>
-      parseFloat(s.replace("−", "-").replace(",", "")),
-    );
-    expect(Math.max(...legs)).toBeLessThan(10.05);
+    const v = parseFloat(m![1].replace("−", "-").replace(",", ""));
+    expect(v).toBeGreaterThanOrEqual(-5.05);
   }
 });
 
-test("floor 5% with leg cap 2.5% is a valid query — no combination disables", async ({
+test("the δ selector is a labeled preference view that only widens the list", async ({
   page,
 }) => {
-  // v3.4.1: the dials are independent dimensions. A high total floor under a
-  // low per-leg cap is the flagship query (legs look nearly even, the pair
-  // total is large) — the v3.3.1 min<max coupling is retired.
+  const dG = page.getByRole("group", { name: "Delta view" });
+  const line = page.getByText(/stored shown \(total /);
+  const robustN = parseInt(
+    ((await line.textContent()) ?? "").replace(/,/g, ""),
+    10,
+  );
+  await dG.getByRole("button", { name: "0.5", exact: true }).click();
+  await expect(
+    dG.getByRole("button", { name: "0.5", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  // The view is LABELED (§4a: a preference view, never a score change) …
+  await expect(page.getByText(/preference view at δ=0\.5/)).toBeVisible();
+  await expect(
+    page.getByText(
+      /stored shown \(total 5%\+ at δ=0\.5, no favor floor\) · inventory: ≥ [\d,]+ legal · sorted by return\(δ=0\.5\)/,
+    ),
+  ).toBeVisible();
+  // … and the objective verdict/floor stays on every card: return(δ) ≥ the
+  // robust return on every pair (ΔW(δ) never drops below the floor), so a δ
+  // view can only expose MORE pairs past the same floor — never fewer.
+  const deltaN = parseInt(
+    ((await line.textContent()) ?? "").replace(/,/g, ""),
+    10,
+  );
+  expect(deltaN).toBeGreaterThanOrEqual(robustN);
+  const section = page.locator('section[aria-labelledby="pairs"]');
+  const cards = section
+    .locator("article")
+    .filter({ has: page.getByRole("heading", { name: "Buy + sell" }) });
+  if ((await cards.count()) > 0) {
+    await expect(
+      cards.first().getByText("guaranteed ΔW", { exact: true }),
+    ).toBeVisible();
+  }
+  // Back to robust: the label disappears, maximin sort returns.
+  await dG.getByRole("button", { name: "robust", exact: true }).click();
+  expect(await page.getByText(/preference view at δ=/).count()).toBe(0);
+  await expect(page.getByText(/sorted by guaranteed return/)).toBeVisible();
+});
+
+test("no dial combination disables — every preset stays clickable", async ({
+  page,
+}) => {
+  const dG = page.getByRole("group", { name: "Delta view" });
   const minG = page.getByRole("group", { name: "Minimum return" });
-  const capG = page.getByRole("group", { name: "Max per-leg return" });
+  const fG = page.getByRole("group", { name: "Favorability floor" });
+  for (const label of ["robust", "0", "0.25", "0.5", "0.75", "1"]) {
+    await expect(dG.getByRole("button", { name: label, exact: true })).toBeEnabled();
+  }
   for (const label of ["1%", "2.5%", "5%", "10%", "20%"]) {
     await expect(minG.getByRole("button", { name: label, exact: true })).toBeEnabled();
   }
-  for (const label of ["2.5%", "5%", "10%", "20%", "No cap"]) {
-    await expect(capG.getByRole("button", { name: label, exact: true })).toBeEnabled();
+  for (const label of ["−10", "−5", "0", "+2.5", "+5", "No floor"]) {
+    await expect(fG.getByRole("button", { name: label, exact: true })).toBeEnabled();
   }
-  await capG.getByRole("button", { name: "2.5%", exact: true }).click();
+  // The tightest corner of the cube is a valid query.
+  await minG.getByRole("button", { name: "20%", exact: true }).click();
+  await fG.getByRole("button", { name: "+5", exact: true }).click();
+  await dG.getByRole("button", { name: "1", exact: true }).click();
   await expect(
-    capG.getByRole("button", { name: "2.5%", exact: true }),
+    minG.getByRole("button", { name: "20%", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
   await expect(
-    minG.getByRole("button", { name: "5%", exact: true }),
+    fG.getByRole("button", { name: "+5", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
   await expect(
-    page.getByText(/stored shown \(total 5%\+, legs < 2.5%\) · inventory:/),
+    dG.getByRole("button", { name: "1", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    page.getByText(/stored shown \(total 20%\+ at δ=1, favor ≥ \+5\)/),
   ).toBeVisible();
-  // every button stays enabled even with the tightest cap active
-  for (const label of ["10%", "20%"]) {
+  // every button stays enabled even at the tightest combination
+  for (const label of ["1%", "2.5%", "5%", "10%"]) {
     await expect(minG.getByRole("button", { name: label, exact: true })).toBeEnabled();
+  }
+  for (const label of ["−10", "No floor"]) {
+    await expect(fG.getByRole("button", { name: label, exact: true })).toBeEnabled();
   }
 });
 
@@ -139,16 +216,16 @@ test("pairs render fully behind every dial combo or the empty state is honest", 
 }) => {
   const section = page.locator('section[aria-labelledby="pairs"]');
   const minG = page.getByRole("group", { name: "Minimum return" });
-  const capG = page.getByRole("group", { name: "Max per-leg return" });
+  const fG = page.getByRole("group", { name: "Favorability floor" });
   const combos: [string, string][] = [
-    ["1%", "2.5%"],
-    ["5%", "2.5%"], // v3.4.1 flagship: high total floor UNDER a low leg cap
-    ["20%", "No cap"],
+    ["1%", "−10"],
+    ["5%", "−5"], // a return floor UNDER a favor floor — both dials bind
+    ["20%", "No floor"],
   ];
-  for (const [minL, capL] of combos) {
-    // No coupling between the dials (v3.4.1) — click order is free.
+  for (const [minL, favL] of combos) {
+    // The dials are independent dimensions — click order is free.
     await minG.getByRole("button", { name: minL, exact: true }).click();
-    await capG.getByRole("button", { name: capL, exact: true }).click();
+    await fG.getByRole("button", { name: favL, exact: true }).click();
     const pairCards = section
       .locator("article")
       .filter({ has: page.getByRole("heading", { name: "Buy + sell" }) });
@@ -158,10 +235,10 @@ test("pairs render fully behind every dial combo or the empty state is honest", 
       // or say nothing survives either dial alone.
       await expect(
         section.getByText(
-          /No stored pairs with total .* today — (removing the leg cap exposes [\d,]+ stored, dropping the floor to [\d.]+% exposes [\d,]+|and no stored pair survives either dial alone)/,
+          /No stored pairs with total .* today — (removing the favor floor exposes [\d,]+ stored, dropping the return floor to [\d.]+% exposes [\d,]+|and no stored pair survives either dial alone)/,
         ),
       ).toBeVisible();
-      // exact: the v4 board notes contain the phrase "Σv you send", which a
+      // exact: the board notes contain the phrase "Σv you send", which a
       // substring probe would count; the card chip is exactly "You send".
       expect(await section.getByText("You send", { exact: true }).count()).toBe(0);
       continue;
@@ -198,6 +275,14 @@ test("pairs render fully behind every dial combo or the empty state is honest", 
       .getByText(/starters [+−]\S* · face [+−]/)
       .count();
     if (splits > 0) expect(splits).toBe(5);
+    // v5 favor is optional in the doc shape too (pre-v5 boards omit it), but
+    // present ⇒ a chip on BOTH embedded gate strips (anchored regex — the
+    // pair header's "favor: buy …" line never matches) plus the pair line.
+    const favorChips = await first.getByText(FAVOR_CHIP).count();
+    if (favorChips > 0) {
+      expect(favorChips).toBe(2);
+      expect(await first.getByText(/favor: buy /).count()).toBe(1);
+    }
     await expect(
       first.getByText(/Band ceiling for this package/).first(),
     ).toBeVisible();
@@ -205,9 +290,10 @@ test("pairs render fully behind every dial combo or the empty state is honest", 
 });
 
 test("bucket inventory floors are disclosed honestly", async ({ page }) => {
-  // Live-data dependent: when any selected bucket is saturated, the inventory
-  // renders "≥ N" and the verified-floor note appears; when none is, neither
-  // does. (Under v3.4 every count is a floor, so both normally show.)
+  // Live-data dependent: when any selected favor bucket is saturated, the
+  // inventory renders "≥ N" and the verified-floor note appears; when none
+  // is (and the dials sit on bucket edges — the defaults do), neither does.
+  // (Outside whole-space walks every count is a floor, so both normally show.)
   const line = page.getByText(/inventory: (≥ )?[\d,]+ legal/);
   await expect(line).toBeVisible();
   const text = (await line.textContent()) ?? "";

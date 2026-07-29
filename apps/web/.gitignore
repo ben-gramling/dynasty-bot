@@ -3,6 +3,9 @@
 /out/
 next-env.d.ts
 
+# typescript incremental build state (tsc --noEmit regenerates it)
+*.tsbuildinfo
+
 # deps
 /node_modules
 

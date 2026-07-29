@@ -23,18 +23,39 @@ Usage (from the repo root, .env required):
   uv run python scripts/score_trade.py score --opponent NAME \
       --give "Mike Evans, Courtland Sutton" --get "2027 R1 (own)" \
       [--alternatives] [--hedge] [--json]
-  uv run python scripts/score_trade.py pairs --min 5 --max 10 [--json]
+  uv run python scripts/score_trade.py pairs --min 5 --favor-min -5 [--json]
+  uv run python scripts/score_trade.py find \
+      --require "ronak receives picks" --require "joey receives pos:RB" \
+      --exclude "* receives Stefon Diggs" \
+      --min-return 1 --favor-min -5 [--delta robust] [--top 20] [--json]
 
 `pairs` computes the §5 pair board (same engine code path as the nightly run:
 enumerate-then-filter, posture as a hard constraint, VERDICT as a hard storage
 constraint — every stored pair is objectively good — count-neutral pairs,
-storage STRATIFIED BY MAX-LEG BUCKET) and prints the bucket inventory followed
-by the stored pairs behind your two dials: `--min` floors the TOTAL pair
-return (v4: guaranteed floor ÷ face Σv sent), `--max` caps EACH LEG's market
-return. The list always sorts maximin: floor-based return desc, ceiling as
-tie-break. `--target N` survives as an alias for `--min N`; omit --max for no
-cap. Every count is a verified floor (the walk orders legs by their isolation
-floors while pairs are priced by their exact combined coordinates).
+storage STRATIFIED BY FAVOR BUCKET, v5) and prints the bucket inventory
+followed by the stored pairs behind your dials: `--min` floors the TOTAL pair
+return (v4: guaranteed floor ÷ face Σv sent), `--favor-min` floors the pair's
+counterparty favorability min(f_buy, f_sell) — each leg's signed
+KTC-calculator skew in KTC's own variance units (|f| <= 5 is literally their
+calculator's FAIR window; it replaces the retired v3.4.1 per-leg market-return
+cap). The list always sorts maximin: floor-based return desc, ceiling as
+tie-break. `--target N` survives as an alias for `--min N`; omit --favor-min
+for no floor. Every count is a verified floor (the walk orders legs by their
+isolation floors while pairs are priced by their exact combined coordinates).
+
+`find` is the §4a v5 spread finder: constrained search over the FULL legal
+pair space (not just stored board inventory) with the three sliders. Repeatable
+constraint flags --require / --exclude / --prefer each take one string:
+
+    "WHO receives|sends OBJECT [with TEAM]"
+
+WHO = a league username (case-insensitive prefix/substring ok) | me | *;
+OBJECT = picks | players | pos:QB|RB|WR|TE | an asset name ("Stefon Diggs",
+"2027 R1 (own)"). Posture defaults and market-intel constraints auto-apply
+per §4 strict precedence (query > intel > posture, per team) unless
+--no-posture / --no-intel. Sliders: --delta (robust default), --min-return,
+--favor-min/--favor-max, plus structural --shape / --legs A+B / --with TEAM.
+Warm/cold cache and exact-vs-verified-floor counts are reported in the header.
 """
 
 from __future__ import annotations
@@ -43,6 +64,7 @@ import argparse
 import json
 import sys
 from datetime import datetime, timezone
+from time import perf_counter
 
 from dotenv import load_dotenv
 
@@ -51,6 +73,8 @@ load_dotenv()
 from core import store  # noqa: E402
 from core.db import get_db  # noqa: E402
 from core.scoring import Params, Snapshot  # noqa: E402
+from core.scoring import constraints as cn  # noqa: E402
+from core.scoring import finder as fi  # noqa: E402
 from core.scoring import model as md  # noqa: E402
 from core.scoring import trades as tr  # noqa: E402
 
@@ -125,6 +149,93 @@ def resolve(assets: dict[str, tr.Asset], query: str, team: str) -> tr.Asset:
             f"Run `list-assets {team}` for exact names."
         )
     sys.exit(f"Ambiguous {query!r} on {team}: {sorted(a.name for a in partial)}")
+
+
+def favor_tag(f: float) -> str:
+    """Plain-language read of a §4a v5 favor figure (signed KTC-calculator
+    skew to the counterparty, in KTC's own variance units): |f| <= 5 is
+    literally their calculator's FAIR window at default variance."""
+    if abs(f) <= 5.0:
+        return "their calculator: FAIR"
+    return f"favors them {f:+g}" if f > 0 else f"favors you {f:+g}"
+
+
+def match_team(league, tok: str, where: str, allow_me: bool = True) -> str:
+    """Resolve a username token (case-insensitive exact, else unique
+    substring). Errors name the offending token and list valid usernames."""
+    m = [n for n in league.teams if n.lower() == tok.lower()] or [
+        n for n in league.teams if tok.lower() in n.lower()
+    ]
+    valid = sorted(league.teams) if allow_me else sorted(set(league.teams) - {league.me})
+    if len(m) > 1:
+        sys.exit(f"{where}: ambiguous team token {tok!r} (matches {sorted(m)}) — "
+                 f"valid usernames: {valid}")
+    if not m:
+        sys.exit(f"{where}: unknown team token {tok!r} — valid usernames: {valid}")
+    if not allow_me and m[0] == league.me:
+        sys.exit(f"{where}: team token {tok!r} resolves to you ({league.me}) — "
+                 f"name a counterparty: {valid}")
+    return m[0]
+
+
+def parse_constraint(league, mode: str, text: str) -> dict:
+    """One --require/--exclude/--prefer string -> a §4 constraint dict:
+
+        "WHO receives|sends OBJECT [with TEAM]"
+
+    WHO = username | me | *; OBJECT = picks | players | pos:POS | asset name.
+    Parse errors name the offending token and list the valid usernames; the
+    dict is validated eagerly through cn.query_constraint (same rules the
+    finder applies), so a bad position or unrostered asset dies here too."""
+    where = f'--{mode} "{text}"'
+    toks = text.split()
+    if len(toks) < 3:
+        sys.exit(
+            f"{where}: expected 'WHO receives|sends OBJECT [with TEAM]' — "
+            f"got only {len(toks)} token(s)"
+        )
+    who_tok, side = toks[0], toks[1]
+    if who_tok.lower() == "me":
+        who = "me"
+    elif who_tok == "*":
+        who = "*"
+    else:
+        who = match_team(league, who_tok, f"{where} (WHO)")
+    if side not in ("receives", "sends"):
+        sys.exit(f"{where}: bad side token {side!r} — must be 'receives' or 'sends'")
+    rest = toks[2:]
+    with_ = None
+    if len(rest) >= 3 and rest[-2].lower() == "with":
+        with_ = match_team(league, rest[-1], f"{where} (with TEAM)", allow_me=False)
+        rest = rest[:-2]
+    obj = " ".join(rest).strip().strip("\"'")
+    if not obj:
+        sys.exit(f"{where}: missing OBJECT (picks | players | pos:RB | asset name)")
+    low = obj.lower()
+    if low in ("pick", "picks"):
+        what: dict = {"class": "pick"}
+    elif low in ("player", "players"):
+        what = {"class": "player"}
+    elif low.startswith("pos:"):
+        what = {"pos": obj[4:].strip().upper()}
+    else:
+        what = {"asset": obj}
+    d = {"who": who, "side": side, "what": what, "with": with_, "mode": mode}
+    try:
+        cn.query_constraint(league, d)
+    except ValueError as e:
+        sys.exit(f"{where}: {e}")
+    return d
+
+
+def fmt_constraint(c: dict) -> str:
+    """One applied-constraint echo line from Constraint.to_dict() output."""
+    ((kind, val),) = c["what"].items()
+    obj = {"pick": "picks", "player": "players"}[val] if kind == "class" else (
+        f"pos:{val}" if kind == "pos" else f'"{val}"'
+    )
+    tail = f" with {c['with']}" if c.get("with") else ""
+    return f"{c['mode']:7} {c['who']} {c['side']} {obj}{tail}   [{c['origin']}]"
 
 
 def alternatives(
@@ -262,11 +373,11 @@ def fmt_legline(card: dict) -> str:
     ret = card.get("return_pct")
     coords = card.get("coords", {}).get("me")
     tail = f"; {fmt_coords(coords)}" if coords else ""
-    mkt = card.get("market_return_pct")
-    mkt_s = f", market {mkt:+g}%" if mkt is not None else ""
+    fav = card.get("favor")
+    fav_s = f", favor {fav:+g} ({favor_tag(fav)})" if fav is not None else ""
     return (
         f"send {give} -> get {get}  "
-        f"(floor alone {card['floor']['me']:+.0f}{tail}, leg floor return {ret:g}%{mkt_s})"
+        f"(floor alone {card['floor']['me']:+.0f}{tail}, leg floor return {ret:g}%{fav_s})"
     )
 
 
@@ -307,6 +418,11 @@ def fmt_card(card: dict, header: str = "") -> str:
         f"{g['adj_get']:.0f} them  ·  gap {g['gap']:.0f} "
         f"({g['gap_pct']:.1f}% of {max(g['adj_give'], g['adj_get']):.0f}, "
         f"band {g['band']:.0f})  ·  ratio {g['raw_ratio']} (cap {g['cap']})",
+        f"  Favor (v5 §4a): {card['favor']:+g} — {favor_tag(card['favor'])} "
+        "(signed skew to the counterparty from the gate's own adjusted totals, "
+        "KTC's variance units; |f| <= 5 = their calculator's FAIR window)"
+        if card.get("favor") is not None
+        else "  Favor (v5 §4a): n/a",
         f"  Posture: {card['counterparty']} is {p['label']}"
         + (f" (override)" if p["source"] == "override" else f" ({p['evidence_count']} classifying trades)")
         + f" · offer shape {p['shape']} ({'fits' if p['fit'] else 'does not fit'})",
@@ -314,7 +430,8 @@ def fmt_card(card: dict, header: str = "") -> str:
         f"{card['net_picks']['me']:+d} picks (§5 v3.2; net active roster "
         f"{card['net_roster']['me']:+d} you / {card['net_roster']['them']:+d} them)"
         + (
-            f" · market return {card['market_return_pct']:+g}% (the v3.4.1 leg-cap number)"
+            f" · market return {card['market_return_pct']:+g}% (info only — "
+            "the raw face skim; the v5 dial reads Favor above)"
             if card.get("market_return_pct") is not None
             else ""
         ),
@@ -341,6 +458,165 @@ def fmt_card(card: dict, header: str = "") -> str:
     return "\n".join(lines)
 
 
+def run_find(args, db, league: md.LeagueState) -> None:
+    """The §4a v5 `find` subcommand: parse constraint flags, pull active
+    market-intel from Mongo (the finder is I/O-free — the caller reads the
+    collection), run the finder, and print header (constraints echo, intel
+    applied/ignored, honest counts, cache cold/warm + timing) then spreads."""
+    constraints = (
+        [parse_constraint(league, "require", s) for s in args.require]
+        + [parse_constraint(league, "exclude", s) for s in args.exclude]
+        + [parse_constraint(league, "prefer", s) for s in args.prefer]
+    )
+    if args.delta == "robust":
+        delta: str | float = "robust"
+    else:
+        try:
+            delta = float(args.delta)
+        except ValueError:
+            sys.exit(f"--delta {args.delta!r}: must be 'robust' or a number in "
+                     "[0, 1] (presets 0 / 0.25 / 0.5 / 0.75 / 1)")
+        if not 0.0 <= delta <= 1.0:
+            sys.exit(f"--delta {delta:g}: must lie in [0, 1]")
+    legs = None
+    if args.legs:
+        parts = [p.strip() for p in args.legs.split("+")]
+        if len(parts) != 2 or not all(parts):
+            sys.exit(f"--legs {args.legs!r}: expected exactly 'A+B' — two "
+                     "counterparty usernames joined by '+'")
+        a = match_team(league, parts[0], "--legs (A)", allow_me=False)
+        b = match_team(league, parts[1], "--legs (B)", allow_me=False)
+        if a == b:
+            sys.exit(f"--legs {args.legs!r}: A and B both resolve to {a} — name two teams")
+        # "one leg with A, the other with B": restrict enumeration to A and B;
+        # the cross already requires distinct counterparties, so the pairs are
+        # exactly (buy A, sell B) and (buy B, sell A)
+        legs = {"buy_with": [a, b], "sell_with": [a, b]}
+    with_team = (
+        match_team(league, args.with_team, "--with", allow_me=False)
+        if args.with_team else None
+    )
+    intel: list[dict] = []
+    if not args.no_intel:
+        intel = list(db["market-intel"].find({}).sort("_id", 1))
+        for doc in intel:  # skill protocol stores the subject text as `note`
+            if "subject" not in doc and doc.get("note") is not None:
+                doc["subject"] = doc["note"]
+    query = {
+        "constraints": constraints,
+        "use_intel": not args.no_intel,
+        "use_posture": not args.no_posture,
+        "delta": delta,
+        "min_return": args.min_return,
+        "favor_min": args.favor_min,
+        "favor_max": args.favor_max,
+        "legs": legs,
+        "with_team": with_team,
+        "shape": args.shape,
+        "top": args.top,
+    }
+    warm = fi.cache_path(league).exists()
+    t0 = perf_counter()
+    res = fi.find_spreads(league, query, intel=intel)
+    dt = perf_counter() - t0
+
+    if args.json:
+        print(json.dumps(
+            {"query": query, "cache": "warm" if warm else "cold",
+             "seconds": round(dt, 2), **res},
+            indent=1, default=str,
+        ))
+        return
+
+    # ---- header: cache + timing, sliders, constraints echo, intel, counts
+    print(f"Spread finder (§4a v5) — cache {'WARM' if warm else 'COLD (leg tables built + cached)'} "
+          f"· query {dt:.1f}s")
+    dial = ("robust (guaranteed floor — good at EVERY delta)"
+            if delta == "robust" else f"{delta:g} (labeled preference VIEW)")
+    slid = [f"delta {dial}", f"min return {args.min_return:g}%"]
+    slid.append(f"favor min {args.favor_min:+g}" if args.favor_min is not None else "no favor floor")
+    if args.favor_max is not None:
+        slid.append(f"favor max {args.favor_max:+g} (either leg)")
+    if args.shape:
+        slid.append(f"shape {args.shape}")
+    if legs:
+        slid.append(f"legs {legs['buy_with'][0]}+{legs['buy_with'][1]}")
+    if with_team:
+        slid.append(f"with {with_team}")
+    print("Sliders: " + " · ".join(slid))
+    ac = res["applied_constraints"]
+    if ac:
+        print(f"Constraints applied ({len(ac)}; §4 precedence query > intel > posture, per team):")
+        for c in ac:
+            print(f"  {fmt_constraint(c)}")
+    else:
+        print("Constraints applied: none (unconstrained search)")
+    if args.no_intel:
+        print("Intel: OFF (--no-intel)")
+    else:
+        n_int = sum(1 for c in ac if c["source"] == "intel")
+        ig = res["ignored_intel"]
+        print(f"Intel: {len(intel)} doc(s) read · {n_int} constraint(s) applied · "
+              f"{len(ig)} ignored (unparseable/NOTE — reported, never guessed):")
+        for item in ig:
+            d = item["doc"]
+            print(f"  ignored {d.get('kind')} [{d.get('team')}] "
+                  f"{d.get('subject')!r}: {item['reason']}")
+    if args.no_posture:
+        print("Posture defaults: OFF (--no-posture)")
+    c = res["counts"]
+    honesty = (
+        "EXACT — constrained crossing walked exhaustively"
+        if res["exact"]
+        else f"VERIFIED FLOORS — crossing budget {league.params.finder_cross_budget:,} "
+        "hit; the space runs deeper (never estimates)"
+    )
+    print(f"Counts [{honesty}]: {c['legs']['buy']:,} buy legs / {c['legs']['sell']:,} sell legs "
+          f"· crossings {c['crossings']:,} · valid pairs {c['valid']:,} "
+          f"· matched sliders {c['matched']:,} · returned {c['returned']}")
+
+    # ---- the spreads
+    if not res["spreads"]:
+        print("\nNo spreads matched. Loosen a slider or drop a constraint — the "
+              "counts above show where candidates died.")
+        return
+    for sp in res["spreads"]:
+        head = f"\n{sp['id']}"
+        if sp["preferred"]:
+            head += "  ★ preferred (a prefer-constraint matches)"
+        if delta == "robust":
+            head += (f"  guaranteed {sp['floor']:+g} · up to {sp['ceiling']:+g} "
+                     f"(floor return {sp['return_robust']:g}% on {sp['sent']:g} face sent)")
+        else:
+            head += (f"  return(delta={delta:g}) {sp['return_view']:g}% — labeled VIEW "
+                     f"(robust floor return {sp['return_robust']:g}% on {sp['sent']:g} face sent)")
+        head += f"  [{fmt_coords(sp['coords'])}]"
+        print(head)
+        if sp["verdict"]:
+            lo_hi = ("gain exactly" if sp["floor"] == sp["ceiling"] else "gain between")
+            print(f"  verdict: OBJECTIVELY GOOD — {lo_hi} {sp['floor']:+g} and "
+                  f"{sp['ceiling']:+g} (floor guaranteed, §2 v4)")
+        else:
+            bkv = tr.breakeven_of(sp["coords"]["dS"], sp["coords"]["dF"])
+            print("  verdict: NOT objectively good — preference trade"
+                  + (f", breakeven delta* = {bkv:.2f}" if bkv is not None else "")
+                  + f" (interval {sp['floor']:+g} to {sp['ceiling']:+g})")
+        f = sp["favor"]
+        print(f"  favor: buy {f['buy']:+g} ({favor_tag(f['buy'])}) · "
+              f"sell {f['sell']:+g} ({favor_tag(f['sell'])}) · "
+              f"pair min {f['min']:+g} (the least-happy counterparty)")
+        for tag, card in (("BUY ", sp["buy"]), ("SELL", sp["sell"])):
+            give = " + ".join(fmt_asset(a) for a in card["give"])
+            get = " + ".join(fmt_asset(a) for a in card["get"])
+            print(f"  {tag} {card['counterparty']:<15} send {give} -> get {get}  "
+                  f"(leg floor alone {card['floor']['me']:+.0f})")
+        print(f"  net: 0 players / 0 picks · active roster {sp['net_roster']:+d} · "
+              f"{sp['sequencing']}")
+        if 0 < sp["floor"] < league.params.w_min:
+            print(f"  note: floor +{sp['floor']:g} sits inside KTC's "
+                  f"±{league.params.w_min:g} noise band (display note only)")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -361,7 +637,7 @@ def main() -> None:
     sc.add_argument("--json", action="store_true")
     pr = sub.add_parser(
         "pairs",
-        help="the §5 v3.4.1 pair board behind your two dials (same code path as the nightly board)",
+        help="the §5 v5 pair board behind your dials (same code path as the nightly board)",
     )
     pr.add_argument(
         "--min", "--target", dest="min_ret", type=float, default=5.0,
@@ -369,13 +645,79 @@ def main() -> None:
         "--target is the v3.3 alias)",
     )
     pr.add_argument(
-        "--max", dest="leg_cap", type=float, default=None,
-        help="v3.4.1: exclusive cap on EACH LEG's market return — face ΔW ÷ face "
-        "Σv sent on that leg, the skim that leg's counterparty sees (presets "
-        "2.5 / 5 / 10 / 20; omit for no cap). Independent of --min: --min 5 "
-        "--max 2.5 is the balanced-legs/high-total query",
+        "--favor-min", dest="favor_min", type=float, default=None,
+        help="v5: floor on pair favor min(f_buy, f_sell) — each leg's signed "
+        "KTC-calculator skew to its counterparty, KTC's own variance units "
+        "(presets -10 / -5 / 0 / +2.5 / +5; |f| <= 5 is their calculator's "
+        "FAIR window; omit for no floor). Replaces the retired v3.4.1 --max "
+        "per-leg market-return cap",
     )
     pr.add_argument("--json", action="store_true")
+    fd = sub.add_parser(
+        "find",
+        help="§4a v5 spread finder: constrained search over the FULL pair space "
+        "with the three sliders (delta view, min return, counterparty favor)",
+        description="Constraint grammar (repeatable flags): "
+        '--require/--exclude/--prefer "WHO receives|sends OBJECT [with TEAM]" '
+        "where WHO = username | me | * and OBJECT = picks | players | "
+        "pos:QB|RB|WR|TE | an asset name. Posture defaults + market-intel "
+        "auto-apply per §4 precedence (query > intel > posture, per team).",
+    )
+    for mode, hint in (
+        ("require", "every leg involving WHO must match (hard)"),
+        ("exclude", "no leg may match (hard)"),
+        ("prefer", "matching spreads are starred (soft; never reorders)"),
+    ):
+        fd.add_argument(
+            f"--{mode}", action="append", default=[], dest=mode,
+            metavar='"WHO receives|sends OBJECT [with TEAM]"', help=hint,
+        )
+    fd.add_argument(
+        "--no-intel", action="store_true",
+        help="drop the market-intel constraints (§4 source 2)",
+    )
+    fd.add_argument(
+        "--no-posture", action="store_true",
+        help="drop the posture defaults (§4 source 1)",
+    )
+    fd.add_argument(
+        "--delta", default="robust",
+        help="slider 1: 'robust' (default — v4 floor/verdict, good at EVERY "
+        "delta) or a number in [0, 1] (presets 0 / 0.25 / 0.5 / 0.75 / 1); "
+        "numeric delta is a labeled preference VIEW, never a verdict",
+    )
+    fd.add_argument(
+        "--min-return", dest="min_return", type=float, default=0.0,
+        help="slider 2: floor on return(delta), percent (presets 1 / 2.5 / 5 / "
+        "10 / 20; robust mode floors the guaranteed floor return)",
+    )
+    fd.add_argument(
+        "--favor-min", dest="favor_min", type=float, default=None,
+        help="slider 3: floor on pair favor min(f_buy, f_sell) in KTC's own "
+        "variance units (presets -10 / -5 / 0 / +2.5 / +5; omit for none)",
+    )
+    fd.add_argument(
+        "--favor-max", dest="favor_max", type=float, default=None,
+        help="optional ceiling on EITHER leg's favor — stops giving edge away "
+        "(omit for none)",
+    )
+    fd.add_argument(
+        "--shape", choices=["starter>team", "team>starter"], default=None,
+        help="shape constraint: starter>team means dS > dF, team>starter the reverse",
+    )
+    fd.add_argument(
+        "--legs", default=None, metavar="A+B",
+        help="one leg with A, the other with B (two counterparty usernames)",
+    )
+    fd.add_argument(
+        "--with", dest="with_team", default=None, metavar="TEAM",
+        help="TEAM must be on some leg of every returned spread",
+    )
+    fd.add_argument(
+        "--top", type=int, default=None,
+        help="result size (default: the engine's finder_top = 20)",
+    )
+    fd.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
     db = get_db()
@@ -389,16 +731,16 @@ def main() -> None:
         board = tr.trade_board(league)
         if board.get("disabled"):
             sys.exit("trade deadline has passed — the pair board is disabled")
-        lo, cap = args.min_ret, args.leg_cap
+        lo, fmin = args.min_ret, args.favor_min
         filter_label = f"total >= {lo:g}%" + (
-            f", every leg < {cap:g}%" if cap is not None else ", no leg cap"
+            f", favor min >= {fmin:+g}" if fmin is not None else ", no favor floor"
         )
-        # v3.4.1: --min floors the TOTAL return; --max caps EACH LEG's market
-        # return; the list always sorts by total return desc
+        # v5: --min floors the TOTAL return; --favor-min floors the pair's
+        # min(f_buy, f_sell); the list always sorts by total return desc
         hits = [
             p for p in board["pairs"]
             if p["return_pct"] >= lo
-            and (cap is None or p["max_leg_return_pct"] < cap)
+            and (fmin is None or p["favor"]["min"] >= fmin)
         ]
         # maximin (§2 v4): floor-based return desc, ceiling desc as tie-break
         hits.sort(key=lambda p: (-p["return_pct"], -p.get("ceiling", 0.0)))
@@ -407,9 +749,10 @@ def main() -> None:
             print(json.dumps(
                 {
                     "min": lo,
-                    "leg_cap": cap,
+                    "favor_min": fmin,
                     "presets": board["presets"],
-                    "leg_cap_presets": board.get("leg_cap_presets"),
+                    "favor_presets": board.get("favor_presets"),
+                    "delta_presets": board.get("delta_presets"),
                     "bands": buckets,
                     "counts_by_threshold": board["counts_by_threshold"],
                     "truncated": board["truncated"],
@@ -422,10 +765,10 @@ def main() -> None:
 
         def bucket_name(b: dict) -> str:
             if b["lo"] is None:
-                return f"max leg < {b['hi']:g}%"
+                return f"favor < {b['hi']:+g}"
             if b["hi"] is None:
-                return f"max leg >= {b['lo']:g}%"
-            return f"max leg [{b['lo']:g}, {b['hi']:g})%"
+                return f"favor >= {b['lo']:+g}"
+            return f"favor [{b['lo']:+g}, {b['hi']:+g})"
 
         tband_names = [
             f"[{p:g},{board['presets'][i + 1]:g})" if i + 1 < len(board["presets"])
@@ -433,8 +776,9 @@ def main() -> None:
             for i, p in enumerate(board["presets"])
         ]
         print(
-            "Max-leg bucket inventory (v3.4.1: bucket = the pair's larger leg market "
-            "return; stored = the bucket's top pairs by TOTAL return; every count a "
+            "Favor bucket inventory (v5: bucket = pair favor min(f_buy, f_sell), "
+            "the least-happy counterparty's signed KTC-calculator skew; stored = "
+            "the bucket's union of tops by robust return / dS / dF; every count a "
             "verified floor — '>=' throughout):"
         )
         for b in buckets:
@@ -448,9 +792,9 @@ def main() -> None:
             )
         if not hits:
             print(
-                f"\nNo stored pairs with {filter_label} today. Loosen the leg cap "
-                "or drop the total floor — the inventory above shows where the "
-                "stored pairs sit. The board recomputes nightly."
+                f"\nNo stored pairs with {filter_label} today. Loosen the favor "
+                "floor or drop the total floor — the inventory above shows where "
+                "the stored pairs sit. The board recomputes nightly."
             )
             return
         deeper = any(b["saturated"] or b["count"] > b["stored"] for b in buckets)
@@ -465,10 +809,11 @@ def main() -> None:
             b, s = p["buy"], p["sell"]
             coords = p.get("coords")
             tail = f" ({fmt_coords(coords)})" if coords else ""
-            lr = p.get("leg_returns", {})
+            fav = p.get("favor")
             legs_str = (
-                f"  legs market {lr.get('buy', 0):+g}% buy / {lr.get('sell', 0):+g}% sell"
-                if lr
+                f"  favor buy {fav['buy']:+g} / sell {fav['sell']:+g} · "
+                f"min {fav['min']:+g} ({favor_tag(fav['min'])})"
+                if fav
                 else ""
             )
             print(
@@ -482,6 +827,10 @@ def main() -> None:
             "\nSequencing: agreement-first — verbal yes on the buy, execute the sell, "
             "then the buy. The board recomputes after any executed trade."
         )
+        return
+
+    if args.cmd == "find":
+        run_find(args, db, league)
         return
 
     if args.cmd == "teams":

@@ -10,20 +10,25 @@ export const metadata: Metadata = {
 };
 
 /**
- * Trades tab (scoring-system.md v4): the stratified stored PAIR space behind
- * TWO independent dials — a floor on total pair return (v4: the GUARANTEED
- * floor min(ΔS, ΔF) over face sent — two objective coordinates, no blend, no
- * parameter) and a cap on each leg's market return. Every stored pair is
- * objectively good (both coordinates positive — §11.8b(d) hard constraint)
- * and fully count-neutral (exactly 0 players / 0 picks net for our side; a
- * buy never goes out without its exit); the dials (floor presets 1 / 2.5 /
- * 5 / 10 / 20, default 5; leg-cap presets 2.5 / 5 / 10 / 20 / no cap,
- * default no cap — no combination is invalid) filter the stored list
- * client-side while the inventory line comes from the engine's honest
- * per-bucket `bands` grid. Unpaired legs and blocked buys stay in Mongo for
- * the trade-negotiator desk but do not render here (user: nothing without an
- * associated hedge). Reads Mongo only — every number is the engine's, never
- * recomputed here.
+ * Trades tab (scoring-system.md v5): the favor-stratified stored PAIR space
+ * behind the finder's THREE dials (§4a/§5) — a δ SELECTOR (robust default +
+ * presets 0/0.25/0.5/0.75/1; return(δ) re-scored client-side from each stored
+ * pair's exact coordinates, a labeled preference view — the §2 objective
+ * verdict never moves), a floor on TOTAL return(δ) (robust = the GUARANTEED
+ * floor min(ΔS, ΔF) over face sent; presets 1/2.5/5/10/20, default 5), and a
+ * counterparty-favorability FLOOR on min(f_buy, f_sell) (presets −10/−5/0/
+ * +2.5/+5/no floor, KTC's own calculator variance units — ±5 = their
+ * calculator literally says FAIR; replaces the v3.4.1 per-leg market-return
+ * cap). Every stored pair is objectively good (both coordinates positive —
+ * §11.8b(d)/§11.12(g) hard constraint) and fully count-neutral (exactly 0
+ * players / 0 picks net for our side; a buy never goes out without its exit);
+ * the dials filter/re-sort the stored list client-side while the inventory
+ * line comes from the engine's honest favor-bucket × robust-return `bands`
+ * grid. Unpaired legs and blocked buys stay in Mongo for the trade-negotiator
+ * desk but do not render here (user: nothing without an associated hedge);
+ * deep or constrained queries beyond stored inventory belong to the finder
+ * (§4a), not this board. Reads Mongo only — every number is the engine's,
+ * never recomputed here (return(δ) is arithmetic on stored numbers).
  */
 export default async function TradesPage() {
   let doc: TradeRecsDoc | null;
@@ -82,21 +87,29 @@ export default async function TradesPage() {
           objectively good — both coordinates rise — so your gain is
           guaranteed between the floor and the ceiling whatever you think
           stored future capital is worth; the chip is the guaranteed ΔW, and
-          the ranking is maximin: best guaranteed floor first, ceiling as the
-          tie-break. Coordinates are per side (face is zero-sum on a leg,
-          starters are not), so a trade can be genuinely good for both
+          the shipped ranking is maximin: best guaranteed floor first, ceiling
+          as the tie-break. Coordinates are per side (face is zero-sum on a
+          leg, starters are not), so a trade can be genuinely good for both
           parties, and a buy leg on its own can be floor-negative; the pair
           numbers are both legs together. Every leg passes the fairness gate —
           literally the totals their KTC calculator shows — and respects
-          posture (BUYERs receive players, SELLERs picks). Two independent
-          dials (§5): the floor is on the TOTAL guaranteed return, the cap is
-          on EACH leg&apos;s market return (the face skim that leg&apos;s
-          counterparty sees). Band ceilings on cards are negotiating room, not
-          the opener.
+          posture (BUYERs receive players, SELLERs picks). v5 gives the board
+          the finder&apos;s three dials (§4a): a δ selector (a labeled
+          preference view between win-now δ=0 and win-later δ=1 — return(δ)
+          re-scored from stored coordinates, robust default = the guaranteed
+          floor), a floor on total return(δ), and a counterparty-favorability
+          floor in KTC&apos;s own variance units — per leg, favor is the
+          signed skew their own calculator shows (±5 = it literally says
+          FAIR), and the floor applies to the least-happy counterparty,
+          min(f_buy, f_sell) — replacing the per-leg market-return cap (the
+          raw skim diverges from their calculator by up to 14 pts). Band
+          ceilings on cards are negotiating room, not the opener.
         </p>
         <PairsBoard
           pairs={doc.pairs}
           presets={doc.presets}
+          favorPresets={doc.favor_presets}
+          deltaPresets={doc.delta_presets}
           bands={doc.bands ?? []}
           computedAt={doc.computed_at}
         />

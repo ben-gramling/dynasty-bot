@@ -27,41 +27,44 @@ def test_top_level_shape(result):
     assert meta["w_min"] == 150.0
     tr = result["trade_recs"]
     assert set(tr) == {
-        "disabled", "pairs", "presets", "leg_cap_presets", "counts_by_threshold",
-        "bands", "truncated", "recommendations", "watch", "notes",
+        "disabled", "pairs", "presets", "favor_presets", "delta_presets",
+        "counts_by_threshold", "bands", "truncated", "recommendations",
+        "watch", "notes",
     }
     assert tr["disabled"] is False
-    # the PRIMARY list (§5 v3.4.1): stratified per-MAX-LEG-BUCKET storage
-    # behind the two dials — dense on this fixture (every bucket at quota)
-    assert 0 < len(tr["pairs"]) <= 500
+    # the PRIMARY list (§5 v5): stratified per-FAVOR-BUCKET storage behind the
+    # three sliders — per bucket the union of tops by robust return / dS / dF
+    assert 0 < len(tr["pairs"]) <= 3 * 100 * 5
     assert tr["presets"] == [1.0, 2.5, 5.0, 10.0, 20.0]
-    assert tr["leg_cap_presets"] == [2.5, 5.0, 10.0, 20.0]
+    assert tr["favor_presets"] == [-10.0, -5.0, 0.0, 2.5, 5.0]
+    assert tr["delta_presets"] == [0.0, 0.25, 0.5, 0.75, 1.0]
     assert {e["threshold"] for e in tr["counts_by_threshold"]} == set(tr["presets"])
-    # v3.4.1 bucket inventory: one entry per max-leg bucket, open at both ends
+    # v5 bucket inventory: one entry per favor band, open at both ends
     assert [set(b) for b in tr["bands"]] == [
         {"lo", "hi", "stored", "count", "saturated", "by_total"}
-    ] * (len(tr["leg_cap_presets"]) + 1)
-    assert [b["lo"] for b in tr["bands"]] == [None] + tr["leg_cap_presets"]
-    assert [b["hi"] for b in tr["bands"]] == tr["leg_cap_presets"] + [None]
+    ] * 5
+    assert [b["lo"] for b in tr["bands"]] == [None, -10.0, -5.0, 0.0, 5.0]
+    assert [b["hi"] for b in tr["bands"]] == [-10.0, -5.0, 0.0, 5.0, None]
     for b in tr["bands"]:
         assert len(b["by_total"]) == len(tr["presets"])
     assert 0 <= len(tr["recommendations"]) <= 10  # secondary: building blocks
     assert isinstance(tr["watch"], list) and isinstance(tr["notes"], list)
     for pair in tr["pairs"]:
-        # v4: combined coordinates + verdict/floor/ceiling replace the blended
-        # ledger fields; v3.4.1's leg market returns and their max (the cap
-        # key) stay
+        # v5: combined coordinates + verdict/floor/ceiling/favor/sent — every
+        # dial move (δ view, return floor, favor floor) is O(stored) from
+        # exactly these fields
         assert set(pair) == {
-            "id", "buy", "sell", "return_pct", "leg_returns", "max_leg_return_pct",
-            "coords", "verdict", "floor", "ceiling", "net_roster",
+            "id", "buy", "sell", "return_pct", "favor",
+            "coords", "verdict", "floor", "ceiling", "sent", "net_roster",
             "net_players", "net_picks", "fit_summary", "sequencing", "overlaps",
         }
         assert set(pair["coords"]) == {"dS", "dF"}
-        assert pair["verdict"] is True  # §11.8b(d): hard storage constraint
+        assert pair["verdict"] is True  # §11.8b(d)/§11.12(g): hard storage constraint
         assert pair["floor"] == min(pair["coords"].values())
         assert pair["ceiling"] == max(pair["coords"].values())
-        assert set(pair["leg_returns"]) == {"buy", "sell"}
-        assert pair["max_leg_return_pct"] == max(pair["leg_returns"].values())
+        assert set(pair["favor"]) == {"buy", "sell", "min"}
+        assert pair["favor"]["min"] == min(pair["favor"]["buy"], pair["favor"]["sell"])
+        assert pair["sent"] > 0
         assert pair["net_players"] == 0 and pair["net_picks"] == 0  # §5 v3.2
 
 
@@ -70,12 +73,16 @@ def test_card_schema_matches_contract(result):
     for card in board_legs(result["trade_recs"]):
         for key in (
             "id", "action", "counterparty", "give", "get", "coords", "verdict",
-            "floor", "breakeven", "coords_basis", "market_return_pct", "gate",
-            "posture", "holes", "net_roster", "net_players", "net_picks",
+            "floor", "breakeven", "coords_basis", "market_return_pct", "favor",
+            "gate", "posture", "holes", "net_roster", "net_players", "net_picks",
             "standalone", "leg_type", "sequencing", "ceiling", "taxi_stashed",
             "anchor_ask", "dip_notes", "unvalued", "exclusive_with",
         ):
             assert key in card, key
+        # §4a v5: leg favor is signed (+ = counterparty wins), 2dp, and equals
+        # the gate's own figure — one source of truth (§11.12(a) pins the
+        # check_equality identity in test_trades)
+        assert card["favor"] == card["gate"]["favor"] == round(card["favor"], 2)
         assert card["action"] == "TRADE"
         assert card["leg_type"] in ("buy", "sell", "neutral")
         # §2 v4: each side's own coordinates, verdict, guaranteed floor, and
@@ -123,12 +130,14 @@ def test_notes_mention_execution_protocol(result):
     assert any("recomputes" in n for n in notes)
     assert any("fire-sale" in n for n in notes)
     assert any("0 players / 0 picks" in n for n in notes)  # §5 pair unit
-    assert any("two dials" in n for n in notes)  # §5 v3.4.1 floor + leg cap
+    assert any("three sliders" in n for n in notes)  # §4a/§5 v5 dials
+    assert any("counterparty favorability" in n for n in notes)  # v5 favor dial
     assert any("two objective coordinates" in n for n in notes)  # §2 v4
     assert any("objectively good" in n for n in notes)  # §11.8b(d) verdict
-    assert any("stratified storage" in n for n in notes)  # v3.4.1 per-bucket quota
+    assert any("stratified storage" in n for n in notes)  # v5 per-bucket unions
     assert any("posture is a hard engine constraint" in n for n in notes)
     assert any("saturated" in n for n in notes)  # honest-counter semantics
+    assert any("spread finder" in n for n in notes)  # §4a: deep queries go there
     # truncation is reported in the notes whenever the doc carries the flag
     if result["trade_recs"]["truncated"]:
         assert any("storage cap" in n for n in notes)

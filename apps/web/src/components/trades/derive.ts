@@ -16,6 +16,20 @@ export function legLabel(rec: TradeRec): string {
 }
 
 /**
+ * §4a v5 leg favor chip text, in KTC's own calculator terms: |favor| ≤ 5 is
+ * literally the calculator's FAIR verdict at default variance (the engine
+ * quantizes favor exactly as the calculator does, so the boundary is exact);
+ * beyond it the chip names the beneficiary — favor > 0 skews to the
+ * counterparty ("them"), favor < 0 to you (shown as a magnitude).
+ */
+export function favorLabel(favor: number): string {
+  if (Math.abs(favor) <= 5) return "their calculator: FAIR";
+  return favor > 0
+    ? `favors them +${favor.toFixed(1)}`
+    : `favors you ${Math.abs(favor).toFixed(1)}`;
+}
+
+/**
  * §4 posture sentence: what the counterparty receives, aimed at their
  * observed posture — "players → BUYER ronakpatel32 (3 trades on record)".
  */

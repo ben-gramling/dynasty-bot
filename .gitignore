@@ -42,5 +42,8 @@ playwright-report/
 .playwright-mcp/
 .worktrees/
 
+# Finder leg cache (§4a — per-snapshot, rebuildable)
+.cache/
+
 # Misc
 *.log

@@ -1,5 +1,5 @@
 /**
- * Typed reads over the collector's Mongo output (docs/scoring-system.md v3,
+ * Typed reads over the collector's Mongo output (docs/scoring-system.md v5,
  * libs/core/core/store.py). One function per page need; every function selects
  * the "dynasty-bot" db by name and returns plain JSON-safe objects (Dates →
  * ISO strings, ObjectIds → hex strings) so results can cross into client
@@ -121,6 +121,14 @@ export interface TradeGate {
   ratio_ok: boolean;
   legal: boolean;
   verdict: string;
+  /**
+   * §4a v5 counterparty favorability, signed, from the SAME two adjusted
+   * totals as this gate: the skew toward the counterparty in KTC's own
+   * calculator variance units (|favor| ≤ 5 ⟺ their calculator literally says
+   * FAIR at default variance; favor > 0 skews to them). Mirrored on the leg
+   * card as `favor`. Optional: docs written before v5 omit it.
+   */
+  favor?: number;
 }
 
 /**
@@ -197,11 +205,21 @@ export interface TradeRec {
    * percent (pre-v4 docs: ΔW-based — same field, same rendering). */
   return_pct: number | null;
   /**
-   * §5 v3.4.1 leg MARKET return, percent: face ΔW(me) ÷ face Σv sent on this
-   * leg — the skim this leg's counterparty sees; the leg-cap dial's input.
-   * Optional: docs written before v3.4.1 omit it.
+   * Leg MARKET return, percent: face ΔF(me) ÷ face Σv sent on this leg — the
+   * raw face skim off this counterparty. v5 DEMOTED it from dial input to
+   * annotation (the raw skim diverges from the counterparty's own calculator
+   * by up to 14 pts — `favor` is the dial's input now). Optional: docs
+   * written before v3.4.1 omit it.
    */
   market_return_pct?: number | null;
+  /**
+   * §4a v5 counterparty favorability for this leg, signed: the skew toward
+   * the counterparty in KTC's own calculator variance units, derived from the
+   * SAME adjusted totals as the gate (also mirrored at `gate.favor`).
+   * |favor| ≤ 5 ⟺ their calculator literally says FAIR at default variance;
+   * favor > 0 skews to them. Optional: docs written before v5 omit it.
+   */
+  favor?: number;
   gate: TradeGate;
   posture: TradePosture;
   /** Their league rank at each position I send — "aim at visible holes". */
@@ -245,14 +263,31 @@ export interface TradePair {
   /**
    * §5 v4 TOTAL return on inventory deployed, percent: guaranteed floor
    * min(dS, dF) combined ÷ Σv of every asset I send across both legs — the
-   * floor dial's filter key and the primary sort key (ceiling desc as
-   * tie-break; the board always ships in maximin order).
+   * ROBUST return (the δ dial's default view), the floor dial's robust filter
+   * key, and the shipped sort key (ceiling desc as tie-break; the board
+   * always ships in maximin order — the δ dial re-sorts client-side).
    */
   return_pct: number;
   /**
-   * §5 v3.4.1: each leg's market return, percent (face skim off that leg's
-   * counterparty), and their max — the leg-cap dial's filter key. Optional:
-   * docs written before v3.4.1 omit them.
+   * §4a/§5 v5: each leg's counterparty favorability (signed, KTC's own
+   * calculator variance units, from the same adjusted totals as the gate) and
+   * `min` — the least-happy counterparty, the favor-floor dial's filter key
+   * and the storage bucket key. Optional: docs written before v5 omit it.
+   */
+  favor?: { buy: number; sell: number; min: number };
+  /**
+   * §5 v5 Σ face v of every asset I send across both legs — the return
+   * denominator; with `coords` it lets the δ dial re-score return(δ) =
+   * (dS + δ·(dF − dS)) ÷ sent client-side, O(stored) per dial move.
+   * Optional: docs written before v5 omit it (robust view only).
+   */
+  sent?: number;
+  /**
+   * Pre-v5 (v3.4.1): each leg's market return, percent (raw face skim off
+   * that leg's counterparty), and their max — the retired leg-cap dial's
+   * filter key. REMOVED from v5 docs (the raw skim diverges from the
+   * counterparty's calculator by up to 14 pts); kept optional so old boards
+   * render.
    */
   leg_returns?: { buy: number; sell: number };
   max_leg_return_pct?: number;
@@ -297,29 +332,33 @@ export interface ThresholdCount {
 }
 
 /**
- * §5 v3.4.1 per-BUCKET inventory: buckets stratify on the pair's MAX LEG
- * market return over half-open (−∞,2.5), [2.5,5), [5,10), [10,20), [20,∞)
- * percent intervals (lo null on the open bottom — buy legs are normally
- * negative; hi null on the open top). The engine stores each bucket's top
- * `stored` pairs by TOTAL return (quota 100); a leg-cap preset `c` selects
- * the union of buckets with hi ≤ c. `count` is the bucket's legal pair count
- * and `by_total` its counts per total-return band (aligned with `presets`) —
- * every count a verified floor when `saturated` (v3.4: always, outside
- * whole-space walks). Docs written before v3.4.1 carry the old total-return
- * band shape (lo non-null, no by_total) — render defensively.
+ * §5 v5 per-BUCKET inventory: buckets stratify on PAIR FAVORABILITY
+ * min(f_buy, f_sell) — the least-happy counterparty, in KTC's own calculator
+ * variance units — over half-open (−∞,−10), [−10,−5), [−5,0), [0,+5), [+5,∞)
+ * intervals (lo null on the open bottom — a leg can skew arbitrarily far
+ * toward me; hi null on the open top). Per bucket the engine stores the
+ * deduped UNION of the top-quota pairs by robust floor-return, by ΔS, and by
+ * ΔF (so both δ-slider extremes have inventory); a favor-floor preset `f`
+ * selects the buckets with lo ≥ f (the +2.5 preset sits inside [0,+5) and is
+ * served from that bucket's stored inventory — bucket counts for it stay
+ * floors). `count` is the bucket's legal pair count and `by_total` its counts
+ * per ROBUST-return band (aligned with `presets`) — every count a verified
+ * floor when `saturated` (outside whole-space walks: always). Docs written
+ * before v5 carry max-leg market-return buckets in the same shape — render
+ * defensively.
  */
 export interface BandInfo {
-  /** Bucket lower edge, percent (inclusive); null = open bottom (v3.4.1). */
+  /** Bucket lower edge, favor units (inclusive); null = open bottom. */
   lo: number | null;
-  /** Bucket upper edge, percent (exclusive); null = open top. */
+  /** Bucket upper edge, favor units (exclusive); null = open top. */
   hi: number | null;
-  /** Pairs stored for this bucket (≤ the engine's per-bucket quota). */
+  /** Pairs stored for this bucket (union ≤ 3× the per-bucket quota). */
   stored: number;
   /** Legal pairs in the bucket — a verified floor when saturated. */
   count: number;
   /** True when the count is a floor, not an exact tally ("≥ N"). */
   saturated: boolean;
-  /** v3.4.1: the bucket's counts per total-return band (aligned with presets). */
+  /** The bucket's counts per robust-return band (aligned with presets). */
   by_total?: number[];
 }
 
@@ -348,19 +387,34 @@ export interface TradeRecsDoc {
   meta: ScoringMeta;
   disabled: boolean;
   /**
-   * Primary (§5 v3.4.1): the stratified stored pair space behind the TWO
-   * dials — total-return floor + per-leg market-return cap. Count-neutral
-   * pairs, top-quota per max-leg BUCKET by total return, the flat list sorted
-   * by total return desc globally. See `bands` for per-bucket honesty.
+   * Primary (§4a/§5 v5): the stratified stored pair space behind the
+   * finder's THREE dials — δ selector (robust default; return(δ) re-scored
+   * client-side from coords + sent), total-return floor on return(δ), and
+   * counterparty-favorability floor on favor.min. Count-neutral pairs,
+   * per-FAVOR-bucket union of tops (by robust return, ΔS, ΔF), the flat list
+   * shipped in maximin order (robust return desc, ceiling tie-break). See
+   * `bands` for per-bucket honesty.
    */
   pairs: TradePair[];
   /** Total-return floor presets, percent: [1, 2.5, 5, 10, 20]. */
   presets: number[];
-  /** v3.4.1 leg-cap presets, percent: [2.5, 5, 10, 20]. Optional on old docs. */
+  /**
+   * v5 favor-floor presets, KTC variance units: [−10, −5, 0, +2.5, +5]
+   * (+ "no floor" client-side). ±5 = their calculator's FAIR window.
+   * Optional: docs written before v5 omit them.
+   */
+  favor_presets?: number[];
+  /**
+   * v5 δ-view presets: [0, 0.25, 0.5, 0.75, 1] (+ "robust" default
+   * client-side). Views only — never score parameters (§9). Optional: docs
+   * written before v5 omit them.
+   */
+  delta_presets?: number[];
+  /** Pre-v5 (v3.4.1) leg-cap presets, percent — retired. Optional on old docs. */
   leg_cap_presets?: number[];
-  /** Honest pair counts per floor preset (ascending; ≥-style compat). */
+  /** Honest pair counts per floor preset (ascending; ≥-style compat, robust). */
   counts_by_threshold: ThresholdCount[];
-  /** v3.4.1 per-bucket inventory (ascending) — the cap filter's source. */
+  /** v5 per-favor-bucket inventory (ascending) — the favor dial's source. */
   bands: BandInfo[];
   /** Set when more pairs cleared the floor than were stored; null otherwise. */
   truncated: TruncationInfo | null;

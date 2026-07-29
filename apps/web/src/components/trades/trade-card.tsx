@@ -1,7 +1,7 @@
 import type { TradeAsset, TradeRec } from "@/lib/queries";
 import { fmtPct, fmtSigned, fmtValue } from "@/lib/format";
 import { ValueChip } from "@/components/value-chip";
-import { legLabel, ord, postureEvidenceNote } from "./derive";
+import { favorLabel, legLabel, ord, postureEvidenceNote } from "./derive";
 
 /**
  * One ranked trade leg (scoring-system.md v4 §2–§5): You send / You get at
@@ -265,9 +265,11 @@ function AssetColumn({ title, assets }: { title: string; assets: TradeAsset[] })
   );
 }
 
-/** The §3 fairness gate, verbatim from the doc: band gap, raw ratio, verdict. */
+/** The §3 fairness gate, verbatim from the doc: band gap, raw ratio, the v5
+ * favor chip (derived from the SAME two adjusted totals), verdict. */
 function GateStrip({ rec }: { rec: TradeRec }) {
   const g = rec.gate;
+  const favor = rec.favor ?? g.favor;
   return (
     <p className="mt-3 flex flex-wrap items-baseline gap-x-4 gap-y-1 border-t border-line pt-2 text-[11.5px] text-ink-muted">
       <span
@@ -283,6 +285,14 @@ function GateStrip({ rec }: { rec: TradeRec }) {
       <span title="Both post-trade rosters legal: minima, caps with taxi routing, IR, deadline (§3.3)">
         {g.legal ? "legal both sides" : "ILLEGAL"}
       </span>
+      {favor !== undefined ? (
+        <span
+          className="rounded border border-line bg-chip px-1.5 py-0.5 text-[10.5px] text-ink"
+          title={`Counterparty favorability (§4a v5): favor ${fmtSigned(favor, 1)} — this leg's signed skew toward ${rec.counterparty} in KTC's own calculator variance units, from the SAME adjusted totals as this gate. |favor| ≤ 5 means their calculator literally says FAIR at default variance; favor > 0 skews to them. The board's favor floor filters on the pair's min(f_buy, f_sell).`}
+        >
+          {favorLabel(favor)}
+        </span>
+      ) : null}
       <span
         className={`rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] ${
           g.verdict === "PASS"

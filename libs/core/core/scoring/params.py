@@ -45,16 +45,28 @@ class Params:
     give_list_protect_top: int = 2  # cornerstones never enter the give-list
     # total-return floor presets, percent (the min dial + the by_total grid bands)
     return_presets: tuple[float, ...] = (1.0, 2.5, 5.0, 10.0, 20.0)
-    # v3.4.1 per-leg market-return cap presets, percent (the max dial): buckets
-    # (−∞,2.5), [2.5,5), [5,10), [10,20), [20,∞) on max(r(buy), r(sell)) where
-    # r(leg) = face ΔF(me) ÷ Σ face v sent on that leg
-    leg_cap_presets: tuple[float, ...] = (2.5, 5.0, 10.0, 20.0)
-    # v3.4.1 stratified storage: top-N pairs kept PER max-leg bucket, sorted by
-    # TOTAL return desc, so any (total floor, leg cap) query has whatever
-    # inventory exists; per-bucket honesty + the bucket × total-band grid via
-    # `bands`. (v3.3.1 stratified by total-return band; a leg-cap query cannot
-    # be served from that — high totals concentrate lopsidedness in one leg.)
+    # §9 v5 counterparty-favorability presets (KTC's own variance units; ±5 is
+    # the calculator's FAIR window at default variance). The favor dial is a
+    # FLOOR on pair favorability min(f_buy, f_sell); an optional ceiling stops
+    # giving edge away. Replaces the v3.4.1 raw-skim leg cap: the raw skim
+    # provably diverges from the counterparty's own calculator by up to 14 pts.
+    favor_presets: tuple[float, ...] = (-10.0, -5.0, 0.0, 2.5, 5.0)
+    # §5 v5 storage strata: pair favor min(f_buy, f_sell) buckets
+    # (−∞,−10), [−10,−5), [−5,0), [0,+5), [+5,∞) — the +2.5 preset is a DIAL
+    # position served from the [0,+5) bucket's stored inventory (every stored
+    # pair carries its exact favor, so the client filter is O(stored))
+    favor_band_edges: tuple[float, ...] = (-10.0, -5.0, 0.0, 5.0)
+    # §9 v5 δ-slider presets — labeled preference VIEWS over the stored (ΔS, ΔF)
+    # coordinates, never score parameters (§2/§4a); robust (all-δ) is the default
+    delta_presets: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
+    # §5 v5 stratified storage: PER favor bucket the deduped UNION of the top-N
+    # by robust floor-return, by ΔS, and by ΔF — so both δ-slider extremes have
+    # inventory; per-bucket honesty + the bucket × robust-return-band grid via
+    # `bands`.
     pairs_per_band: int = 100
+    # §4a/§9 the spread finder
+    finder_top: int = 20  # query result size
+    finder_cross_budget: int = 2_000_000  # crossings per query; saturation → verified floors
     variants_per_signature: int = 2  # gets kept per (opponent, give, count-signature), isolation floor desc
     # v3.4 scan bound: gate-passers evaluated per (opponent, give, count-signature)
     # before the top-`variants_per_signature` are taken. The exact KTC gate and the

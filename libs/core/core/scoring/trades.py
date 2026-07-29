@@ -1,8 +1,10 @@
 """§2/§3/§5 trades: the v4 TWO-COORDINATE score (ΔS, ΔF — no blend, no δ), the
 exact KTC-calculator fairness gate, enumerate-then-filter pairing behind the
-user's TWO dials (§5 v3.4.1: a floor on TOTAL pair return plus a cap on EACH
-leg's market return — independent dimensions, storage stratified by max-leg
-bucket so any (floor, cap) query has whatever inventory exists), posture as a
+v5 sliders (§4a/§5: δ view over the stored coordinates, a floor on robust
+TOTAL return, and a floor on counterparty FAVORABILITY — each leg's signed
+KTC-calculator skew, from the same adjusted totals as the gate; storage
+stratified by favor bucket with per-bucket unions of tops by robust return /
+ΔS / ΔF so every dial position has whatever inventory exists), posture as a
 hard pair-pool constraint, fully count-neutral pairs (§5 v3.2: a recommended
 pair nets exactly 0 players AND 0 picks for my side).
 
@@ -333,10 +335,30 @@ def _band_ok(params, adj_give: float, adj_get: float) -> bool:
     return gap <= (fa if fa > fr * hi else fr * hi)
 
 
+def favor_of(adj_receive: float, adj_give: float) -> float:
+    """§4a v5 counterparty favorability, per leg: the SIGNED version of KTC's
+    calculator equality metric, in the calculator's own units —
+    `f = 100 · (adjTotal(they receive) − adjTotal(they give)) ÷ (adjTotal sum)`,
+    with the magnitude quantized EXACTLY as `ktc_adjust.check_equality`
+    quantizes it (JS half-up rounding to one decimal), so
+    `|f| ≤ 5 ⟺ check_equality(adjT1, adjT2, 5)` — their calculator literally
+    says FAIR at the default variance (§11.12(a)). `f > 0` skews to the
+    counterparty. Inputs are the two adjusted totals the §3 gate already
+    computed — one source of truth, the port never runs twice."""
+    e = adj_receive if adj_receive > 0.0 else 0.0
+    a = adj_give if adj_give > 0.0 else 0.0
+    r = e + a
+    n = min(100.0, abs(e - a) / r * 100.0) if r else 0.0
+    q = ka.js_round(10.0 * n) / 10.0
+    return q if e >= a else -q
+
+
 def gate_info(league: md.LeagueState, give: Package, get: Package) -> dict:
     """§3.1/§3.2: the EXACT KTC-calculator band + anti-fleece cap (never
     exempted). `adj_give`/`adj_get` are the numbers the counterparty's own
-    calculator shows; the gap between them is KTC's deserved gap."""
+    calculator shows; the gap between them is KTC's deserved gap. `favor` (v5)
+    is derived from the SAME two adjusted totals — the leg's signed skew toward
+    the counterparty in KTC's own variance units (§4a)."""
     params = league.params
     adj_give, adj_get = adjusted_gap(league, give, get)
     hi = max(adj_give, adj_get)
@@ -355,6 +377,8 @@ def gate_info(league: md.LeagueState, give: Package, get: Package) -> dict:
         "raw_ratio": round(ratio, 2) if ratio != float("inf") else None,
         "cap": params.fleece_ratio,
         "ratio_ok": ratio <= params.fleece_ratio,
+        # v5: the counterparty receives `give`, gives `get` — + = they win
+        "favor": round(favor_of(adj_give, adj_get), 2),
     }
 
 
@@ -585,14 +609,19 @@ def build_card(
         # §5 v4 leg return on inventory deployed: isolation floor(me) ÷ Σv
         # sent, percent — the disclosed pre-ranking heuristic
         "return_pct": round(100 * floor_me / give.v_sum, 2) if give.v_sum > 0 else None,
-        # §5 v3.4.1 leg MARKET return: face ΔF(me) ÷ face Σv sent — the skim the
-        # counterparty's own KTC math sees on this single trade; the leg-cap
-        # dial's input (the starter coordinate never enters it)
+        # informational leg MARKET return: face ΔF(me) ÷ face Σv sent — the raw
+        # face skim off this counterparty. v5 DEMOTED it from dial input to
+        # annotation: the raw skim diverges from the counterparty's own
+        # calculator by up to 14 pts; `favor` below is the dial's input
         "market_return_pct": (
             round(100 * (get.v_sum - give.v_sum) / give.v_sum, 2)
             if give.v_sum > 0
             else None
         ),
+        # §4a v5 counterparty favorability — signed, 2dp, + = counterparty
+        # wins; derived from the SAME adjusted totals as the gate above
+        # (|favor| ≤ 5 ⟺ their calculator says FAIR at default variance)
+        "favor": gate["favor"],
         "gate": gate,
         "posture": {
             "label": posture["label"],
@@ -709,9 +738,10 @@ _MIN4 = tuple(MIN_POS[p] for p in _POS4)
 # stay put; v4 pre-ranks legs by their ISOLATION FLOOR min(ΔS, ΔF) — the
 # disclosed heuristic — so slots 0/1 hold the floor return and the floor;
 # indices 9-11 carry the coordinate inputs the pair walk needs, and 12 the
-# leg's MARKET return — face ΔF(me) ÷ face Σv sent, the §5 leg-cap input)
+# leg's FAVOR — the §4a v5 signed counterparty skew in KTC's calculator units,
+# derived from the same adjusted totals the gate read during the scan)
 L_RET, L_FLOOR, L_SENT, L_NP, L_NK, L_OPP, L_MASK, L_GIVE, L_GET = range(9)
-L_OUT4, L_IN4, L_DFACE, L_MKT = 9, 10, 11, 12
+L_OUT4, L_IN4, L_DFACE, L_FAVOR = 9, 10, 11, 12
 
 
 @dataclass(slots=True)
@@ -732,12 +762,13 @@ class PairPool:
     enforce_posture: bool
     index: StarterIndex
 
-    def pair_eval(self, buy_i: int, sell_i: int) -> tuple[float, float, float]:
-        """EXACT combined (floor-based return FRACTION, floor, ceiling) for two
-        legs applied TOGETHER (§5 v4) — never assembled from the legs' isolation
-        figures. One combined starter re-solve gives ΔS; ΔF is additive; the
-        return is min(ΔS, ΔF) ÷ Σ face v I send across both legs (denominator
-        stays face KTC)."""
+    def pair_eval(self, buy_i: int, sell_i: int) -> tuple[float, float, float, float, float]:
+        """EXACT combined (floor-based return FRACTION, floor, ceiling, ΔS, ΔF)
+        for two legs applied TOGETHER (§5 v4) — never assembled from the legs'
+        isolation figures. One combined starter re-solve gives ΔS; ΔF is
+        additive; the return is min(ΔS, ΔF) ÷ Σ face v I send across both legs
+        (denominator stays face KTC). v5 exposes the raw coordinates too — the
+        δ-slider re-scores stored pairs as ΔW(δ) from exactly these."""
         b, s = self.legs[buy_i], self.legs[sell_i]
         bo, so = b[L_OUT4], s[L_OUT4]
         bi_, si_ = b[L_IN4], s[L_IN4]
@@ -748,12 +779,20 @@ class PairPool:
         d_f = b[L_DFACE] + s[L_DFACE]
         floor = d_s if d_s < d_f else d_f
         ceiling = d_f if d_s < d_f else d_s
-        return floor / (b[L_SENT] + s[L_SENT]), floor, ceiling
+        return floor / (b[L_SENT] + s[L_SENT]), floor, ceiling, d_s, d_f
 
     def pair_return(self, buy_i: int, sell_i: int) -> float:
         """The pair's floor-based return FRACTION (§5 v4) — pair_eval's first
         component, kept as the single-value entry point for tests/CLI."""
         return self.pair_eval(buy_i, sell_i)[0]
+
+    def pair_favor(self, buy_i: int, sell_i: int) -> tuple[float, float, float]:
+        """§4a v5 (f_buy, f_sell, min): each leg's counterparty favorability
+        (stored on the leg at scan time, from the gate's own adjusted totals)
+        and the pair figure — min over the legs, the least-happy counterparty."""
+        fb = self.legs[buy_i][L_FAVOR]
+        fs = self.legs[sell_i][L_FAVOR]
+        return fb, fs, fb if fb < fs else fs
 
 
 def _raw_adj_total(vals_desc: Sequence[float], r_max: float, cap: float) -> float:
@@ -791,7 +830,14 @@ def _pos_vec(pkg: Package) -> tuple[int, int, int, int]:
     return (d.get("QB", 0), d.get("RB", 0), d.get("WR", 0), d.get("TE", 0))
 
 
-def build_pair_pool(league: md.LeagueState, enforce_posture: bool = True) -> PairPool:
+def build_pair_pool(
+    league: md.LeagueState,
+    enforce_posture: bool = True,
+    *,
+    opponents: Sequence[str] | None = None,
+    my_pkgs_for=None,
+    opp_pkgs_for=None,
+) -> PairPool:
     """§5 v3.3 enumeration — no minimal-gap pruning, no W_min gate. Per opponent,
     per give-package, per get count-signature: walk the Σv window
     [gv ÷ fleece_ratio, gv · fleece_ratio] descending — the whole fleece bracket
@@ -808,7 +854,15 @@ def build_pair_pool(league: md.LeagueState, enforce_posture: bool = True) -> Pai
     S ≤ max(500, 0.25·max side total), and S is monotone in the raw-adjustment
     gap, so a raw gap above processV of that bound can never clear the band —
     and (b) stops after `variant_scan_cap` passers rather than draining the
-    bracket."""
+    bracket.
+
+    v5 finder hooks (§4a — defaults leave the board path bit-identical):
+    `opponents` restricts the scan to a counterparty subset; `my_pkgs_for` /
+    `opp_pkgs_for` are callables (opp_name -> list[Package]) supplying the
+    CONSTRAINED package subsets (constraint push-down happens BEFORE gate
+    work); when omitted the full give-list enumerations are used. The finder
+    compiles posture into constraints (§4), so it passes
+    enforce_posture=False and filters through `my_pkgs_for` instead."""
     params = league.params
     me_t = league.teams[league.me]
     my_pkgs = _packages(league, give_list(league, me_t))
@@ -816,7 +870,8 @@ def build_pair_pool(league: md.LeagueState, enforce_posture: bool = True) -> Pai
     my_act = len(me_t.act)
     my_index = team_index(me_t)
     # partner-leg collisions can only involve MY give assets (distinct
-    # counterparties own disjoint pools) — bitmask exactly those
+    # counterparties own disjoint pools) — bitmask exactly those. The bitmap is
+    # built over the FULL give-list so constrained subsets share it.
     asset_bit: dict[str, int] = {}
     for g in my_pkgs:
         for k in g.keys:
@@ -827,26 +882,37 @@ def build_pair_pool(league: md.LeagueState, enforce_posture: bool = True) -> Pai
     fl = params.fleece_ratio
     top_v = league.top_ktc_value
     cap = top_v + 80.0
-    g_info = []
-    for g in my_pkgs:
-        gp = _pos_vec(g)
-        deficit = (
-            max(0, _MIN4[0] - (my_counts[0] - gp[0])),
-            max(0, _MIN4[1] - (my_counts[1] - gp[1])),
-            max(0, _MIN4[2] - (my_counts[2] - gp[2])),
-            max(0, _MIN4[3] - (my_counts[3] - gp[3])),
-        )
-        mask = 0
-        for k in g.keys:
-            mask |= asset_bit[k]
-        g_info.append((g, gp, offer_shape(g), deficit, mask))
+
+    def _g_info(pkgs: Sequence[Package]) -> list[tuple]:
+        out = []
+        for g in pkgs:
+            gp = _pos_vec(g)
+            deficit = (
+                max(0, _MIN4[0] - (my_counts[0] - gp[0])),
+                max(0, _MIN4[1] - (my_counts[1] - gp[1])),
+                max(0, _MIN4[2] - (my_counts[2] - gp[2])),
+                max(0, _MIN4[3] - (my_counts[3] - gp[3])),
+            )
+            mask = 0
+            for k in g.keys:
+                mask |= asset_bit[k]
+            out.append((g, gp, offer_shape(g), deficit, mask))
+        return out
+
+    g_info_all = _g_info(my_pkgs) if my_pkgs_for is None else None
     legs: list[tuple] = []
     buckets: dict[tuple[int, int], list[int]] = {}
     opp_pkgs: dict[str, tuple[list[float], list[Package]]] = {}
-    for oi, opp_name in enumerate(league.opponents):
+    opp_names = list(opponents) if opponents is not None else list(league.opponents)
+    for oi, opp_name in enumerate(opp_names):
         opp_t = league.teams[opp_name]
         label = league.postures.get(opp_name, {}).get("label", ps.NEUTRAL)
-        vsums_all, pkgs_all = _sorted_opp_pkgs(league, opp_name)
+        if opp_pkgs_for is None:
+            vsums_all, pkgs_all = _sorted_opp_pkgs(league, opp_name)
+        else:
+            pkgs_all = sorted(opp_pkgs_for(opp_name), key=lambda p: (p.v_sum, p.keys))
+            vsums_all = [p.v_sum for p in pkgs_all]
+        g_info = g_info_all if my_pkgs_for is None else _g_info(my_pkgs_for(opp_name))
         opp_pkgs[opp_name] = (vsums_all, pkgs_all)
         opp_counts = _team_pos_vec(opp_t)
         opp_act = len(opp_t.act)
@@ -942,25 +1008,27 @@ def build_pair_pool(league: md.LeagueState, enforce_posture: bool = True) -> Pai
                     d_face = t_v - gv
                     d_s, d_f = my_index.coords_delta(g.cols, t.cols, d_face)
                     floor = d_s if d_s < d_f else d_f
-                    best.append((-floor, t.keys, t, d_face))
+                    # v5: leg favor from the SAME adjusted totals this scan just
+                    # computed for the band — the port never runs twice (§11.12(a))
+                    best.append((-floor, t.keys, t, d_face, favor_of(adj_g, adj_t)))
                     passers += 1
                     if passers >= scan_cap:
                         break
                 if not best:
                     continue
                 best.sort()  # isolation floor desc, deterministic ties on the keys
-                for _neg_floor, _k, t, d_face in best[:K]:
+                for _neg_floor, _k, t, d_face, favor in best[:K]:
                     floor = -_neg_floor
                     buckets.setdefault((np_, nk), []).append(len(legs))
                     legs.append(
                         (
                             floor / gv, floor, gv, np_, nk, oi, mask, g, t,
                             g.cols, t.cols, d_face,
-                            d_face / gv,  # market return (§5 v3.4.1)
+                            favor,  # §4a v5 leg favor, from the gate's own totals
                         )
                     )
     return PairPool(
-        opp_names=list(league.opponents),
+        opp_names=opp_names,
         legs=legs,
         buckets=buckets,
         opp_pkgs=opp_pkgs,
@@ -1046,7 +1114,7 @@ def _walk_pairs_below(
     r: float,
     budget: int,
     legal: dict,
-    out: list[tuple[float, float, float, int, int]],
+    out: list[tuple[float, float, float, int, int, float, float]],
 ) -> tuple[int, bool]:
     """Enumerate the VALID pair space at return < r — the exact complement of
     _walk_pairs at r (boundary pairs at exactly r belong to the ≥ walk).
@@ -1088,11 +1156,12 @@ def _walk_pairs_below(
                 if _leg_legal(league, me_t, pool, si, legal) is False:
                     continue
                 # (exact combined return, exact ceiling, heuristic crossing
-                # return, buy, sell): the sink bands and RANKS on the EXACT
-                # figures (floor-return desc, ceiling tie-break — §2 v4
-                # maximin); the walks' disjointness is defined by the
-                # heuristic one (§5)
-                ret, _floor, ceil = pool.pair_eval(bi, si)
+                # return, buy, sell, exact ΔS, exact ΔF): the sink bands and
+                # RANKS on the EXACT figures (floor-return desc, ceiling
+                # tie-break — §2 v4 maximin; v5 also keeps per-bucket tops by
+                # ΔS and ΔF for the δ slider); the walks' disjointness is
+                # defined by the heuristic one (§5)
+                ret, _floor, ceil, d_s, d_f = pool.pair_eval(bi, si)
                 out.append(
                     (
                         ret,
@@ -1100,6 +1169,8 @@ def _walk_pairs_below(
                         (b_fl + s[L_FLOOR]) / (b_sent + s[L_SENT]),
                         bi,
                         si,
+                        d_s,
+                        d_f,
                     )
                 )
     return visits, True
@@ -1111,7 +1182,7 @@ def _walk_pairs(
     r: float,
     budget: int,
     legal: dict,
-    out: list[tuple[float, float, float, int, int]],
+    out: list[tuple[float, float, float, int, int, float, float]],
 ) -> tuple[int, bool]:
     """Enumerate the VALID pair space at return ≥ r: complementary
     count-signature buckets crossed in σ_r-descending order with early exit;
@@ -1157,11 +1228,12 @@ def _walk_pairs(
                 if _leg_legal(league, me_t, pool, si, legal) is False:
                     continue
                 # (exact combined return, exact ceiling, heuristic crossing
-                # return, buy, sell): the sink bands and RANKS on the EXACT
-                # figures (floor-return desc, ceiling tie-break — §2 v4
-                # maximin); the walks' disjointness is defined by the
-                # heuristic one (§5)
-                ret, _floor, ceil = pool.pair_eval(bi, si)
+                # return, buy, sell, exact ΔS, exact ΔF): the sink bands and
+                # RANKS on the EXACT figures (floor-return desc, ceiling
+                # tie-break — §2 v4 maximin; v5 also keeps per-bucket tops by
+                # ΔS and ΔF for the δ slider); the walks' disjointness is
+                # defined by the heuristic one (§5)
+                ret, _floor, ceil, d_s, d_f = pool.pair_eval(bi, si)
                 out.append(
                     (
                         ret,
@@ -1169,6 +1241,8 @@ def _walk_pairs(
                         (b_fl + s[L_FLOOR]) / (b_sent + s[L_SENT]),
                         bi,
                         si,
+                        d_s,
+                        d_f,
                     )
                 )
     return visits, True
@@ -1231,11 +1305,12 @@ def _walk_pairs_range(
                 if _leg_legal(league, me_t, pool, si, legal) is False:
                     continue
                 # (exact combined return, exact ceiling, heuristic crossing
-                # return, buy, sell): the sink bands and RANKS on the EXACT
-                # figures (floor-return desc, ceiling tie-break — §2 v4
-                # maximin); the walks' disjointness is defined by the
-                # heuristic one (§5)
-                ret, _floor, ceil = pool.pair_eval(bi, si)
+                # return, buy, sell, exact ΔS, exact ΔF): the sink bands and
+                # RANKS on the EXACT figures (floor-return desc, ceiling
+                # tie-break — §2 v4 maximin; v5 also keeps per-bucket tops by
+                # ΔS and ΔF for the δ slider); the walks' disjointness is
+                # defined by the heuristic one (§5)
+                ret, _floor, ceil, d_s, d_f = pool.pair_eval(bi, si)
                 out.append(
                     (
                         ret,
@@ -1243,6 +1318,8 @@ def _walk_pairs_range(
                         (b_fl + s[L_FLOOR]) / (b_sent + s[L_SENT]),
                         bi,
                         si,
+                        d_s,
+                        d_f,
                     )
                 )
     return visits, True
@@ -1303,11 +1380,12 @@ def _walk_pairs_below_range(
                 if _leg_legal(league, me_t, pool, si, legal) is False:
                     continue
                 # (exact combined return, exact ceiling, heuristic crossing
-                # return, buy, sell): the sink bands and RANKS on the EXACT
-                # figures (floor-return desc, ceiling tie-break — §2 v4
-                # maximin); the walks' disjointness is defined by the
-                # heuristic one (§5)
-                ret, _floor, ceil = pool.pair_eval(bi, si)
+                # return, buy, sell, exact ΔS, exact ΔF): the sink bands and
+                # RANKS on the EXACT figures (floor-return desc, ceiling
+                # tie-break — §2 v4 maximin; v5 also keeps per-bucket tops by
+                # ΔS and ΔF for the δ slider); the walks' disjointness is
+                # defined by the heuristic one (§5)
+                ret, _floor, ceil, d_s, d_f = pool.pair_eval(bi, si)
                 out.append(
                     (
                         ret,
@@ -1315,6 +1393,8 @@ def _walk_pairs_below_range(
                         (b_fl + s[L_FLOOR]) / (b_sent + s[L_SENT]),
                         bi,
                         si,
+                        d_s,
+                        d_f,
                     )
                 )
     return visits, True
@@ -1331,7 +1411,7 @@ class _DropSpans:
         self.sink = sink
         self.spans = spans
 
-    def append(self, t: tuple[float, float, float, int, int]) -> None:
+    def append(self, t: tuple[float, float, float, int, int, float, float]) -> None:
         pct = 100.0 * t[2]  # the HEURISTIC return — what the walks partition on
         for a, b in self.spans:
             if a <= pct < b:
@@ -1380,8 +1460,8 @@ def _highest_cut_below(pool: PairPool, floor: float, hi: float, budget: int) -> 
 def return_bands(presets: Sequence[float]) -> list[tuple[float, float | None]]:
     """§5 total-return bands, percent, derived from the floor presets:
     [p0, p1), [p1, p2), …, [p_last, ∞) — ascending, hi=None on the open top.
-    v3.4.1: these are the `by_total` grid columns; storage strata are the
-    max-leg BUCKETS (leg_buckets)."""
+    These are the `by_total` grid columns; storage strata are the FAVOR
+    buckets (favor_buckets, v5)."""
     ps = sorted(float(p) for p in presets)
     return [(ps[i], ps[i + 1] if i + 1 < len(ps) else None) for i in range(len(ps))]
 
@@ -1396,45 +1476,49 @@ def band_index(bands: Sequence[tuple[float, float | None]], ret_pct: float) -> i
     return idx
 
 
-def leg_buckets(cap_presets: Sequence[float]) -> list[tuple[float | None, float | None]]:
-    """§5 v3.4.1 max-leg buckets, percent, derived from the leg-cap presets:
-    (−∞, c0), [c0, c1), …, [c_last, ∞) — half-open, lo=None on the open bottom
-    (buy legs are normally negative in market return, §5 v3.4), hi=None on the
-    open top. A cap preset `c` selects exactly the buckets with hi ≤ c."""
-    cs = sorted(float(c) for c in cap_presets)
+def favor_buckets(edges: Sequence[float]) -> list[tuple[float | None, float | None]]:
+    """§5 v5 favorability storage buckets from the band edges
+    (favor_band_edges): (−∞, e0), [e0, e1), …, [e_last, ∞) — half-open,
+    lo=None on the open bottom (a leg can skew arbitrarily far toward me),
+    hi=None on the open top. Pairs bucket on min(f_buy, f_sell) — the
+    least-happy counterparty; the favor dial is a FLOOR, so a floor at a
+    bucket edge selects exactly the buckets with lo ≥ that edge."""
+    cs = sorted(float(c) for c in edges)
     out: list[tuple[float | None, float | None]] = [(None, cs[0])]
     out += [(cs[i], cs[i + 1] if i + 1 < len(cs) else None) for i in range(len(cs))]
     return out
 
 
 def bucket_index(
-    buckets: Sequence[tuple[float | None, float | None]], max_leg_pct: float
+    buckets: Sequence[tuple[float | None, float | None]], value: float
 ) -> int:
-    """Index of the half-open bucket containing max_leg_pct (percent, the doc's
-    2-dp-rounded max leg market return). Total: every value has a bucket."""
+    """Index of the half-open bucket containing `value` (v5: the doc's
+    2-dp-rounded pair favor min). Total: every value has a bucket."""
     idx = 0
     for i, (lo, _hi) in enumerate(buckets):
-        if lo is not None and max_leg_pct >= lo:
+        if lo is not None and value >= lo:
             idx = i
     return idx
 
 
 class _BucketSink:
-    """append()-compatible walk output that stratifies on the fly (§5 v3.4.1):
-    per MAX-LEG BUCKET a bounded min-heap of the top-`quota` pairs by EXACT
-    combined floor-based TOTAL return (ceiling desc as tie-break, then
-    deterministic ids — §2 v4 maximin), a tally of every valid pair seen, and
-    the bucket × total-return-band count grid the inventory line is served
-    from. Pairs with floor-based return below the lowest floor preset are
-    outside the stored universe — never stored, never counted; since the
-    lowest preset is positive, everything stored has floor > 0, i.e. BOTH
-    coordinates strictly positive — the §11.8b(d) verdict constraint is
-    enforced here as a hard, explicit guard as well. The collection walks
-    cover DISJOINT HEURISTIC return ranges, so no pair is ever offered twice
-    and no dedupe structure is needed — and memory stays O(buckets · quota)
-    where full lists would blow the collector's 512MB."""
+    """append()-compatible walk output that stratifies on the fly (§5 v5):
+    per FAVOR BUCKET (pair favor = min(f_buy, f_sell), the least-happy
+    counterparty, in KTC's own variance units) THREE bounded min-heaps — the
+    top-`quota` pairs by EXACT combined floor-based TOTAL return (§2 v4
+    maximin), by ΔS, and by ΔF — whose deduped UNION is the bucket's stored
+    inventory, so both δ-slider extremes have stock; plus a tally of every
+    valid pair seen and the bucket × robust-return-band count grid the
+    inventory line is served from. Pairs with floor-based return below the
+    lowest floor preset are outside the stored universe — never stored, never
+    counted; since the lowest preset is positive, everything stored has
+    floor > 0, i.e. BOTH coordinates strictly positive — the §11.8b(d)/§11.12(g)
+    verdict constraint is enforced here as a hard, explicit guard as well. The
+    collection walks cover DISJOINT HEURISTIC return ranges, so no pair is
+    ever offered twice and no cross-walk dedupe is needed — and memory stays
+    O(buckets · quota) where full lists would blow the collector's 512MB."""
 
-    __slots__ = ("buckets", "tbands", "quota", "legs", "heaps", "counts", "grid")
+    __slots__ = ("buckets", "tbands", "quota", "legs", "h_ret", "h_ds", "h_df", "counts", "grid")
 
     def __init__(
         self,
@@ -1447,41 +1531,61 @@ class _BucketSink:
         self.tbands = tbands
         self.quota = quota
         self.legs = legs
-        # heap entries (ret, ceiling, -bi, -si): lexicographic order on the
-        # negated-index tuple exactly inverts the storage sort key
-        # (-ret, -ceiling, bi, si), so the min-heap root is always the worst
-        # kept pair under the §2 v4 maximin order
-        self.heaps: list[list[tuple[float, float, int, int]]] = [[] for _ in buckets]
+        # heap entries put the ranking key first and the NEGATED pool ids
+        # after it, so lexicographic order inverts the deterministic storage
+        # sort (key desc, tie-break desc, ids asc) and the min-heap root is
+        # always the worst kept pair under that order. Trailing fields carry
+        # the pair's other exact figures for the union rebuild.
+        #   h_ret: (ret, ceiling, -bi, -si, ΔS, ΔF)   — §2 v4 maximin
+        #   h_ds:  (ΔS, ΔF, -bi, -si, ret, ceiling)   — δ = 0 extreme
+        #   h_df:  (ΔF, ΔS, -bi, -si, ret, ceiling)   — δ = 1 extreme
+        self.h_ret: list[list[tuple]] = [[] for _ in buckets]
+        self.h_ds: list[list[tuple]] = [[] for _ in buckets]
+        self.h_df: list[list[tuple]] = [[] for _ in buckets]
         self.counts: list[int] = [0] * len(buckets)
         self.grid: list[list[int]] = [[0] * len(tbands) for _ in buckets]
 
-    def append(self, t: tuple[float, float, float, int, int]) -> None:
-        ret, ceil, _heur, bi, si = t
+    def append(self, t: tuple[float, float, float, int, int, float, float]) -> None:
+        ret, ceil, _heur, bi, si, d_s, d_f = t
         if ret <= 0.0:
-            # §11.8b(d) HARD verdict constraint: a non-positive floor means the
-            # pair is not objectively good — must never be stored, whatever the
-            # presets say
+            # §11.8b(d)/§11.12(g) HARD verdict constraint: a non-positive floor
+            # means the pair is not objectively good — must never be stored,
+            # whatever the presets say
             return
         ti = band_index(self.tbands, round(100.0 * ret, 2))
         if ti is None:
             return  # total below the lowest floor preset: outside the universe
         legs = self.legs
-        mb = legs[bi][L_MKT]
-        ms = legs[si][L_MKT]
-        i = bucket_index(self.buckets, round(100.0 * (mb if mb > ms else ms), 2))
+        fb = legs[bi][L_FAVOR]
+        fs = legs[si][L_FAVOR]
+        i = bucket_index(self.buckets, round(fb if fb < fs else fs, 2))
         self.counts[i] += 1
         self.grid[i][ti] += 1
-        h = self.heaps[i]
-        e = (ret, ceil, -bi, -si)
-        if len(h) < self.quota:
-            heappush(h, e)
-        elif e > h[0]:
-            heappushpop(h, e)
+        for h, e in (
+            (self.h_ret[i], (ret, ceil, -bi, -si, d_s, d_f)),
+            (self.h_ds[i], (d_s, d_f, -bi, -si, ret, ceil)),
+            (self.h_df[i], (d_f, d_s, -bi, -si, ret, ceil)),
+        ):
+            if len(h) < self.quota:
+                heappush(h, e)
+            elif e > h[0]:
+                heappushpop(h, e)
 
     def bucket_pairs(self, i: int) -> list[tuple[float, float, int, int]]:
-        """Stored pairs of bucket i — floor-return desc, ceiling desc,
-        deterministic ids (§2 v4 maximin)."""
-        return [(e[0], e[1], -e[2], -e[3]) for e in sorted(self.heaps[i], reverse=True)]
+        """Stored pairs of bucket i — the deduped UNION of the three top-quota
+        heaps (§5 v5), returned floor-return desc, ceiling desc, deterministic
+        ids (§2 v4 maximin — the flat doc order; the δ dial re-sorts client-side
+        from the stored coordinates)."""
+        union: dict[tuple[int, int], tuple[float, float]] = {}
+        for e in self.h_ret[i]:
+            union[(-e[2], -e[3])] = (e[0], e[1])
+        for h in (self.h_ds[i], self.h_df[i]):
+            for e in h:
+                union[(-e[2], -e[3])] = (e[4], e[5])
+        return sorted(
+            ((ret, ceil, bi, si) for (bi, si), (ret, ceil) in union.items()),
+            key=lambda t: (-t[0], -t[1], t[2], t[3]),
+        )
 
 
 def find_pool_leg(pool: PairPool, opp_name: str, give_keys, get_keys) -> int | None:
@@ -1527,31 +1631,39 @@ def pair_count_deltas(buy_card: dict, sell_card: dict) -> tuple[int, int]:
 
 
 def trade_board(league: md.LeagueState) -> dict:
-    """§5 v4: the exhaustively-crossed PAIR board behind the user's TWO
-    independent dials — a floor on TOTAL pair return (guaranteed floor
-    min(ΔS, ΔF) combined ÷ face Σv sent, §2 v4 / §5) and a cap on EACH leg's
-    MARKET return (face skim off that leg's counterparty). Every stored pair
-    passes the §2 objective verdict — the stored universe is floor-based
-    return ≥ 1%, so both coordinates are strictly positive on everything
-    stored (§11.8b(d), hard). Storage is STRATIFIED BY MAX-LEG BUCKET:
-    pairs bucket on max(r(buy), r(sell)) over (−∞,2.5), [2.5,5), [5,10),
-    [10,20), [20,∞) percent, the top `pairs_per_band` per bucket kept by the
-    §2 maximin order (floor-return desc, ceiling desc, ids), and `pairs`
-    lists every stored pair in the same order globally (the sort is ALWAYS
-    floor-return-desc; the cap only filters). Every stored pair is fully
-    count-neutral, both legs gate-PASS, posture-clean, distinct
-    counterparties, no shared assets. `bands` carries per-BUCKET honest
+    """§5 v5: the exhaustively-crossed PAIR board behind the finder's THREE
+    sliders, over stored inventory — a δ SELECTOR (robust default + the δ
+    presets: return(δ) re-scored client-side from each stored pair's exact
+    coordinates, a labeled preference VIEW), a floor on TOTAL return (robust
+    mode = guaranteed-floor return, §2 v4 / §5), and a FLOOR on counterparty
+    favorability min(f_buy, f_sell) (§4a — each leg's signed KTC-calculator
+    skew toward its counterparty, from the same adjusted totals as the gate;
+    replaces the v3.4.1 raw-skim leg cap). Every stored pair passes the §2
+    objective verdict — the stored universe is robust floor-based return ≥ 1%,
+    so both coordinates are strictly positive on everything stored
+    (§11.8b(d)/§11.12(g), hard). Storage is STRATIFIED BY FAVOR BUCKET: pairs
+    bucket on min(f_buy, f_sell) over (−∞,−10), [−10,−5), [−5,0), [0,+5),
+    [+5,∞); per bucket the DEDUPED UNION of the top `pairs_per_band` by robust
+    floor-return, by ΔS, and by ΔF is kept — so both δ-slider extremes have
+    inventory — and `pairs` lists every stored pair in the §2 maximin order
+    globally (floor-return desc, ceiling desc, ids; the δ and favor dials
+    re-sort/filter client-side from the stored coords/favor). Every stored
+    pair is fully count-neutral, both legs gate-PASS, posture-clean, distinct
+    counterparties, no shared assets, and carries coords/floor/ceiling/favor/
+    sent so every dial move is O(stored). `bands` carries per-BUCKET honest
     disclosure ({lo|None, hi|None, stored, count, saturated, by_total} —
-    by_total is the bucket's count per total-return band, so the inventory
-    line is honest for any (floor, cap) combination; every count is a
+    by_total is the bucket's count per robust-return band, so the inventory
+    line is honest for any (floor, favor) combination; every count is a
     verified floor, v3.4). `counts_by_threshold` and `truncated` stay for
-    ≥-style compat reads on total return. `recommendations` (top unpaired
-    sell/neutral legs by isolation floor) and `watch` (unpaired buys) stay as
-    data for the trade-negotiator desk — the web renders pairs only."""
+    ≥-style compat reads on robust total return. `recommendations` (top
+    unpaired sell/neutral legs by isolation floor) and `watch` (unpaired
+    buys) stay as data for the trade-negotiator desk — the web renders pairs
+    only. Deep or constrained queries beyond stored inventory belong to the
+    finder (§4a), not the board."""
     params = league.params
     presets = sorted(float(p) for p in params.return_presets)
     tbands = return_bands(presets)
-    buckets = leg_buckets(params.leg_cap_presets)
+    buckets = favor_buckets(params.favor_band_edges)
     nb = len(buckets)
     quota = params.pairs_per_band
     if not league.offseason and league.snapshot.week > params.trade_deadline_week:
@@ -1559,7 +1671,8 @@ def trade_board(league: md.LeagueState) -> dict:
             "disabled": True,
             "pairs": [],
             "presets": presets,
-            "leg_cap_presets": [float(c) for c in params.leg_cap_presets],
+            "favor_presets": [float(c) for c in params.favor_presets],
+            "delta_presets": [float(d) for d in params.delta_presets],
             "counts_by_threshold": [
                 {"threshold": p, "count": 0, "saturated": False} for p in presets
             ],
@@ -1603,11 +1716,11 @@ def trade_board(league: md.LeagueState) -> dict:
     #      per-leg return floor, so that space is no longer empty);
     #   3. per band still touching the gap [floor, r*): the deepest COMPLETE
     #      range walk under the band's hi (out-of-range crossings cost one
-    #      multiply and no budget). v3.4.1: the STORAGE strata are max-leg
-    #      buckets — a dimension the walks cannot target (a leg's face skim is
+    #      multiply and no budget). v5: the STORAGE strata are FAVOR buckets —
+    #      a dimension the walks cannot target (a leg's KTC-calculator skew is
     #      uncorrelated with the heuristic ordering) — so the total-band slices
     #      serve purely as coverage spreading across the total dimension; every
-    #      visited valid pair lands in its bucket and grid cell.
+    #      visited valid pair lands in its favor bucket and grid cell.
     # Output streams into per-bucket bounded heaps (_BucketSink): tallies, the
     # bucket × total-band grid, and the top-quota pairs per bucket by TOTAL
     # return — O(buckets · quota) memory (512MB Lambda).
@@ -1682,10 +1795,11 @@ def trade_board(league: md.LeagueState) -> dict:
     # exact tally; every other branch leaves every count a verified floor.
     saturated = not exact_all
 
-    # ---- stored pairs: top-quota per bucket; the flat list is sorted by the
-    # §2 v4 maximin order GLOBALLY — floor-based TOTAL return desc, ceiling
-    # desc as tie-break, deterministic ids (the leg-cap dial only filters, it
-    # never re-orders) ----
+    # ---- stored pairs: the deduped union of the three top-quota heaps per
+    # favor bucket (§5 v5); the flat list is sorted by the §2 v4 maximin order
+    # GLOBALLY — floor-based TOTAL return desc, ceiling desc as tie-break,
+    # deterministic ids (the favor dial only filters; the δ dial re-sorts
+    # client-side from the stored coordinates) ----
     bucket_top = [sink.bucket_pairs(i) for i in range(nb)]
     # the sort key rounds to the DISPLAYED precision (return 2dp, ceiling 1dp)
     # so the doc's order is exactly the §11.8b(e) maximin order on the numbers
@@ -1702,9 +1816,9 @@ def trade_board(league: md.LeagueState) -> dict:
             "stored": len(bucket_top[i]),
             "count": sink.counts[i],
             "saturated": saturated,
-            # the bucket's counts per total-return band ([1,2.5), [2.5,5),
+            # the bucket's counts per robust-return band ([1,2.5), [2.5,5),
             # [5,10), [10,20), [20,∞) — aligned with `presets`): the grid any
-            # (floor, cap) inventory line is served from
+            # (floor, favor) inventory line is served from
             "by_total": list(sink.grid[i]),
         }
         for i, (lo, hi) in enumerate(buckets)
@@ -1740,21 +1854,29 @@ def trade_board(league: md.LeagueState) -> dict:
     legs = pool.legs
     ceil_cache: dict[tuple[int, tuple], float | None] = {}
 
+    card_cache: dict[int, dict] = {}
+
     def leg_card(i: int, leg_id: str) -> dict:
-        leg = legs[i]
-        opp_name = pool.opp_names[leg[L_OPP]]
-        give, get = leg[L_GIVE], leg[L_GET]
-        ck = (leg[L_OPP], give.keys)
-        if ck not in ceil_cache:
-            vsums, pkgs = pool.opp_pkgs[opp_name]
-            ceil_cache[ck] = _ceiling_from(league, give, vsums, pkgs)
-        # leg=None: build_card recomputes the full legality verdicts — the walk
-        # cache holds booleans only (v3.3.1 memory bound), and only the stored
-        # legs ever reach a card
-        card = build_card(
-            league, opp_name, give, get, ceiling=ceil_cache[ck]
-        )
-        card["gate"]["verdict"] = "PASS"
+        # v5: the union storage can hold up to 3× the v4 pair count and pairs
+        # share legs, so the base card is built ONCE per pool leg (legality +
+        # ceiling recomputed there) and stamped with the per-pair id here. The
+        # copy is shallow — nested structures are never mutated downstream.
+        base = card_cache.get(i)
+        if base is None:
+            leg = legs[i]
+            opp_name = pool.opp_names[leg[L_OPP]]
+            give, get = leg[L_GIVE], leg[L_GET]
+            ck = (leg[L_OPP], give.keys)
+            if ck not in ceil_cache:
+                vsums, pkgs = pool.opp_pkgs[opp_name]
+                ceil_cache[ck] = _ceiling_from(league, give, vsums, pkgs)
+            # leg=None: build_card recomputes the full legality verdicts — the
+            # walk cache holds booleans only (v3.3.1 memory bound), and only
+            # the stored legs ever reach a card
+            base = build_card(league, opp_name, give, get, ceiling=ceil_cache[ck])
+            base["gate"]["verdict"] = "PASS"
+            card_cache[i] = base
+        card = dict(base)
         card["id"] = leg_id
         card["exclusive_with"] = []
         return card
@@ -1795,28 +1917,35 @@ def trade_board(league: md.LeagueState) -> dict:
             league,
             [(legs[bi][L_GIVE], legs[bi][L_GET]), (legs[si][L_GIVE], legs[si][L_GET])],
         )
-        # §5 v3.4.1: each leg's MARKET return (face skim off its counterparty)
-        # and their max — the leg-cap dial's filter key; the bucket this pair
-        # was stored under is bucket_index(max_leg_return_pct)
-        mkt_b = round(100.0 * legs[bi][L_MKT], 2)
-        mkt_s = round(100.0 * legs[si][L_MKT], 2)
+        # §4a/§5 v5: each leg's counterparty favorability (from the gate's own
+        # adjusted totals, stored on the pool leg at scan time) and the pair
+        # figure min(f_buy, f_sell) — the favor dial's filter key; the bucket
+        # this pair was stored under is bucket_index(favor.min)
+        fav_b = round(legs[bi][L_FAVOR], 2)
+        fav_s = round(legs[si][L_FAVOR], 2)
         pairs_docs.append(
             {
                 "id": f"P{n}",
                 "buy": b,
                 "sell": s,
-                # §5 v4 floor-based TOTAL return: guaranteed floor ÷ Σ face v
-                # I send across both legs — the floor dial's key and the
-                # primary sort key
+                # §5 v4 robust floor-based TOTAL return: guaranteed floor ÷
+                # Σ face v I send across both legs — the floor dial's robust
+                # key and the primary sort key
                 "return_pct": round(100.0 * ret, 2),
-                "leg_returns": {"buy": mkt_b, "sell": mkt_s},
-                "max_leg_return_pct": mkt_b if mkt_b > mkt_s else mkt_s,
+                "favor": {
+                    "buy": fav_b,
+                    "sell": fav_s,
+                    "min": fav_b if fav_b < fav_s else fav_s,
+                },
                 # §2 v4 combined coordinates + derived figures. Every stored
-                # pair is verdict-true by hard constraint (§11.8b(d)).
+                # pair is verdict-true by hard constraint (§11.8b(d)/§11.12(g)).
+                # The δ slider re-scores return(δ) from exactly these plus
+                # `sent` — every dial move is O(stored).
                 "coords": {"dS": combined["dS"], "dF": combined["dF"]},
                 "verdict": combined["verdict"],
                 "floor": combined["floor"],
                 "ceiling": combined["ceiling"],
+                "sent": combined["sent"],
                 "net_roster": b["net_roster"]["me"] + s["net_roster"]["me"],
                 "net_players": np_pair,  # exactly 0 by construction (§5 v3.2)
                 "net_picks": nk_pair,  # exactly 0 by construction (§5 v3.2)
@@ -1896,17 +2025,22 @@ def trade_board(league: md.LeagueState) -> dict:
         )
 
     notes = [
-        "v3.3 enumerate-then-filter: the board is the legal PAIR space behind your "
-        "two dials (v3.4.1): a FLOOR on total pair return (guaranteed floor ÷ Σv "
-        "you send across both legs) and a CAP on each leg's market return (face "
-        "skim off that leg's counterparty) — independent dimensions; every stored "
-        "pair nets exactly 0 players / 0 picks for you, always sorted by total "
-        "return desc (floor-based), ceiling as tie-break",
-        "v4 identity: the guaranteed floor never exceeds the pair's total face "
-        "gain (floor ≤ dF = Σ leg market skims), so the floor-based total return "
-        "is always ≤ the max leg market return — a cap of c% mathematically "
-        "caps the guaranteed total below c% too; sparse low buckets are the "
-        "geometry, not a scan artifact",
+        "v3.3 enumerate-then-filter: the board is the legal PAIR space behind the "
+        "finder's three sliders over stored inventory (§4a/§5 v5): a δ SELECTOR "
+        "(robust default + presets 0/0.25/0.5/0.75/1 — return(δ) re-scored "
+        "instantly from each stored pair's coords and sent, a labeled preference "
+        "view, never a score parameter), a FLOOR on total return (robust mode = "
+        "guaranteed floor ÷ Σv you send across both legs), and a FLOOR on "
+        "counterparty favorability min(f_buy, f_sell); every stored pair nets "
+        "exactly 0 players / 0 picks for you, always sorted by robust total "
+        "return desc, ceiling as tie-break",
+        "counterparty favorability (v5): per leg, favor = the signed skew toward "
+        "that counterparty in KTC's own calculator units, from the SAME adjusted "
+        "totals as the gate — |favor| ≤ 5 means their calculator literally says "
+        "FAIR at default variance, favor > 0 skews to them; it replaces the "
+        "v3.4.1 raw-skim leg cap (the raw skim diverges from the calculator's "
+        "number by up to 14 pts); the §3 band stays the hard outer bound — "
+        "favor selects WITHIN it",
         "the score is two objective coordinates (§2 v4): dS = change in starter "
         "value (max-Σv lineup at raw KTC over active+taxi) and dF = change in "
         "total face owned (players + picks at tranche) — no blend, no parameter. "
@@ -1916,17 +2050,19 @@ def trade_board(league: md.LeagueState) -> dict:
         "dS not): a good pair can be good for both parties. A pair's coordinates "
         "are the two legs applied TOGETHER; each leg card carries its isolation "
         "coords, and a buy leg alone can still be floor-negative",
-        f"stratified storage (v3.4.1): up to {quota} pairs kept per MAX-LEG bucket "
-        "(buckets on max(r(buy), r(sell)) at the cap presets), each bucket's top "
-        "by TOTAL return — `by_total` on each bucket is its count per total-return "
-        "band, so any (floor, cap) inventory read is honest",
+        f"stratified storage (v5): per FAVOR bucket (min(f_buy, f_sell) over the "
+        f"favor bands) the deduped UNION of the top {quota} by robust "
+        "floor-return, by dS, and by dF is kept — both δ-slider extremes have "
+        "inventory — and `by_total` on each bucket is its count per "
+        "robust-return band, so any (floor, favor) inventory read is honest",
         "posture is a hard engine constraint (§5 v3.3): BUYERs only receive "
         "players-majority packages, SELLERs picks-majority, NEUTRAL either; "
         "overrides apply first",
         "the per-leg return FLOOR is retired (v3.4): legs may lose value on their "
         "own and be recouped by their partner — only the PAIR has to clear the "
-        "floor dial; the v3.4.1 leg CAP is the opposite guard, against any single "
-        "counterparty giving up too much face value on their leg",
+        "floor dial; the v5 favor FLOOR is the opposite guard, keeping every leg "
+        "attractive enough in the counterparty's own calculator, with an "
+        "optional ceiling against giving edge away",
         f"per (counterparty, give-package, count-signature) the top "
         f"{params.variants_per_signature} gets by ISOLATION floor are pooled, "
         f"chosen among the first {params.variant_scan_cap} gate-passers in Σv-desc "
@@ -1940,14 +2076,16 @@ def trade_board(league: md.LeagueState) -> dict:
         "coordinates, so completeness above a cutoff cannot be certified (v3.4)",
         "band ceilings on cards are negotiating room, not the opener; anchor asks "
         "open +8% (§3)",
+        "deep or constrained queries beyond stored inventory belong to the "
+        "spread finder (§4a), not the board",
         "book recomputes from fresh rosters after any executed trade",
         "don't publicly fire-sale before making buy-side asks (§5 execution protocol)",
     ]
     if truncated:
         notes.insert(
             1,
-            f"storage cap: {truncated['stored']} pairs stored across the max-leg "
-            f"buckets (top of each bucket by total return), of "
+            f"storage cap: {truncated['stored']} pairs stored across the favor "
+            f"buckets (per-bucket union of tops by robust return, dS, dF), of "
             f"{'at least ' if total_sat else ''}{truncated['total']} found in the "
             "collection walk",
         )
@@ -1956,7 +2094,8 @@ def trade_board(league: md.LeagueState) -> dict:
         "disabled": False,
         "pairs": pairs_docs,
         "presets": presets,
-        "leg_cap_presets": [float(c) for c in params.leg_cap_presets],
+        "favor_presets": [float(c) for c in params.favor_presets],
+        "delta_presets": [float(d) for d in params.delta_presets],
         "counts_by_threshold": counts_by_threshold,
         "bands": bands_doc,
         "truncated": truncated,

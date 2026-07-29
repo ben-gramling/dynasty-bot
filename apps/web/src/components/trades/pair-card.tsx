@@ -11,10 +11,11 @@ import { pairLegs } from "./derive";
  * v4: min of the exact combined coordinates, both legs applied together — a
  * floor-negative leg is normal, the pair's verdict is what is constrained),
  * the interval up to the ceiling, the combined "starters · face" coordinates,
- * each leg's market return (v3.4.1 — the leg-cap dial's input), the
- * neutrality badge (exactly 0 players / 0 picks net for you), the posture-fit
- * summary, and the agreement-first sequencing note. Pre-v4 docs fall back to
- * the stored pair ΔW.
+ * each leg's counterparty favorability with the pair min (§4a v5 — the favor
+ * dial's filter key, in KTC's own calculator variance units), the neutrality
+ * badge (exactly 0 players / 0 picks net for you), the posture-fit summary,
+ * and the agreement-first sequencing note. Pre-v5 docs fall back to the
+ * retired leg market returns; pre-v4 docs to the stored pair ΔW.
  */
 export function PairCard({ pair }: { pair: TradePair }) {
   const legs = pairLegs(pair);
@@ -37,10 +38,19 @@ export function PairCard({ pair }: { pair: TradePair }) {
           >
             {fmtPct(pair.return_pct, 1)} return
           </span>
-          {pair.leg_returns ? (
+          {pair.favor ? (
             <span
               className="text-[11.5px] text-ink-muted"
-              title="Each leg's market return (§5 v3.4.1): face ΔF(you) ÷ face Σv you send on that leg — the skim that leg's counterparty sees; the leg-cap dial filters on the larger of the two"
+              title="Counterparty favorability per leg (§4a v5): the signed skew toward that leg's counterparty in KTC's own calculator variance units, from the same adjusted totals as the gate — |favor| ≤ 5 = their calculator literally says FAIR at default variance, favor > 0 skews to them. The favor dial floors min(f_buy, f_sell) — the least-happy counterparty."
+            >
+              favor: buy <span className="num">{fmtSigned(pair.favor.buy, 1)}</span>{" "}
+              · sell <span className="num">{fmtSigned(pair.favor.sell, 1)}</span>{" "}
+              · min <span className="num">{fmtSigned(pair.favor.min, 1)}</span>
+            </span>
+          ) : pair.leg_returns ? (
+            <span
+              className="text-[11.5px] text-ink-muted"
+              title="Each leg's market return (pre-v5 docs, §5 v3.4.1): face ΔF(you) ÷ face Σv you send on that leg — the raw skim; v5 replaced it with favor (the raw skim diverges from the counterparty's calculator by up to 14 pts)"
             >
               legs: buy <span className="num">{fmtSigned(pair.leg_returns.buy, 1)}%</span>{" "}
               · sell <span className="num">{fmtSigned(pair.leg_returns.sell, 1)}%</span>{" "}
