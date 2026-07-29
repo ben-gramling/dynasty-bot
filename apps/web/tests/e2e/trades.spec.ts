@@ -161,7 +161,9 @@ test("pairs render fully behind every dial combo or the empty state is honest", 
           /No stored pairs with total .* today — (removing the leg cap exposes [\d,]+ stored, dropping the floor to [\d.]+% exposes [\d,]+|and no stored pair survives either dial alone)/,
         ),
       ).toBeVisible();
-      expect(await section.getByText("You send").count()).toBe(0);
+      // exact: the v4 board notes contain the phrase "Σv you send", which a
+      // substring probe would count; the card chip is exactly "You send".
+      expect(await section.getByText("You send", { exact: true }).count()).toBe(0);
       continue;
     }
     // Rendered list is capped at 50, with the cap disclosed.
