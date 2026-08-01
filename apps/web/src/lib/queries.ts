@@ -327,7 +327,11 @@ export interface ThresholdCount {
   /** Percent, matches an entry of `presets`. */
   threshold: number;
   count: number;
-  /** True when the counting budget truncated the walk — count is a floor. */
+  /**
+   * True when the counting budget truncated the walk — count is a floor.
+   * v5.1: false means the collection walk RAN TO COMPLETION under the sound
+   * crossing bound (§4a), so the count is an exact tally, not a floor.
+   */
   saturated: boolean;
 }
 
@@ -342,10 +346,16 @@ export interface ThresholdCount {
  * selects the buckets with lo ≥ f (the +2.5 preset sits inside [0,+5) and is
  * served from that bucket's stored inventory — bucket counts for it stay
  * floors). `count` is the bucket's legal pair count and `by_total` its counts
- * per ROBUST-return band (aligned with `presets`) — every count a verified
- * floor when `saturated` (outside whole-space walks: always). Docs written
- * before v5 carry max-leg market-return buckets in the same shape — render
- * defensively.
+ * per ROBUST-return band (aligned with `presets`). v5.1 count honesty:
+ * `saturated: false` ⇒ the floor-objective collection walk ran to COMPLETION
+ * under the sound crossing bound (it crosses legs on ΔF − r·Σ sent, exactly
+ * additive and an upper bound on the pair's guaranteed floor), so the count
+ * is an EXACT tally over the legs the run pooled and "0" means none exists
+ * among them (§5's per-signature variant cap stays a disclosed heuristic);
+ * `saturated: true` ⇒ the budget
+ * truncated the walk and the count is a verified floor, rendered "≥ N". Docs
+ * written before v5 carry max-leg market-return buckets in the same shape —
+ * render defensively (the flag is read per band, never assumed).
  */
 export interface BandInfo {
   /** Bucket lower edge, favor units (inclusive); null = open bottom. */
@@ -354,9 +364,12 @@ export interface BandInfo {
   hi: number | null;
   /** Pairs stored for this bucket (union ≤ 3× the per-bucket quota). */
   stored: number;
-  /** Legal pairs in the bucket — a verified floor when saturated. */
+  /** Legal pairs in the bucket — exact, or a verified floor when saturated. */
   count: number;
-  /** True when the count is a floor, not an exact tally ("≥ N"). */
+  /**
+   * True when the count is a floor, not an exact tally ("≥ N"); false when
+   * the collection walk completed and the count is provable (v5.1).
+   */
   saturated: boolean;
   /** The bucket's counts per robust-return band (aligned with presets). */
   by_total?: number[];

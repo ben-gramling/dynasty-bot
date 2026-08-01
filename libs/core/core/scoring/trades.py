@@ -50,15 +50,34 @@ pair permutations clear the band on real data):
 - Per (counterparty, give-package, count-signature) only the top
   `variants_per_signature` gate-clean gets by ISOLATION FLOOR are pooled,
   chosen from the first `variant_scan_cap` gate-passers in Σv-descending order.
-  With distinct counterparties enforced, a partner leg can never collide with
-  the get side, so a higher-floor same-signature variant dominates its siblings
-  for every pairing — the count-signature diversity the v3.2 matcher starved on
-  is preserved in full.
-- The pair walks cross legs ordered by ISOLATION FLOOR (a disclosed heuristic —
-  §5), while every pair the walks keep is priced by its EXACT combined
-  coordinates. Because the combined floor is not additive across legs, no walk
-  cutoff can certify that the space above it was fully enumerated: every band
-  count is therefore a VERIFIED FLOOR (`saturated`), never an exact tally.
+  This is a disclosed SELECTION HEURISTIC (§5 "legs are pre-ranked inside the
+  pool by isolation floor"), not a dominance theorem: the same non-additivity
+  v5.1 fixed in the walks applies here — a get-side that scores badly alone can
+  be the one that fills the hole its partner leg opens — so a same-signature
+  sibling can outperform the variant that was kept. It buys the count-signature
+  diversity the v3.2 matcher starved on at a bounded gate cost. Consequence for
+  every exactness claim below: they are statements about the POOLED legs, never
+  about the whole legal package space.
+- The pair walks cross legs ordered and pruned on `ΔF(leg) − r·Σsent(leg)`
+  (v5.1, §4a "sound crossing bound"). That key is SOUND for the floor
+  objective: ΔF is exactly additive across legs (§11.1 face conservation) and
+  `floor = min(ΔS, ΔF) ≤ ΔF`, so `u_buy + u_sell < 0 ⟹ ΔF_pair < r·sent_pair
+  ⟹ floor_pair < r·sent_pair ⟹ return < r` — the prune can only discard pairs
+  that genuinely fail the bar (exact ties on the bar are kept — `XTOL`). Every
+  pair the walks keep is still priced by its EXACT combined coordinates.
+  Consequence: a walk that runs to COMPLETION at a cutoff at or below the
+  stored floor enumerated the whole stored universe OF POOLED LEGS, so its
+  counts are EXACT (`saturated` False); only budget-truncated walks leave
+  verified floors. (Through v5.0.1 the key was each leg's ISOLATION FLOOR,
+  which implicitly treats the pair floor as additive — it is not, ΔS is jointly
+  determined by both legs through the lineup — so complementary pairs were
+  pruned unseen and no count could ever be certified.)
+- The nightly board's collection cannot reach its floor on real data, so after
+  the sound walk it runs the v5.0.1 walk (`_walk_pairs(key=L_FLOOR)`) as a
+  pure COVERAGE phase over what the sound walk did not already own. That phase
+  certifies nothing — it is simply where storable pairs are densest, since ΔF
+  runs 2-5× the floor and the sound cutoff therefore starts far above the
+  storable band. Counts stay tallies of DISTINCT pairs either way.
 - Counters saturate honestly at `pair_scan_budget` / `pair_collect_budget`.
 """
 
@@ -735,13 +754,40 @@ _POS4 = ("QB", "RB", "WR", "TE")
 _MIN4 = tuple(MIN_POS[p] for p in _POS4)
 
 # leg tuple layout inside PairPool.legs (indices 0-8 are the v3.3 contract and
-# stay put; v4 pre-ranks legs by their ISOLATION FLOOR min(ΔS, ΔF) — the
-# disclosed heuristic — so slots 0/1 hold the floor return and the floor;
-# indices 9-11 carry the coordinate inputs the pair walk needs, and 12 the
-# leg's FAVOR — the §4a v5 signed counterparty skew in KTC's calculator units,
-# derived from the same adjusted totals the gate read during the scan)
+# stay put; slots 0/1 hold the leg's ISOLATION floor return and floor — the
+# pool's own variant-selection key and the ranking of the unpaired building
+# blocks; indices 9-11 carry the coordinate inputs the pair walk needs — L_DFACE
+# is the leg's ΔF, the v5.1 SOUND crossing key (§4a) — and 12 the leg's FAVOR,
+# the §4a v5 signed counterparty skew in KTC's calculator units, derived from
+# the same adjusted totals the gate read during the scan)
 L_RET, L_FLOOR, L_SENT, L_NP, L_NK, L_OPP, L_MASK, L_GIVE, L_GET = range(9)
 L_OUT4, L_IN4, L_DFACE, L_FAVOR = 9, 10, 11, 12
+
+# v5.1 crossing tolerance. The walks test the pair bound in SPLIT form —
+# `(r·sent_b − key_b) + (r·sent_s − key_s) ≤ 0` — while the bound itself is the
+# pair form `key_pair ≥ r·sent_pair`. The two agree mathematically but not in
+# float: on an EXACT tie (ΔF_pair == r·sent_pair, entirely reachable since ΔF
+# and Σsent are integral and r is often round — e.g. ΔF 1256 vs 0.05·25120) the
+# split sum can round to +5.7e-14 and prune a pair whose true return is exactly
+# r. That is a one-ULP violation of "the prune can only discard pairs that
+# genuinely fail the bar", so every walk keeps the boundary with this slack:
+# key magnitudes here are ≤ ~1e5 (KTC face), whose float error is ≤ ~1e-11, and
+# 1e-6 KTC points is far below any distinction the data can express. Over-
+# inclusion is free — every kept crossing is priced by its EXACT combined
+# coordinates and banded on those. Both the ≥-walks and the <-walks apply it
+# with the SAME sign convention, so they still partition the crossing space
+# exactly (no pair is counted twice, none is lost between them).
+XTOL = 1e-6
+# The counting passes compare `u_s` against a PRE-ADDED threshold while the
+# walks add the two `u`s and compare the sum, so the two round differently by
+# ~1 ULP and a bare XTOL threshold lets the estimate come out a few visits
+# UNDER the walk (measured: ≤18 of ~1e6). `_deepest_cut` needs the other
+# direction — "the estimate fits the budget" must IMPLY "the walk completes",
+# since a walk that truncates where the estimate promised completion would let
+# the board's coverage phase re-count what the sound phase already collected.
+# This pad (1e-9 KTC points, 100× the worst rounding error at these magnitudes
+# and 1000× below XTOL) makes every estimate a true upper bound on visits.
+_EST_PAD = 1e-9
 
 
 @dataclass(slots=True)
@@ -1037,15 +1083,24 @@ def build_pair_pool(
     )
 
 
-def _tp_estimate(pool: PairPool, r: float) -> int:
-    """Uncorrected two-pointer size of the ≥r pair space in the walk's ORDERING
-    HEURISTIC (§5 v4): σ_r(leg) = isolation floor − r·Σv sent, and
-    σ_r(buy) + σ_r(sell) ≥ 0 ⟺ the ISOLATION-FLOOR-SUM pair return ≥ r. Exactly
-    the crossing count `_walk_pairs` visits at r — no counterparty / overlap /
-    legality corrections; used to place collection cutoffs and to detect sparse
-    markets. Every visited pair is then priced by its EXACT combined
-    coordinates, so this is a walk-sizing device, never a claim about the exact
-    space."""
+def _tp_estimate(pool: PairPool, r: float, key: int = L_DFACE) -> int:
+    """Uncorrected two-pointer size of the ≥r crossing space under the v5.1
+    SOUND bound (§4a): u_r(leg) = ΔF(leg) − r·Σv sent, and
+    u_r(buy) + u_r(sell) ≥ 0 ⟺ ΔF_pair ≥ r·sent_pair. Since ΔF is exactly
+    additive and floor ≤ ΔF, that region CONTAINS every pair whose exact
+    combined floor return is ≥ r. An UPPER BOUND on the crossing count
+    `_walk_pairs` visits at r, equal to it in every measurement (the pad in
+    `_EST_PAD` covers the one-ULP gap between adding the two `u`s and
+    thresholding one of them, in the direction that keeps "the estimate fits
+    the budget ⟹ the walk completes"). No counterparty / overlap / legality
+    corrections; used to place collection cutoffs and to detect sparse markets.
+    Every visited pair is then priced by its EXACT combined coordinates, so
+    this counts CROSSINGS — an upper bound on the qualifying pairs, never their
+    tally.
+
+    `key` selects the leg field the crossing is keyed on, so the same counter
+    sizes the board's COVERAGE phase (`key=L_FLOOR`, the v5.0.1 ordering — a
+    yield heuristic that certifies nothing, §5) as well as the sound one."""
     legs = pool.legs
     total = 0
     for sig, idxs in pool.buckets.items():
@@ -1054,11 +1109,13 @@ def _tp_estimate(pool: PairPool, r: float) -> int:
         comp = pool.buckets.get((-sig[0], -sig[1]))
         if not comp:
             continue
-        bs = sorted(legs[i][L_FLOOR] - r * legs[i][L_SENT] for i in idxs)
-        ss = sorted(legs[i][L_FLOOR] - r * legs[i][L_SENT] for i in comp)
+        bs = sorted(legs[i][key] - r * legs[i][L_SENT] for i in idxs)
+        ss = sorted(legs[i][key] - r * legs[i][L_SENT] for i in comp)
         n = len(ss)
         for sb in reversed(bs):
-            lo = bisect_left(ss, -sb)
+            # the walk's keep set (u_b + u_s ≥ −XTOL), padded so this counts
+            # at least every crossing the walk visits
+            lo = bisect_left(ss, -(XTOL + _EST_PAD) - sb)
             if lo >= n:
                 break
             total += n - lo
@@ -1082,14 +1139,16 @@ def _leg_legal(league: md.LeagueState, me_t: md.TeamCtx, pool: PairPool, i: int,
     return v
 
 
-def _tp_estimate_below(pool: PairPool, r: float) -> int:
+def _tp_estimate_below(pool: PairPool, r: float, key: int = L_DFACE) -> int:
     """Mirror of _tp_estimate for the LOW end: uncorrected two-pointer size of
-    the < r heuristic pair space (τ_r(leg) = isolation floor − r·Σv sent;
-    τ_r(buy) + τ_r(sell) < 0 ⟺ the isolation-floor-sum pair return < r). Exact on
-    crossings — the visit count of a below-walk at r. v3.4 retired the per-leg
-    return floor, so this space is NOT bounded below by the dial floor: buy legs
-    are legitimately negative alone and the below-walk can be as deep as the
-    top one."""
+    the sub-r crossing space under the same v5.1 key (u_r(leg) = ΔF − r·Σv sent;
+    u_r(buy) + u_r(sell) < 0, which by the sound bound implies the pair's exact
+    floor return really is < r). Exact on crossings — the visit count of a
+    below-walk at r; the two walks partition the crossing space at r. v3.4
+    retired the per-leg return floor, so this space is NOT bounded below by the
+    dial floor: buy legs are legitimately negative alone and the below-walk can
+    be as deep as the top one. `key` mirrors `_tp_estimate`'s — the board's
+    coverage phase sizes its below-walk with `key=L_FLOOR`."""
     legs = pool.legs
     total = 0
     for sig, idxs in pool.buckets.items():
@@ -1098,10 +1157,12 @@ def _tp_estimate_below(pool: PairPool, r: float) -> int:
         comp = pool.buckets.get((-sig[0], -sig[1]))
         if not comp:
             continue
-        bs = sorted(legs[i][L_FLOOR] - r * legs[i][L_SENT] for i in idxs)
-        ss = sorted(legs[i][L_FLOOR] - r * legs[i][L_SENT] for i in comp)
-        for tb in bs:  # ascending τ: the count of complements only shrinks
-            lo = bisect_left(ss, -tb)  # sells with τ_s < −τ_b, strictly
+        bs = sorted(legs[i][key] - r * legs[i][L_SENT] for i in idxs)
+        ss = sorted(legs[i][key] - r * legs[i][L_SENT] for i in comp)
+        for tb in bs:  # ascending u: the count of complements only shrinks
+            # sells with τ_s < −τ_b − XTOL, strictly (padded upward, same
+            # reason as _tp_estimate: never under-count the walk's visits)
+            lo = bisect_left(ss, _EST_PAD - XTOL - tb)
             if lo == 0:
                 break
             total += lo
@@ -1115,12 +1176,15 @@ def _walk_pairs_below(
     budget: int,
     legal: dict,
     out: list[tuple[float, float, float, int, int, float, float]],
+    key: int = L_DFACE,
 ) -> tuple[int, bool]:
-    """Enumerate the VALID pair space at return < r — the exact complement of
-    _walk_pairs at r (boundary pairs at exactly r belong to the ≥ walk).
-    Identical constraints and honesty contract; τ_r-ASCENDING crossing with
-    early exit, so the low end of the return space is reachable without
-    sweeping the (much deeper) top. Deterministic throughout."""
+    """Enumerate the crossing space BELOW r — the exact complement of
+    _walk_pairs at r under the v5.1 sound key (crossings with
+    u_r(buy) + u_r(sell) ≥ 0 belong to the ≥ walk). Every pair reached here has
+    ΔF_pair < r·sent_pair, hence an exact floor return < r. Identical
+    constraints and honesty contract; u_r-ASCENDING crossing with early exit, so
+    the low end of the return space is reachable without sweeping the (much
+    deeper) top. Deterministic throughout."""
     legs = pool.legs
     me_t = league.teams[league.me]
     visits = 0
@@ -1130,19 +1194,19 @@ def _walk_pairs_below(
         comp_idx = pool.buckets.get((-sig[0], -sig[1]))
         if not comp_idx:
             continue
-        # (τ_r, pool index): ascending sort == lowest pair returns first
-        bs = sorted((legs[i][L_FLOOR] - r * legs[i][L_SENT], i) for i in pool.buckets[sig])
-        ss = sorted((legs[i][L_FLOOR] - r * legs[i][L_SENT], i) for i in comp_idx)
+        # (u_r, pool index): ascending sort == lowest crossing returns first
+        bs = sorted((legs[i][key] - r * legs[i][L_SENT], i) for i in pool.buckets[sig])
+        ss = sorted((legs[i][key] - r * legs[i][L_SENT], i) for i in comp_idx)
         ss0 = ss[0][0]
         for tb, bi in bs:
-            if tb + ss0 >= 0.0:
+            if tb + ss0 >= -XTOL:
                 break  # even the lowest sell keeps this (and any later) buy at ≥ r
             b = legs[bi]
-            b_opp, b_mask, b_fl, b_sent = b[L_OPP], b[L_MASK], b[L_FLOOR], b[L_SENT]
+            b_opp, b_mask, b_key, b_sent = b[L_OPP], b[L_MASK], b[key], b[L_SENT]
             vb = None
             for ts, si in ss:
-                if tb + ts >= 0.0:
-                    break
+                if tb + ts >= -XTOL:
+                    break  # ≥ r side of the boundary (XTOL: exact ties belong there)
                 visits += 1
                 if visits > budget:
                     return visits - 1, False
@@ -1155,18 +1219,19 @@ def _walk_pairs_below(
                     break  # illegal buy leg: no pair with it exists
                 if _leg_legal(league, me_t, pool, si, legal) is False:
                     continue
-                # (exact combined return, exact ceiling, heuristic crossing
-                # return, buy, sell, exact ΔS, exact ΔF): the sink bands and
+                # (exact combined return, exact ceiling, ΔF-return of the
+                # crossing, buy, sell, exact ΔS, exact ΔF): the sink bands and
                 # RANKS on the EXACT figures (floor-return desc, ceiling
                 # tie-break — §2 v4 maximin; v5 also keeps per-bucket tops by
                 # ΔS and ΔF for the δ slider); the walks' disjointness is
-                # defined by the heuristic one (§5)
+                # defined by the v5.1 crossing key ΔF_pair ÷ sent_pair (§4a),
+                # which bounds the exact floor return from ABOVE
                 ret, _floor, ceil, d_s, d_f = pool.pair_eval(bi, si)
                 out.append(
                     (
                         ret,
                         ceil,
-                        (b_fl + s[L_FLOOR]) / (b_sent + s[L_SENT]),
+                        (b_key + s[key]) / (b_sent + s[L_SENT]),
                         bi,
                         si,
                         d_s,
@@ -1183,16 +1248,31 @@ def _walk_pairs(
     budget: int,
     legal: dict,
     out: list[tuple[float, float, float, int, int, float, float]],
+    key: int = L_DFACE,
 ) -> tuple[int, bool]:
     """Enumerate the VALID pair space at return ≥ r: complementary
-    count-signature buckets crossed in σ_r-descending order with early exit;
-    constraints per §5 v3.3 — distinct counterparties, disjoint assets (my-give
+    count-signature buckets crossed in u_r-descending order with early exit,
+    where `u_r(leg) = ΔF(leg) − r·Σv sent` is the v5.1 SOUND crossing key
+    (§4a). ΔF is exactly additive across legs and `floor = min(ΔS, ΔF) ≤ ΔF`,
+    so `u_r(buy) + u_r(sell) < 0 ⟹ floor_pair < r·sent_pair ⟹ return < r`:
+    the early exit can only skip pairs that genuinely fail the bar, and a walk
+    that COMPLETES has enumerated every valid pair with exact return ≥ r.
+    Constraints per §5 v3.3 — distinct counterparties, disjoint assets (my-give
     masks; get-sides cannot collide across distinct counterparties), both legs
     full-legality PASS (memoized in `legal`). Appends (exact combined return,
-    heuristic crossing return, buy_i, sell_i)
-    to `out`. Returns (pairs_visited, completed) — completed=False means the
-    visit budget truncated the walk and `out` is a verified floor, not the
-    whole space. Deterministic throughout."""
+    exact ceiling, crossing ΔF-return, buy_i, sell_i, exact ΔS, exact ΔF) to
+    `out`. Returns (pairs_visited, completed) — completed=False means the visit
+    budget truncated the walk and `out` is a verified floor, not the whole
+    space. Deterministic throughout.
+
+    `key` swaps the leg field the crossing is ordered and pruned on. The board
+    also runs this walk with `key=L_FLOOR` as a pure COVERAGE pass (the v5.0.1
+    ordering): the isolation-floor sum neither bounds the combined floor above
+    nor below — pairs are lineup-coupled — so that pass certifies NOTHING; it
+    is simply where high-floor pairs are densest, and it only ADDS inventory.
+    Every soundness/exactness claim rests on the default key. `out`'s crossing
+    coordinate (slot 2) is the ΔF-return either way, so the walks' disjointness
+    bookkeeping is in one set of units."""
     legs = pool.legs
     me_t = league.teams[league.me]
     visits = 0
@@ -1202,19 +1282,19 @@ def _walk_pairs(
         comp_idx = pool.buckets.get((-sig[0], -sig[1]))
         if not comp_idx:
             continue
-        # (−σ_r, pool index): ascending sort == σ_r-descending walk, deterministic
-        bs = sorted((r * legs[i][L_SENT] - legs[i][L_FLOOR], i) for i in pool.buckets[sig])
-        ss = sorted((r * legs[i][L_SENT] - legs[i][L_FLOOR], i) for i in comp_idx)
+        # (−u_r, pool index): ascending sort == u_r-descending walk, deterministic
+        bs = sorted((r * legs[i][L_SENT] - legs[i][key], i) for i in pool.buckets[sig])
+        ss = sorted((r * legs[i][L_SENT] - legs[i][key], i) for i in comp_idx)
         ns0 = ss[0][0]
         for nb, bi in bs:
-            if nb + ns0 > 0.0:
+            if nb + ns0 > XTOL:
                 break  # even the best sell can't lift this (or any later) buy to r
             b = legs[bi]
-            b_opp, b_mask, b_fl, b_sent = b[L_OPP], b[L_MASK], b[L_FLOOR], b[L_SENT]
+            b_opp, b_mask, b_key, b_sent = b[L_OPP], b[L_MASK], b[key], b[L_SENT]
             vb = None
             for ns, si in ss:
-                if nb + ns > 0.0:
-                    break
+                if nb + ns > XTOL:
+                    break  # below r (XTOL keeps exact ties, which qualify)
                 visits += 1
                 if visits > budget:
                     return visits - 1, False
@@ -1227,18 +1307,19 @@ def _walk_pairs(
                     break  # illegal buy leg: no pair with it exists
                 if _leg_legal(league, me_t, pool, si, legal) is False:
                     continue
-                # (exact combined return, exact ceiling, heuristic crossing
-                # return, buy, sell, exact ΔS, exact ΔF): the sink bands and
+                # (exact combined return, exact ceiling, ΔF-return of the
+                # crossing, buy, sell, exact ΔS, exact ΔF): the sink bands and
                 # RANKS on the EXACT figures (floor-return desc, ceiling
                 # tie-break — §2 v4 maximin; v5 also keeps per-bucket tops by
                 # ΔS and ΔF for the δ slider); the walks' disjointness is
-                # defined by the heuristic one (§5)
+                # defined by the v5.1 crossing key ΔF_pair ÷ sent_pair (§4a),
+                # which bounds the exact floor return from ABOVE
                 ret, _floor, ceil, d_s, d_f = pool.pair_eval(bi, si)
                 out.append(
                     (
                         ret,
                         ceil,
-                        (b_fl + s[L_FLOOR]) / (b_sent + s[L_SENT]),
+                        (b_key + s[key]) / (b_sent + s[L_SENT]),
                         bi,
                         si,
                         d_s,
@@ -1257,14 +1338,15 @@ def _walk_pairs_range(
     scan_cap: int,
     legal: dict,
     out,
+    key: int = L_DFACE,
 ) -> tuple[int, bool]:
     """Enumerate the VALID pair space with lo_r ≤ return < hi_r — the gap left
     between a complete top-down walk (≥ hi_r) and a complete below-walk
     (< lo_r). The ≥ lo_r crossings are scanned top-down, but pairs the top walk
-    already owns (return ≥ hi_r) are skipped with one multiply and do NOT
-    consume the visit budget — only in-range pairs do; `scan_cap` bounds the
-    raw scanning time. Same constraints and honesty contract as _walk_pairs;
-    deterministic throughout."""
+    already owns (crossing ΔF-return ≥ hi_r) are skipped with one multiply and
+    do NOT consume the visit budget — only in-range crossings do; `scan_cap`
+    bounds the raw scanning time. Same v5.1 sound key, constraints and honesty
+    contract as _walk_pairs; deterministic throughout."""
     legs = pool.legs
     me_t = league.teams[league.me]
     visits = 0
@@ -1275,23 +1357,27 @@ def _walk_pairs_range(
         comp_idx = pool.buckets.get((-sig[0], -sig[1]))
         if not comp_idx:
             continue
-        bs = sorted((lo_r * legs[i][L_SENT] - legs[i][L_FLOOR], i) for i in pool.buckets[sig])
-        ss = sorted((lo_r * legs[i][L_SENT] - legs[i][L_FLOOR], i) for i in comp_idx)
+        bs = sorted((lo_r * legs[i][L_SENT] - legs[i][key], i) for i in pool.buckets[sig])
+        ss = sorted((lo_r * legs[i][L_SENT] - legs[i][key], i) for i in comp_idx)
         ns0 = ss[0][0]
         for nb, bi in bs:
-            if nb + ns0 > 0.0:
+            if nb + ns0 > XTOL:
                 break
             b = legs[bi]
-            b_opp, b_mask, b_fl, b_sent = b[L_OPP], b[L_MASK], b[L_FLOOR], b[L_SENT]
+            b_opp, b_mask, b_key, b_sent = b[L_OPP], b[L_MASK], b[key], b[L_SENT]
+            # the hi_r ownership test below is evaluated in exactly the split
+            # form (and with exactly the tolerance) the top walk at hi_r uses,
+            # so the two agree bit-for-bit and the slices stay disjoint
+            hb = hi_r * b_sent - b_key
             vb = None
             for ns, si in ss:
-                if nb + ns > 0.0:
+                if nb + ns > XTOL:
                     break
                 scanned += 1
                 if scanned > scan_cap:
                     return visits, False
                 s = legs[si]
-                if b_fl + s[L_FLOOR] >= hi_r * (b_sent + s[L_SENT]):
+                if hb + (hi_r * s[L_SENT] - s[key]) <= XTOL:
                     continue  # ≥ hi_r: the top walk owns it — budget-free skip
                 visits += 1
                 if visits > budget:
@@ -1304,18 +1390,19 @@ def _walk_pairs_range(
                     break  # illegal buy leg: no pair with it exists
                 if _leg_legal(league, me_t, pool, si, legal) is False:
                     continue
-                # (exact combined return, exact ceiling, heuristic crossing
-                # return, buy, sell, exact ΔS, exact ΔF): the sink bands and
+                # (exact combined return, exact ceiling, ΔF-return of the
+                # crossing, buy, sell, exact ΔS, exact ΔF): the sink bands and
                 # RANKS on the EXACT figures (floor-return desc, ceiling
                 # tie-break — §2 v4 maximin; v5 also keeps per-bucket tops by
                 # ΔS and ΔF for the δ slider); the walks' disjointness is
-                # defined by the heuristic one (§5)
+                # defined by the v5.1 crossing key ΔF_pair ÷ sent_pair (§4a),
+                # which bounds the exact floor return from ABOVE
                 ret, _floor, ceil, d_s, d_f = pool.pair_eval(bi, si)
                 out.append(
                     (
                         ret,
                         ceil,
-                        (b_fl + s[L_FLOOR]) / (b_sent + s[L_SENT]),
+                        (b_key + s[key]) / (b_sent + s[L_SENT]),
                         bi,
                         si,
                         d_s,
@@ -1334,12 +1421,14 @@ def _walk_pairs_below_range(
     scan_cap: int,
     legal: dict,
     out,
+    key: int = L_DFACE,
 ) -> tuple[int, bool]:
     """Enumerate the VALID pair space with lo_r ≤ return < hi_r from BENEATH:
-    τ_{hi_r}-ascending crossing (lowest returns first), pairs the below-walk
-    already owns (return < lo_r) skipped with one multiply and no budget. When
-    the visit budget truncates, the collected set is the RANGE'S BOTTOM — a
-    verified, deterministic partial fill for bands unreachable from the top."""
+    u_{hi_r}-ascending crossing (lowest ΔF-returns first, the v5.1 sound key),
+    crossings the below-walk already owns (ΔF-return < lo_r) skipped with one
+    multiply and no budget. When the visit budget truncates, the collected set
+    is the RANGE'S BOTTOM — a verified, deterministic partial fill for bands
+    unreachable from the top."""
     legs = pool.legs
     me_t = league.teams[league.me]
     visits = 0
@@ -1350,23 +1439,27 @@ def _walk_pairs_below_range(
         comp_idx = pool.buckets.get((-sig[0], -sig[1]))
         if not comp_idx:
             continue
-        bs = sorted((legs[i][L_FLOOR] - hi_r * legs[i][L_SENT], i) for i in pool.buckets[sig])
-        ss = sorted((legs[i][L_FLOOR] - hi_r * legs[i][L_SENT], i) for i in comp_idx)
+        bs = sorted((legs[i][key] - hi_r * legs[i][L_SENT], i) for i in pool.buckets[sig])
+        ss = sorted((legs[i][key] - hi_r * legs[i][L_SENT], i) for i in comp_idx)
         ss0 = ss[0][0]
         for tb, bi in bs:
-            if tb + ss0 >= 0.0:
+            if tb + ss0 >= -XTOL:
                 break
             b = legs[bi]
-            b_opp, b_mask, b_fl, b_sent = b[L_OPP], b[L_MASK], b[L_FLOOR], b[L_SENT]
+            b_opp, b_mask, b_key, b_sent = b[L_OPP], b[L_MASK], b[key], b[L_SENT]
+            # the lo_r ownership test below is evaluated in exactly the split
+            # form (and with exactly the tolerance) the below-walk at lo_r
+            # uses, so the two agree bit-for-bit and the slices stay disjoint
+            lb = b_key - lo_r * b_sent
             vb = None
             for ts, si in ss:
-                if tb + ts >= 0.0:
+                if tb + ts >= -XTOL:
                     break
                 scanned += 1
                 if scanned > scan_cap:
                     return visits, False
                 s = legs[si]
-                if b_fl + s[L_FLOOR] < lo_r * (b_sent + s[L_SENT]):
+                if lb + (s[key] - lo_r * s[L_SENT]) < -XTOL:
                     continue  # < lo_r: the below-walk owns it — budget-free skip
                 visits += 1
                 if visits > budget:
@@ -1379,18 +1472,19 @@ def _walk_pairs_below_range(
                     break  # illegal buy leg: no pair with it exists
                 if _leg_legal(league, me_t, pool, si, legal) is False:
                     continue
-                # (exact combined return, exact ceiling, heuristic crossing
-                # return, buy, sell, exact ΔS, exact ΔF): the sink bands and
+                # (exact combined return, exact ceiling, ΔF-return of the
+                # crossing, buy, sell, exact ΔS, exact ΔF): the sink bands and
                 # RANKS on the EXACT figures (floor-return desc, ceiling
                 # tie-break — §2 v4 maximin; v5 also keeps per-bucket tops by
                 # ΔS and ΔF for the δ slider); the walks' disjointness is
-                # defined by the heuristic one (§5)
+                # defined by the v5.1 crossing key ΔF_pair ÷ sent_pair (§4a),
+                # which bounds the exact floor return from ABOVE
                 ret, _floor, ceil, d_s, d_f = pool.pair_eval(bi, si)
                 out.append(
                     (
                         ret,
                         ceil,
-                        (b_fl + s[L_FLOOR]) / (b_sent + s[L_SENT]),
+                        (b_key + s[key]) / (b_sent + s[L_SENT]),
                         bi,
                         si,
                         d_s,
@@ -1401,56 +1495,83 @@ def _walk_pairs_below_range(
 
 
 class _DropSpans:
-    """append() adapter that drops pairs whose return falls in any span
-    (percent, half-open) — keeps the catch-all sweep disjoint from every walk
-    that came before it, so sink tallies stay exact counts of DISTINCT pairs."""
+    """append() adapter that drops pairs an EARLIER walk already owns, so sink
+    tallies stay exact counts of DISTINCT pairs. Two ownership forms:
 
-    __slots__ = ("sink", "spans")
+    - `spans` — crossing-return spans (percent, half-open) in the walks' OWN
+      key units (slot 2 of the walk tuple); keeps the range slices and the
+      catch-all sweep disjoint from each other and from their phase's top walk.
+    - `sound_hi` — the region the v5.1 SOUND top walk owns, i.e. crossings with
+      `ΔF_pair ≥ sound_hi · sent_pair` (a FRACTION). That walk runs first and
+      completes, so the coverage phase must hand its region back (§5 v5.1).
+      None when the sound walk did not run — a truncated phase A owns nothing,
+      and dropping a region nobody enumerated would lose storable pairs.
+    """
 
-    def __init__(self, sink, spans: list[tuple[float, float]]):
+    __slots__ = ("sink", "spans", "legs", "sound_hi")
+
+    def __init__(self, sink, spans: list[tuple[float, float]], legs=None, sound_hi=None):
         self.sink = sink
         self.spans = spans
+        self.legs = legs
+        self.sound_hi = sound_hi
 
     def append(self, t: tuple[float, float, float, int, int, float, float]) -> None:
-        pct = 100.0 * t[2]  # the HEURISTIC return — what the walks partition on
+        pct = 100.0 * t[2]  # the crossing return in this walk's key units
         for a, b in self.spans:
             if a <= pct < b:
                 return
+        if self.sound_hi is not None:
+            b_leg, s_leg = self.legs[t[3]], self.legs[t[4]]
+            r = self.sound_hi
+            # evaluated in exactly the split form (and tolerance) the sound top
+            # walk at r* used, so ownership agrees with it bit-for-bit
+            if (r * b_leg[L_SENT] - b_leg[L_DFACE]) + (
+                r * s_leg[L_SENT] - s_leg[L_DFACE]
+            ) <= XTOL:
+                return  # the sound top walk owns it
         self.sink.append(t)
 
 
-def _deepest_cut(pool: PairPool, floor: float, hi: float, budget: int) -> float:
+def _deepest_cut(
+    pool: PairPool, floor: float, hi: float, budget: int, key: int = L_DFACE
+) -> float:
     """Lowest return cutoff in [floor, hi] whose crossing count fits the walk
-    budget. _tp_estimate counts EXACTLY the crossings _walk_pairs visits (it
+    budget. _tp_estimate upper-bounds the crossings _walk_pairs visits (it
     upper-bounds only the VALID pairs), so a walk at the returned cutoff is
     guaranteed to complete — except when even `hi` does not fit (then `hi` is
-    returned and the walk truncates, disclosed honestly downstream)."""
-    if _tp_estimate(pool, floor) <= budget:
+    returned; the caller checks the estimate before walking). v5.1: a
+    completed walk at a cutoff ≤ the stored floor certifies the whole stored
+    universe, because the crossing key bounds the floor from above (§4a).
+    `key` sizes the same search for the board's tight coverage pass."""
+    if _tp_estimate(pool, floor, key) <= budget:
         return floor
-    if _tp_estimate(pool, hi) > budget:
+    if _tp_estimate(pool, hi, key) > budget:
         return hi
     lo_r, hi_r = floor, hi
     for _ in range(18):
         mid = (lo_r + hi_r) / 2.0
-        if _tp_estimate(pool, mid) > budget:
+        if _tp_estimate(pool, mid, key) > budget:
             lo_r = mid
         else:
             hi_r = mid
     return hi_r
 
 
-def _highest_cut_below(pool: PairPool, floor: float, hi: float, budget: int) -> float:
+def _highest_cut_below(
+    pool: PairPool, floor: float, hi: float, budget: int, key: int = L_DFACE
+) -> float:
     """Highest return cutoff in [floor, hi] whose BELOW-crossing count fits the
     walk budget — how far up from the floor a complete below-walk can reach.
     v3.4: with the per-leg return floor retired the below-space at `floor` is
     no longer empty, so this can legitimately return `floor` itself (the
     below-walk then contributes nothing and the range slices carry the band)."""
-    if _tp_estimate_below(pool, hi) <= budget:
+    if _tp_estimate_below(pool, hi, key) <= budget:
         return hi
     lo_r, hi_r = floor, hi
     for _ in range(18):
         mid = (lo_r + hi_r) / 2.0
-        if _tp_estimate_below(pool, mid) <= budget:
+        if _tp_estimate_below(pool, mid, key) <= budget:
             lo_r = mid
         else:
             hi_r = mid
@@ -1653,8 +1774,10 @@ def trade_board(league: md.LeagueState) -> dict:
     sent so every dial move is O(stored). `bands` carries per-BUCKET honest
     disclosure ({lo|None, hi|None, stored, count, saturated, by_total} —
     by_total is the bucket's count per robust-return band, so the inventory
-    line is honest for any (floor, favor) combination; every count is a
-    verified floor, v3.4). `counts_by_threshold` and `truncated` stay for
+    line is honest for any (floor, favor) combination; v5.1: a count is EXACT
+    (`saturated` False) when the floor-objective collection walk ran to
+    completion under the sound crossing bound (§4a), and a verified FLOOR only
+    when the budget truncated it). `counts_by_threshold` and `truncated` stay for
     ≥-style compat reads on robust total return. `recommendations` (top
     unpaired sell/neutral legs by isolation floor) and `watch` (unpaired
     buys) stay as data for the trade-negotiator desk — the web renders pairs
@@ -1696,9 +1819,12 @@ def trade_board(league: md.LeagueState) -> dict:
     pool = build_pair_pool(league)
     budget = params.pair_scan_budget
     floor = presets[0] / 100.0  # the lowest preset: nothing below it is stored
-    # the heuristic pair return is the sent-weighted mediant of its legs'
-    # isolation returns, so no crossing sits above the best leg return
-    hi_edge = max((leg[L_RET] for leg in pool.legs), default=floor)
+    # the crossing key's pair return is the sent-weighted mediant of its legs'
+    # ΔF-returns, so no crossing sits above the best leg ΔF-return (v5.1)
+    hi_edge = max(
+        (leg[L_DFACE] / leg[L_SENT] for leg in pool.legs if leg[L_SENT] > 0),
+        default=floor,
+    )
     if hi_edge < floor:
         hi_edge = floor
     legal: dict[int, Any] = {}
@@ -1706,93 +1832,157 @@ def trade_board(league: md.LeagueState) -> dict:
     # ---- collection (v3.3.1 stratified): fill every band toward its quota ----
     # _tp_estimate / _tp_estimate_below count EXACTLY the crossings the walks
     # visit, so completability is predictable without walking: a walk at r
-    # completes iff its crossing count fits the budget. The saturating-budget
-    # approach, extended per band, over DISJOINT HEURISTIC return ranges:
-    #   0. if the WHOLE crossing space fits the budget, walk it outright — the
-    #      only branch that can certify exact band counts (v3.4);
-    #   1. top-down at the deepest affordable cutoff r*;
-    #   2. bottom-up below-walk at the highest affordable u*, but only where the
-    #      sub-floor space is small enough to be worth entering (v3.4 retired the
-    #      per-leg return floor, so that space is no longer empty);
-    #   3. per band still touching the gap [floor, r*): the deepest COMPLETE
+    # completes iff its crossing count fits the budget.
+    #
+    # v5.1 runs the collection in TWO PHASES, and the phases are keyed
+    # differently on purpose:
+    #
+    #   A. SOUND (key = ΔF, §4a). One top-down walk at the deepest affordable
+    #      cutoff r*. `u_r(leg) = ΔF − r·Σsent` is exactly additive and
+    #      `floor = min(ΔS, ΔF) ≤ ΔF`, so the region it walks CONTAINS every
+    #      pair whose exact combined floor return is ≥ r*. Complete at
+    #      r* ≤ the storage floor ⇒ the whole stored universe was enumerated
+    #      and every count below is EXACT. This is the phase that can certify.
+    #   B. COVERAGE (key = isolation floor — the v5.0.1 collection verbatim:
+    #      top walk, below-walk, per-band range slices, catch-all sweep). The
+    #      isolation-floor sum neither bounds the combined floor above nor
+    #      below (ΔS is jointly determined by both legs through the lineup), so
+    #      phase B certifies NOTHING. It earns its place empirically: ΔF runs
+    #      2-5× the floor, so the sound cutoff r* starts far above the storable
+    #      band, while the isolation key concentrates on exactly the pairs that
+    #      end up stored. Phase B only ADDS inventory; it drops every crossing
+    #      phase A already owns (ΔF-return ≥ r*), so tallies stay counts of
+    #      DISTINCT pairs and phase A ∪ phase B ⊇ what v5.0.1 collected
+    #      (§11.13(d)). Skipped entirely when phase A already certified.
+    #
+    # Inside phase B the ranges are DISJOINT in its own key units:
+    #   1. top-down at the deepest affordable cutoff;
+    #   2. bottom-up below-walk at the highest affordable cutoff, but only where
+    #      the sub-floor space is small enough to be worth entering (v3.4
+    #      retired the per-leg return floor, so that space is no longer empty);
+    #   3. per band still touching the surviving gap: the deepest COMPLETE
     #      range walk under the band's hi (out-of-range crossings cost one
     #      multiply and no budget). v5: the STORAGE strata are FAVOR buckets —
     #      a dimension the walks cannot target (a leg's KTC-calculator skew is
-    #      uncorrelated with the heuristic ordering) — so the total-band slices
+    #      uncorrelated with the crossing ordering) — so the total-band slices
     #      serve purely as coverage spreading across the total dimension; every
     #      visited valid pair lands in its favor bucket and grid cell.
     # Output streams into per-bucket bounded heaps (_BucketSink): tallies, the
     # bucket × total-band grid, and the top-quota pairs per bucket by TOTAL
     # return — O(buckets · quota) memory (512MB Lambda).
-    #
-    # HONESTY (v3.4/v4): the walks are ordered by the legs' ISOLATION FLOORS
-    # while every pair is priced by its EXACT combined coordinates. The two
-    # orderings do not agree (lineup interactions), so outside branch 0 no
-    # cutoff can prove a bucket or grid cell was fully enumerated — every
-    # count is a VERIFIED FLOOR.
     collect_budget = max(params.pair_collect_budget, budget)
     sink = _BucketSink(buckets, tbands, quota, pool.legs)
-    ALL_R = -1e9  # below every crossing: σ_r > 0 for all legs, nothing prunes
+    ALL_R = -1e9  # below every crossing: u_r > 0 for all legs, nothing prunes
+    # the sink admits on the DISPLAYED return (2 dp of a percent), so the
+    # storable set reaches half a display step below the lowest preset — a
+    # certifying walk has to cover that sliver too, or `exact` would be a claim
+    # about `floor` while the tallies are about `store_floor`
+    store_floor = floor - 5e-5
     exact_all = False
     if _tp_estimate(pool, ALL_R) <= collect_budget:
         _, exact_all = _walk_pairs(league, pool, ALL_R, collect_budget, legal, sink)
     else:
-        r_star = _deepest_cut(pool, floor, hi_edge, collect_budget)
-        _walk_pairs(league, pool, r_star, collect_budget, legal, sink)
-        if r_star > floor + 1e-12:
-            # per-band slices of the surviving gap [floor, r*), descending. Two
-            # feasibility-checked entries per slice (skipped crossings cost one
-            # multiply, so the scan cap runs wider than the visit budget):
-            #   (a) top segment — complete scan from above; the stored pairs
-            #       are the band's top within the walk ordering;
-            #   (b) below segment — complete scan from beneath; bottom-up fill
-            #       as far as the visit budget carries.
-            # Every slice is disjoint from the top walk and from each other; the
-            # catch-all sweep afterward drops anything a slice touched, so the
-            # tallies stay counts of DISTINCT pairs.
-            seg_cap = 4 * collect_budget
-            blocked: list[tuple[float, float]] = []
-            if _tp_estimate_below(pool, floor) <= collect_budget:
-                # the sub-floor space is small: the classic bottom-up edge walk
-                # is affordable and its budget is not eaten by unstorable pairs
-                u_star = _highest_cut_below(pool, floor, r_star, collect_budget)
-                if u_star > floor + 1e-12:
-                    _walk_pairs_below(league, pool, u_star, collect_budget, legal, sink)
-                    blocked.append((0.0, 100.0 * u_star))
-            for lo, hi in reversed(tbands):
-                lo_f = max(lo / 100.0, floor)
-                hi_f = min(hi / 100.0 if hi is not None else hi_edge, r_star)
-                if hi_f <= lo_f + 1e-12:
-                    continue  # the edge walks already own this band's range
-                tp_hi = _tp_estimate(pool, hi_f)
-                if tp_hi <= seg_cap:
-                    x_b = _deepest_cut(
-                        pool, lo_f, hi_f, min(seg_cap, tp_hi + collect_budget)
-                    )
-                    if x_b < hi_f - 1e-12:
-                        _walk_pairs_range(
-                            league, pool, x_b, hi_f, collect_budget, seg_cap,
-                            legal, _DropSpans(sink, blocked),
-                        )
-                        blocked.append((100.0 * x_b, 100.0 * hi_f))
-                elif _tp_estimate_below(pool, lo_f) <= seg_cap:
-                    y_b = _highest_cut_below(pool, lo_f, hi_f, seg_cap)
-                    if y_b > lo_f + 1e-12:
-                        _walk_pairs_below_range(
-                            league, pool, lo_f, y_b, collect_budget, seg_cap,
-                            legal, _DropSpans(sink, blocked),
-                        )
-                        blocked.append((100.0 * lo_f, 100.0 * y_b))
-            # catch-all: one truncated top-range sweep over the gap for the
-            # slices no complete walk could enter — best found within budget,
-            # verified floors, never estimates
-            _walk_pairs_range(
-                league, pool, floor, r_star, collect_budget, seg_cap,
-                legal, _DropSpans(sink, blocked),
+        # ---- phase A: the SOUND top walk (the only certifying pass)
+        r_star = _deepest_cut(pool, store_floor, hi_edge, collect_budget)
+        # `_deepest_cut` returns `hi_edge` when even that cutoff overflows the
+        # budget, and a phase A that TRUNCATES owns no region cleanly: handing
+        # its region to phase B drops storable pairs phase A never reached,
+        # while NOT handing it back tallies phase A's own pairs twice. So phase
+        # A runs only when its crossing count provably fits — `_tp_estimate`
+        # upper-bounds the walk's visits exactly (§11.13(e)), so "the estimate
+        # fits" IMPLIES "the walk completes" — and is skipped entirely
+        # otherwise (it could certify nothing in that state anyway), leaving
+        # the space untouched for coverage. If a walk ever truncated anyway,
+        # its region is still handed back: an under-count stays an honest
+        # floor, a double count would not.
+        sound_hi = None
+        if _tp_estimate(pool, r_star) <= collect_budget:
+            _, top_done = _walk_pairs(league, pool, r_star, collect_budget, legal, sink)
+            # phase A owns {ΔF_pair ≥ r*·sent_pair}
+            sound_hi = r_star
+            # …and if it also reached the storage floor, then by the sound
+            # bound every pair with an exact floor return ≥ `store_floor` has
+            # ΔF_pair ≥ store_floor·sent_pair, so it was visited: nothing
+            # storable was missed and the tallies below are exact counts, not
+            # floors.
+            exact_all = top_done and r_star <= store_floor
+        if not exact_all:
+            # ---- phase B: COVERAGE, isolation-floor keyed, phase A's region
+            # handed back (sound_hi = r*) so nothing is counted twice
+            iso_hi = max((leg[L_RET] for leg in pool.legs), default=floor)
+            if iso_hi < floor:
+                iso_hi = floor
+            iso_star = _deepest_cut(pool, floor, iso_hi, collect_budget, L_FLOOR)
+            _walk_pairs(
+                league, pool, iso_star, collect_budget, legal,
+                _DropSpans(sink, [], pool.legs, sound_hi), L_FLOOR,
             )
+            if iso_star > floor + 1e-12:
+                # per-band slices of the surviving gap [floor, iso*), descending.
+                # Two feasibility-checked entries per slice (skipped crossings
+                # cost one multiply, so the scan cap runs wider than the visit
+                # budget):
+                #   (a) top segment — complete scan from above; the stored pairs
+                #       are the band's top within the walk ordering;
+                #   (b) below segment — complete scan from beneath; bottom-up
+                #       fill as far as the visit budget carries.
+                # Every slice is disjoint from phase B's top walk and from each
+                # other; the catch-all sweep afterward drops anything a slice
+                # touched, so the tallies stay counts of DISTINCT pairs.
+                seg_cap = 4 * collect_budget
+                blocked: list[tuple[float, float]] = []
+                if _tp_estimate_below(pool, floor, L_FLOOR) <= collect_budget:
+                    # the sub-floor space is small: the classic bottom-up edge
+                    # walk is affordable and its budget is not eaten by
+                    # unstorable pairs
+                    u_star = _highest_cut_below(
+                        pool, floor, iso_star, collect_budget, L_FLOOR
+                    )
+                    if u_star > floor + 1e-12:
+                        _walk_pairs_below(
+                            league, pool, u_star, collect_budget, legal,
+                            _DropSpans(sink, [], pool.legs, sound_hi), L_FLOOR,
+                        )
+                        blocked.append((0.0, 100.0 * u_star))
+                for lo, hi in reversed(tbands):
+                    lo_f = max(lo / 100.0, floor)
+                    hi_f = min(hi / 100.0 if hi is not None else iso_hi, iso_star)
+                    if hi_f <= lo_f + 1e-12:
+                        continue  # the edge walks already own this band's range
+                    tp_hi = _tp_estimate(pool, hi_f, L_FLOOR)
+                    if tp_hi <= seg_cap:
+                        x_b = _deepest_cut(
+                            pool, lo_f, hi_f, min(seg_cap, tp_hi + collect_budget),
+                            L_FLOOR,
+                        )
+                        if x_b < hi_f - 1e-12:
+                            _walk_pairs_range(
+                                league, pool, x_b, hi_f, collect_budget, seg_cap,
+                                legal, _DropSpans(sink, blocked, pool.legs, sound_hi),
+                                L_FLOOR,
+                            )
+                            blocked.append((100.0 * x_b, 100.0 * hi_f))
+                    elif _tp_estimate_below(pool, lo_f, L_FLOOR) <= seg_cap:
+                        y_b = _highest_cut_below(pool, lo_f, hi_f, seg_cap, L_FLOOR)
+                        if y_b > lo_f + 1e-12:
+                            _walk_pairs_below_range(
+                                league, pool, lo_f, y_b, collect_budget, seg_cap,
+                                legal, _DropSpans(sink, blocked, pool.legs, sound_hi),
+                                L_FLOOR,
+                            )
+                            blocked.append((100.0 * lo_f, 100.0 * y_b))
+                # catch-all: one truncated top-range sweep over the gap for the
+                # slices no complete walk could enter — best found within
+                # budget, verified floors, never estimates
+                _walk_pairs_range(
+                    league, pool, floor, iso_star, collect_budget, seg_cap,
+                    legal, _DropSpans(sink, blocked, pool.legs, sound_hi), L_FLOOR,
+                )
 
-    # per-bucket counts. Only the whole-space walk (branch 0) certifies an
-    # exact tally; every other branch leaves every count a verified floor.
+    # per-bucket counts. v5.1: a floor-objective walk that ran to completion
+    # over the whole stored universe certifies an EXACT tally (branch 0, or a
+    # top walk that reached the storage floor); anything the budget truncated
+    # leaves every count a verified floor.
     saturated = not exact_all
 
     # ---- stored pairs: the deduped union of the three top-quota heaps per
@@ -2067,13 +2257,18 @@ def trade_board(league: md.LeagueState) -> dict:
         f"{params.variants_per_signature} gets by ISOLATION floor are pooled, "
         f"chosen among the first {params.variant_scan_cap} gate-passers in Σv-desc "
         "order — count-signature coverage is complete; deeper sweetener permutations "
-        "are not enumerated",
+        "are not enumerated. That pre-ranking is a disclosed heuristic (§5), not a "
+        "dominance rule — the same non-additivity v5.1 fixed in the walks applies to "
+        "it — so every EXACT count below is exact over these pooled legs",
         "the fairness gate is KTC's own trade-calculator adjustment, ported exactly "
         "(§3.1) — `adj_give`/`adj_get` on a card are the numbers your league-mate's "
         "calculator shows",
-        "counts marked saturated are verified floors — the pair walk is ordered by "
-        "the legs' isolation floors while pairs are priced by their exact combined "
-        "coordinates, so completeness above a cutoff cannot be certified (v3.4)",
+        "counts are EXACT when the collection walk ran to completion and verified "
+        "FLOORS when it saturated (`saturated`, v5.1): the walk crosses on "
+        "dF - r*(v you send), which is exactly additive across legs and bounds the "
+        "guaranteed floor from above, so a completed walk provably enumerated every "
+        "storable pair — 'none found' means none exists in the enumerated pool; a "
+        "budget-truncated walk still reports only what it verified",
         "band ceilings on cards are negotiating room, not the opener; anchor asks "
         "open +8% (§3)",
         "deep or constrained queries beyond stored inventory belong to the "

@@ -40,11 +40,17 @@ KTC-calculator skew in KTC's own variance units (|f| <= 5 is literally their
 calculator's FAIR window; it replaces the retired v3.4.1 per-leg market-return
 cap). The list always sorts maximin: floor-based return desc, ceiling as
 tie-break. `--target N` survives as an alias for `--min N`; omit --favor-min
-for no floor. Every count is a verified floor (the walk orders legs by their
-isolation floors while pairs are priced by their exact combined coordinates).
+for no floor. Bucket counts are EXACT tallies when the collection walk ran to
+completion under the v5.1 sound crossing bound (it crosses legs on
+ΔF − r·Σv sent, which is exactly additive and bounds every pair's guaranteed
+floor from above) and verified FLOORS — printed ">= N" — only where the walk
+saturated; the inventory marks each bucket. "Exact" is over the POOLED legs:
+the pool keeps `variants_per_signature` package variants per (counterparty,
+give, count-signature), a disclosed pre-ranking heuristic (§5).
 
-`find` is the §4a v5 spread finder: constrained search over the FULL legal
-pair space (not just stored board inventory) with the three sliders. Repeatable
+`find` is the §4a v5 spread finder: constrained search over the legal pair
+space the pool enumerates (not just stored board inventory) with the three
+sliders. Repeatable
 constraint flags --require / --exclude / --prefer each take one string:
 
     "WHO receives|sends OBJECT [with TEAM]"
@@ -57,9 +63,16 @@ per §4 strict precedence (query > intel > posture, per team) unless
 --favor-min/--favor-max, plus structural --shape / --legs A+B / --with TEAM.
 A favor window pushes down to LEG level before the crossing (v5.0.1), so
 favor-banded queries usually finish exhaustively; numeric-δ walks order by a
-per-leg δ-score instead of the isolation floor. Warm/cold cache and
-exact-vs-verified-floor counts are reported in the header; an empty result
-says whether the constrained space is exhausted (exact) or budget-truncated.
+per-leg δ-score instead of the isolation floor. Warm/cold cache and count
+honesty are reported in the header. v5.1: a completed crossing is EXACT — the
+crossing never prunes, so every pooled pair was visited and priced by its exact
+combined coordinates, whatever --delta says, and "no spreads matched" means no
+such spread exists AMONG THE POOLED LEGS; a budget-truncated crossing stays a
+verified floor. That scope is real: the pool keeps only
+`variants_per_signature` package variants per (counterparty, give,
+count-signature), a disclosed pre-ranking heuristic (§5), so "none exists" is
+never a claim about the whole legal package space. A numeric --delta remains a
+labeled preference VIEW of the RANKING (§4a).
 """
 
 from __future__ import annotations
@@ -527,7 +540,15 @@ def run_find(args, db, league: md.LeagueState) -> None:
     if args.json:
         print(json.dumps(
             {"query": query, "cache": "warm" if warm else "cold",
-             "seconds": round(dt, 2), **res},
+             "seconds": round(dt, 2), **res,
+             # v5.1: `exact` says the crossing was not budget-truncated, and
+             # since the crossing never prunes that is exactly the certificate
+             # — every pooled pair was visited and priced exactly, at any δ. It
+             # is scoped to the POOLED legs: `variants_per_signature` package
+             # variants per (counterparty, give, count-signature) is a
+             # disclosed pre-ranking heuristic (§5), so matched == 0 with
+             # exact == true means "none among the pooled legs".
+             "exact_scope": "pooled-legs"},
             indent=1, default=str,
         ))
         return
@@ -569,12 +590,25 @@ def run_find(args, db, league: md.LeagueState) -> None:
     if args.no_posture:
         print("Posture defaults: OFF (--no-posture)")
     c = res["counts"]
-    honesty = (
-        "EXACT — constrained crossing walked exhaustively"
-        if res["exact"]
-        else f"VERIFIED FLOORS — crossing budget {league.params.finder_cross_budget:,} "
-        "hit; the space runs deeper (never estimates)"
-    )
+    # v5.1 honesty. The engine's `exact` flag says the constrained crossing was
+    # NOT budget-truncated — and the finder's crossing never prunes (the v5.1
+    # sound key only decides what a TRUNCATION keeps), so a completed crossing
+    # visited and exactly priced every pooled pair at any δ. The one live
+    # caveat is the pool: `variants_per_signature` variants per (counterparty,
+    # give, count-signature) is a disclosed pre-ranking heuristic (§5), so the
+    # certificate is over the POOLED legs, never the whole package space.
+    if res["exact"]:
+        honesty = (
+            "EXACT over the pooled legs — the constrained crossing completed "
+            "(it never prunes: every pooled pair was visited and priced by its "
+            "exact combined coordinates); these counts are provable, with the "
+            "pool's per-signature variant cap as the disclosed limit (§5)"
+        )
+    else:
+        honesty = (
+            f"VERIFIED FLOORS — crossing budget {league.params.finder_cross_budget:,} "
+            "hit; the space runs deeper (never estimates)"
+        )
     print(f"Counts [{honesty}]: {c['legs']['buy']:,} buy legs / {c['legs']['sell']:,} sell legs "
           f"· crossings {c['crossings']:,} · valid pairs {c['valid']:,} "
           f"· matched sliders {c['matched']:,} · returned {c['returned']}")
@@ -582,9 +616,16 @@ def run_find(args, db, league: md.LeagueState) -> None:
     # ---- the spreads
     if not res["spreads"]:
         if res["exact"]:
-            print("\nNo spreads matched — the COMPLETE crossing of the constrained "
-                  "space found none (exact, not a budget artifact). Loosen a slider "
-                  "or drop a constraint; the counts above show where candidates died.")
+            print("\nNo spreads matched — NONE EXIST among the pooled legs. The "
+                  "crossing completed and it never prunes, so every pair the pool "
+                  "can form was visited and priced by its exact combined "
+                  "coordinates: this is proof of absence over that pool, not a "
+                  "budget artifact. The one hedge is the pool itself — it keeps "
+                  f"{league.params.variants_per_signature} package variants per "
+                  "(counterparty, give, count-signature) as a disclosed "
+                  "pre-ranking heuristic (§5), so a variant outside that cap is "
+                  "not ruled out. Loosen a slider or drop a constraint; the counts "
+                  "above show where candidates died.")
         else:
             print("\nNo spreads matched WITHIN THE CROSSING BUDGET — a verified "
                   "floor, not proof of absence: the space runs deeper than the walk "
@@ -786,11 +827,20 @@ def main() -> None:
             else f"[{p:g},inf)"
             for i, p in enumerate(board["presets"])
         ]
+        sat_any = any(b["saturated"] for b in buckets)
         print(
             "Favor bucket inventory (v5: bucket = pair favor min(f_buy, f_sell), "
             "the least-happy counterparty's signed KTC-calculator skew; stored = "
-            "the bucket's union of tops by robust return / dS / dF; every count a "
-            "verified floor — '>=' throughout):"
+            "the bucket's union of tops by robust return / dS / dF). v5.1 count "
+            "honesty: a count printed bare is an EXACT tally — the collection walk "
+            "ran to completion under the sound crossing bound dF - r*(v you send), "
+            "which is exactly additive across legs and bounds every pair's "
+            "guaranteed floor, so it provably enumerated every qualifying pair the "
+            "POOLED legs can form (the pool's per-signature variant cap stays a "
+            "disclosed heuristic, §5); "
+            + ("a count printed '>= N' is a verified floor (the walk saturated "
+               "there):" if sat_any else "no bucket saturated in this run, so every "
+               "count below is exact:")
         )
         for b in buckets:
             mark = ">= " if b["saturated"] else ""
@@ -805,7 +855,16 @@ def main() -> None:
             print(
                 f"\nNo stored pairs with {filter_label} today. Loosen the favor "
                 "floor or drop the total floor — the inventory above shows where "
-                "the stored pairs sit. The board recomputes nightly."
+                "the stored pairs sit"
+                + (
+                    " (and it is a set of exact counts, so a bucket reading 0 "
+                    "means no such pair EXISTS among the pooled legs, not merely "
+                    "none stored)"
+                    if not sat_any
+                    else " (saturated buckets read '>= N' — a 0 there is only "
+                    "'none found within the walk')"
+                )
+                + ". The board recomputes nightly."
             )
             return
         deeper = any(b["saturated"] or b["count"] > b["stored"] for b in buckets)
@@ -813,7 +872,13 @@ def main() -> None:
             f"\nTop {min(15, len(hits))} of {len(hits)} stored pairs with {filter_label}, "
             "floor-based total return desc (ceiling tie-break — every stored "
             "pair is objectively good, §2 v4)"
-            + (" (the legal space runs deeper — see the inventory above)" if deeper else "")
+            + (
+                " (the legal space runs deeper than storage — the "
+                + ("exact " if not sat_any else "")
+                + "counts in the inventory above say by how much)"
+                if deeper
+                else ""
+            )
             + ":"
         )
         for p in hits[:15]:

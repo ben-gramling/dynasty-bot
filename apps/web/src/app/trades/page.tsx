@@ -102,7 +102,12 @@ export default async function TradesPage() {
           signed skew their own calculator shows (±5 = it literally says
           FAIR), and the floor applies to the least-happy counterparty,
           min(f_buy, f_sell) — replacing the per-leg market-return cap (the
-          raw skim diverges from their calculator by up to 14 pts). Band
+          raw skim diverges from their calculator by up to 14 pts). The
+          inventory count under the dials is the engine&apos;s own and says
+          which kind it is (v5.1): an exact count where the nightly collection
+          walk ran to completion — so &ldquo;none&rdquo; there means none
+          exists among the legs that run pooled — and a ≥ verified floor only
+          where it saturated. Band
           ceilings on cards are negotiating room, not the opener.
         </p>
         <PairsBoard

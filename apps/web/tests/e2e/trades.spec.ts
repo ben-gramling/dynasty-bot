@@ -11,8 +11,12 @@ import { expect, test } from "@playwright/test";
  * literally says FAIR; replaces the v3.4.1 per-leg market-return cap). No
  * dial combination disables; the list sorts by return(δ) desc, ceiling
  * tie-break. The inventory line comes from the engine's honest favor-bucket ×
- * robust-return `bands` grid (floors render "≥ N" — verified floors, never
- * estimates), cards render BOTH sides' own coordinates ("starters +X · face
+ * robust-return `bands` grid and labels which kind of number it is (v5.1):
+ * "N legal (exact count)" when every selected band's `saturated` is false and
+ * no view effect demotes it — the collection walk completed under the sound
+ * crossing bound, so "none" means none exists — versus "≥ N legal (verified
+ * floor)" otherwise, never an estimate. A δ view is always a floor (it counts
+ * on robust return). Cards render BOTH sides' own coordinates ("starters +X · face
  * +Y" — ΔF zero-sum per leg, ΔS per side) with the guaranteed interval, a
  * per-leg favor chip, and the pair favor line, and NOTHING that isn't a pair
  * renders: no unpaired-legs section, no watch list, no standalone cards.
@@ -79,12 +83,13 @@ test("three dial controls with defaults: robust δ, floor 5%, no favor floor", a
     fG.getByRole("button", { name: "No floor", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
   // The inventory line reads from the engine's favor-bucket × robust-return
-  // grid; robust default sorts by the guaranteed return.
-  await expect(
-    page.getByText(
-      /stored shown \(total 5%\+ robust, no favor floor\) · inventory: (≥ )?[\d,]+ legal · sorted by guaranteed return/,
-    ),
-  ).toBeVisible();
+  // grid and labels its own honesty (v5.1: exact count vs verified floor —
+  // the "≥ " prefix and the "(verified floor)" tag always agree); robust
+  // default sorts by the guaranteed return.
+  const invLine = page.getByText(
+    /stored shown \(total 5%\+ robust, no favor floor\) · inventory: (?:[\d,]+ legal \(exact count\)|≥ [\d,]+ legal \(verified floor\)) · sorted by guaranteed return/,
+  );
+  await expect(invLine).toBeVisible();
   // No preference view is active by default.
   expect(await page.getByText(/preference view at δ=/).count()).toBe(0);
 });
@@ -143,11 +148,17 @@ test("the δ selector is a labeled preference view that only widens the list", a
   ).toHaveAttribute("aria-pressed", "true");
   // The view is LABELED (§4a: a preference view, never a score change) …
   await expect(page.getByText(/preference view at δ=0\.5/)).toBeVisible();
+  // a δ view counts on robust return, so its inventory is ALWAYS a floor —
+  // never labeled exact, whatever the bands say
   await expect(
     page.getByText(
-      /stored shown \(total 5%\+ at δ=0\.5, no favor floor\) · inventory: ≥ [\d,]+ legal · sorted by return\(δ=0\.5\)/,
+      /stored shown \(total 5%\+ at δ=0\.5, no favor floor\) · inventory: ≥ [\d,]+ legal \(verified floor\) · sorted by return\(δ=0\.5\)/,
     ),
   ).toBeVisible();
+  await expect(
+    page.getByText(/a δ view counts on robust return/),
+  ).toBeVisible();
+  expect(await page.getByText(/Inventory is an exact count/).count()).toBe(0);
   // … and the objective verdict/floor stays on every card: return(δ) ≥ the
   // robust return on every pair (ΔW(δ) never drops below the floor), so a δ
   // view can only expose MORE pairs past the same floor — never fewer.
@@ -289,19 +300,31 @@ test("pairs render fully behind every dial combo or the empty state is honest", 
   }
 });
 
-test("bucket inventory floors are disclosed honestly", async ({ page }) => {
-  // Live-data dependent: when any selected favor bucket is saturated, the
-  // inventory renders "≥ N" and the verified-floor note appears; when none
-  // is (and the dials sit on bucket edges — the defaults do), neither does.
-  // (Outside whole-space walks every count is a floor, so both normally show.)
-  const line = page.getByText(/inventory: (≥ )?[\d,]+ legal/);
+test("bucket inventory honesty is disclosed per band — exact or verified floor", async ({
+  page,
+}) => {
+  // Live-data dependent (v5.1): when a selected favor bucket is saturated (or
+  // a view effect demotes the line) the inventory renders "≥ N (verified
+  // floor)" with the floor note naming the reason; when the collection walk
+  // completed for every selected band it renders "N (exact count)" with the
+  // exact note. Exactly one of the two notes may be on the page.
+  const line = page.getByText(/inventory: (≥ )?[\d,]+ legal \((exact count|verified floor)\)/);
   await expect(line).toBeVisible();
   const text = (await line.textContent()) ?? "";
-  const note = page.getByText(/Inventory marked ≥ is a verified floor/);
+  const floorNote = page.getByText(/Inventory marked ≥ is a verified floor here because/);
+  const exactNote = page.getByText(/Inventory is an exact count \(§4a v5\.1\)/);
   if (text.includes("≥")) {
-    await expect(note).toBeVisible();
+    expect(text).toContain("(verified floor)");
+    await expect(floorNote).toBeVisible();
+    expect(await exactNote.count()).toBe(0);
+    // a floor is never presented as proof of absence
+    expect(await page.getByText(/A 0 here means none exists/).count()).toBe(0);
   } else {
-    expect(await note.count()).toBe(0);
+    expect(text).toContain("(exact count)");
+    await expect(exactNote).toBeVisible();
+    expect(await floorNote.count()).toBe(0);
+    // an exact count says so, and says what "none" means
+    await expect(page.getByText(/A 0 here means none exists, not none found/)).toBeVisible();
   }
 });
 

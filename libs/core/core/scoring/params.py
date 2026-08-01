@@ -66,7 +66,18 @@ class Params:
     pairs_per_band: int = 100
     # §4a/§9 the spread finder
     finder_top: int = 20  # query result size
-    finder_cross_budget: int = 2_000_000  # crossings per query; saturation → verified floors
+    # crossings per query; saturation → verified floors. v5.1 raised this from
+    # 2,000,000: the sound key ΔF gives up later than the retired isolation
+    # floor, so a TRUNCATED robust walk keeps different (measurably worse for
+    # the floor objective) crossings — on the measured market query the 2M walk
+    # returned best 13.18% and none of the exhaustive top-20, where the same
+    # query crossed COMPLETELY at 10.3M (best 16.25%, exact=True, 34.5s).
+    # 16M covers both measured constrained spaces (10.3M / 14.8M) with headroom
+    # at ~576k crossings/s and unchanged 182MB peak RSS; unconstrained queries
+    # (space 4.6e9) stay truncated honest floors either way. The finder is the
+    # interactive CLI/skill path — it never runs on the collector Lambda, so
+    # this does not touch the §11.10 board budget (§9, v5.1).
+    finder_cross_budget: int = 16_000_000
     variants_per_signature: int = 2  # gets kept per (opponent, give, count-signature), isolation floor desc
     # v3.4 scan bound: gate-passers evaluated per (opponent, give, count-signature)
     # before the top-`variants_per_signature` are taken. The exact KTC gate and the

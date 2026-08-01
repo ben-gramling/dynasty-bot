@@ -10,15 +10,23 @@ crossing — both pair favor checks decompose exactly onto the legs) → cross
 buy × sell (asset-disjoint, distinct counterparties, count-neutral 0/0) →
 exact combined coordinates per §2 (one incremental starter re-solve per
 crossing) → slider filter/sort → top `finder_top` with honest counts.
-Crossings that finish inside `finder_cross_budget` report EXACT counts — the
+Crossings that finish inside `finder_cross_budget` report EXACT counts over the
+POOLED legs — the crossing is exhaustive (it never prunes), so a completed walk
+visited and exactly priced every pair the pool can form, whatever the δ; the
 favor-filtered space is usually small enough that favor-banded queries finish
 exhaustively; a budget-truncated cross saturates to verified floors — never
-estimates (§11.12(e)). Walk order is a disclosed heuristic (§5 doctrine —
-combined ΔS is non-additive, so no order certifies past a cutoff): robust
-queries by isolation floor, numeric-δ queries by the per-leg δ-score
-leg_ΔW(δ) = iso_ΔS + δ·(ΔF_leg − iso_ΔS) so truncation fronts what the view
-ranks (v5.0.1 — the floor order buried the fair region, whose floors are
-small or negative).
+estimates (§11.12(e)). "Exact" is bounded by the pool: `build_pair_pool` keeps
+`variants_per_signature` gets per (counterparty, give, count-signature) as a
+disclosed pre-ranking heuristic (§5), so "none exists" is always "none exists
+among the pooled legs", never a statement about the whole legal package space.
+Walk order decides what a truncation keeps: robust
+(floor-objective) queries walk by the v5.1 SOUND key ΔF(leg) — exactly
+additive across legs and an upper bound on the pair's guaranteed floor (§4a),
+so the crossings that can carry a high floor come first, complementary pairs
+included (v5.0.1's isolation-floor order buried them: a leg that ships a
+starter scores terribly alone). Numeric-δ queries keep the v5.0.1 per-leg
+δ-score leg_ΔW(δ) = iso_ΔS + δ·(ΔF_leg − iso_ΔS), which stays a disclosed
+heuristic (combined ΔS is non-additive), so truncated δ-view counts are floors.
 
 The three sliders (§4a — VIEWS and filters, never score parameters):
 
@@ -264,7 +272,8 @@ def find_spreads(
     carrying leg cards, exact combined coords, floor/ceiling, return_robust,
     return_view, favor {buy, sell, min}, preferred ★, sequencing, and net
     counts; `counts` are exact when the crossing finished inside
-    `finder_cross_budget` (`exact` True), verified floors otherwise —
+    `finder_cross_budget` (`exact` True) — exact over the POOLED legs, for any
+    δ, since the crossing never prunes — and verified floors otherwise —
     never estimates (§11.12(e)). With a favor window set, `counts.legs` are
     the favor-ELIGIBLE legs (v5.0.1 push-down: the constrained crossing
     space), and the crossing is exhaustive whenever that filtered space fits
@@ -350,17 +359,25 @@ def find_spreads(
 
     # ---- cross buy × sell: asset-disjoint, distinct counterparties,
     # count-neutral 0/0 (complementary signatures). Deterministic descending
-    # heuristic order, budgeted honestly: robust queries walk by isolation
-    # floor (the disclosed §5 heuristic, unchanged); numeric-δ queries walk by
-    # the per-leg δ-score leg_ΔW(δ) = iso_ΔS + δ·(ΔF_leg − iso_ΔS) from the
-    # stored leg fields (§4a v5.0.1), so a truncated walk fronts the pairs the
-    # δ view actually ranks. Same doctrine either way: combined pair ΔS is NOT
-    # additive over legs, so no heuristic order certifies the space beyond a
-    # budget cutoff — truncated counts are verified floors, never estimates.
+    # order, budgeted honestly: robust (floor-objective) queries walk by the
+    # v5.1 SOUND key ΔF(leg) (§4a) — ΔF is exactly additive across legs and
+    # bounds the pair's guaranteed floor from above, so the walk fronts exactly
+    # the crossings that can carry a high floor, including the complementary
+    # pairs whose legs score terribly alone (through v5.0.1 the key was the
+    # leg's ISOLATION FLOOR, which the combined floor does not dominate — that
+    # order buried them). Numeric-δ queries keep the v5.0.1 per-leg δ-score
+    # leg_ΔW(δ) = iso_ΔS + δ·(ΔF_leg − iso_ΔS) from the stored leg fields, so a
+    # truncated walk fronts the pairs the δ view actually ranks; combined pair
+    # ΔS is not additive, so that order stays a disclosed heuristic and
+    # truncated δ-view counts stay verified floors, never estimates.
+    #
+    # NB the crossing itself is EXHAUSTIVE over the constrained pool — the
+    # order only decides what a budget truncation keeps — so `exact`
+    # (== `complete` below) is a statement about the budget alone.
     if delta == "robust":
 
         def order_key(i: int) -> float:
-            return -legs[i][tr.L_FLOOR]
+            return -legs[i][tr.L_DFACE]
 
     else:
         dw_cache: dict[int, float] = {}
@@ -543,9 +560,10 @@ def find_spreads(
             "matched": matched,
             "returned": len(spreads),
         },
-        # §11.12(e): True ⟺ the constrained crossing space was walked
-        # exhaustively — counts are exact tallies; False ⟺ the budget
-        # truncated the walk — every count is a verified floor
+        # §11.12(e)/§11.13(a): True ⟺ the constrained crossing space was walked
+        # exhaustively — counts are exact tallies and "no spread matched" means
+        # none exists in the constrained pool; False ⟺ the budget truncated the
+        # walk — every count is a verified floor
         "exact": complete,
         "applied_constraints": [c.to_dict() for c in compiled],
         "ignored_intel": ignored_intel,

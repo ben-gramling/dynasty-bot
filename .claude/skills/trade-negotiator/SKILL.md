@@ -86,10 +86,17 @@ Division of labor (spec v5, `docs/scoring-system.md`):
   [−10,−5), [−5,0), [0,+5), [+5,∞) on `min(f_buy, f_sell)`): per bucket the
   union of top-100 by robust return, by ΔS, and by ΔF (so both δ extremes
   have inventory), each bucket with an honest count plus a `by_total` grid.
-  EVERY count is a saturated verified floor — the walk orders legs by their
-  isolation floors while pairs are priced by their exact combined
-  coordinates, so no cutoff can certify completeness. Say "at least N",
-  never a point estimate. Know the v5 geometry: my guaranteed floor is
+  **v5.1 count honesty — read the flag, don't assume.** The floor/robust
+  collection walk crosses legs on `ΔF − r·Σv sent`, which is exactly additive
+  and bounds every pair's guaranteed floor from above, so a walk that RUNS TO
+  COMPLETION provably enumerated every qualifying pair the POOLED legs can form
+  (§5's per-signature variant cap stays a disclosed heuristic): `saturated:
+  false` ⇒ the count is an EXACT tally (quote it as "N", and "none" means none
+  exists among those legs), `saturated: true` ⇒ a verified floor (quote it as
+  "at least N", never a point estimate, and never as proof of absence). On the
+  real nightly board expect `saturated: true` everywhere — the sound cutoff
+  lands ~32% while storage starts at 1%. Know the v5
+  geometry: my guaranteed floor is
   bounded by my raw face gain, which is the NEGATION of the counterparties' —
   so the high-favor buckets ([0,+5) and [+5,∞)) are thin or EMPTY by math on
   a ≥1% stored universe. Don't promise both-calculators-happy pairs with big
@@ -172,8 +179,10 @@ The user will feed you color like: *"trdouglas is hunting draft capital"* ·
      `coords`/`verdict`/`floor`/`breakeven` plus `favor` (mirrored in
      `gate.favor`; `market_return_pct` survives as information only);
      `bands` gives per-FAVOR-BUCKET inventory {lo, hi, stored, count,
-     saturated, by_total} (`saturated: true` means a verified floor — read
-     the count as "≥ N"; `by_total` is the bucket's counts per total band);
+     saturated, by_total} (v5.1: `saturated: false` means the collection walk
+     completed under the sound crossing bound and the count is an EXACT tally;
+     `saturated: true` means a verified floor — read that count as "≥ N";
+     `by_total` is the bucket's counts per total band);
      `favor_presets` + `delta_presets` name the dial stops
      (`leg_cap_presets` and the per-leg `leg_returns`/`max_leg_return_pct`
      are RETIRED — a pre-v5 doc still carries them, a v5 doc does not);
@@ -227,18 +236,28 @@ uv run python scripts/score_trade.py find \
   `--min-return N` (percent, on return(δ)), `--favor-min F` / `--favor-max F`
   (KTC variance units). Structural: `--shape` (starter>team ⟺ dS > dF),
   `--legs A+B` (one leg with A, the other with B, either direction),
-  `--with TEAM` (TEAM on some leg). Counts are EXACT when the crossing
-  finished inside the 2M budget, VERIFIED FLOORS when it saturated — the
-  header says which; quote it honestly ("at least N valid pairs"). A favor
+  `--with TEAM` (TEAM on some leg). **Count honesty (v5.1) — the header says
+  which of two, relay exactly that one.** The crossing never prunes (the sound
+  key `ΔF − r·Σv sent` only decides what a truncation keeps), so a crossing
+  that finished inside the 16M budget is EXACT at any `--delta`: quote the
+  counts as they stand, and an empty result means **none exists among the
+  pooled legs** (the header prints "NONE EXIST among the pooled legs" — the
+  pool keeps 2 package variants per (counterparty, give, count-signature) as a
+  disclosed heuristic, so it is proof of absence over that pool, not over every
+  conceivable package). A budget-saturated crossing is VERIFIED FLOORS: quote
+  "at least N valid pairs", and an empty result is "none found within budget",
+  NOT proof of absence. A numeric `--delta` is a labeled preference VIEW of the
+  RANKING; it does not change what the completed crossing proves. (`--json`
+  carries `exact` — the crossing was not budget-truncated — with
+  `exact_scope: "pooled-legs"` as the standing caveat.) A favor
   window pushes down to LEG level before the crossing (v5.0.1: the pair min
   bounds both legs from below, the ceiling both from above), so favor-banded
   queries usually finish exhaustively; numeric-δ walks order by a per-leg
-  δ-score so truncation fronts what the view ranks. An EMPTY result is
-  two different sentences — "complete crossing of the constrained space
-  found none" (exact) vs "none found within budget" (a floor, NOT proof of
-  absence) — relay whichever the CLI printed, never the other. First run
-  per snapshot builds the `.cache/` leg tables (~15s); warm re-queries with
-  added constraints are seconds.
+  δ-score so truncation fronts what the view ranks. First run per snapshot
+  builds the `.cache/` leg tables (~15s); warm re-queries with added
+  constraints are seconds. A query too wide to finish burns the whole 16M
+  budget (~45s) and still only reports floors — constrain it (favor window,
+  `--legs`, `--with`) and it finishes exhaustively, usually faster.
 - `--alternatives`: single-tweak variants, gate-passers ranked maximin (floor
   desc, ceiling tie-break) — the counter-offer generator.
 - `--hedge`: for any non-count-neutral leg, gate-passing legs elsewhere (≤2
@@ -266,9 +285,13 @@ uv run python scripts/score_trade.py find \
   for them); the sort is always maximin. A high favor
   floor under a high return floor can be EMPTY by geometry (my guaranteed
   floor is bounded by my face gain = the negation of theirs) — say so instead
-  of apologizing for the engine. Read the bucket inventory honestly: counts
-  are verified floors — say "at least N", never a point estimate — and a
-  bucket whose count exceeds its stored quota runs deeper than what's listed.
+  of apologizing for the engine. Read the bucket inventory honestly, per
+  bucket: an unsaturated count is exact — say "N", and a 0 there means no such
+  pair EXISTS among the pooled legs, not merely none stored — while a
+  `saturated` count prints
+  ">= N" and must be quoted as "at least N", never a point estimate. Either
+  way, a bucket whose count exceeds its stored quota runs deeper than what's
+  listed.
   When the user's ask outruns stored inventory (constraints, specific
   counterparties, δ views over the FULL space) go straight to `find`.
   Then curate, don't just paste: the engine's constraints are HARD in the
@@ -293,8 +316,10 @@ uv run python scripts/score_trade.py find \
   `find --require "ronak receives picks" --require "joey receives pos:RB"
   --exclude "* receives Stefon Diggs" --min-return 1 --favor-min -5`.
   Echo the header back to the user: which constraints applied (and WHOSE —
-  posture vs intel vs the query), which intel was ignored and why, and
-  whether counts are exact or verified floors. ★-starred spreads satisfy a
+  posture vs intel vs the query), which intel was ignored and why, and whether
+  the counts are exact (completed crossing — "none" means none exists among the
+  pooled legs) or verified floors ("none found", never proof of absence).
+  ★-starred spreads satisfy a
   prefer (e.g. logged OFFERED intel) — surface them first when present. A
   numeric `--delta` ask ("value picks at half face") is a labeled VIEW: give
   the view ranking AND each spread's unchanged objective verdict. Present
@@ -336,6 +361,14 @@ uv run python scripts/score_trade.py find \
   trades. Never collapse the interval to one number: "guaranteed +X, up to
   +Y". A gate-FAIL is dead no matter the numbers: the gate IS their KTC
   calculator. Anchor at +8%, settle inside the band.
+- Count honesty (v5.1), one rule: say **"none exist"** only when the engine
+  itself reported the count exact — a `find` whose crossing completed
+  (`exact: true`), or an unsaturated `bands` bucket — and say it as "none
+  among the legs the engine pooled" (§5's per-signature variant cap is a
+  disclosed heuristic the sound bound does not repair). Everywhere else
+  (budget-truncated walks, `saturated: true` buckets) say **"none found within
+  budget"** / "at least N" and never present it as proof of absence. Relay the
+  tool's own sentence; don't upgrade or downgrade it.
 - Distinguish your two knowledge types explicitly: *priced* (engine arithmetic)
   vs *read* (posture/intel). "The math says +552; your intel says millj wants
   picks, which is why this shape clears."

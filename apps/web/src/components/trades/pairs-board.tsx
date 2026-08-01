@@ -48,9 +48,14 @@ function returnAt(p: TradePair, delta: number | null): number {
  * raw skim diverges from the calculator by up to 14 pts). Filtering and
  * sorting are client-side and O(stored): return(δ) desc, ceiling tie-break.
  * The inventory line reads the doc's favor-bucket × robust-return `by_total`
- * grid — verified floors rendered "≥ N"; a favor floor between bucket edges
- * (+2.5) counts only fully-covered buckets and a δ view counts on robust
- * return (a floor either way, see the note under the line).
+ * grid, and its honesty is driven by the engine's per-band `saturated` flag
+ * (v5.1): an unsaturated band is an EXACT tally — the floor-objective
+ * collection walk ran to completion under the sound crossing bound, so it
+ * provably enumerated every qualifying pair — while a saturated band is a
+ * verified floor rendered "≥ N". Two view-side effects also demote the line
+ * to a floor: a favor floor between bucket edges (+2.5) counts only
+ * fully-covered buckets, and a δ view counts on robust return. The note under
+ * the line names whichever reasons actually apply.
  */
 export function PairsBoard({
   pairs,
@@ -99,6 +104,9 @@ export function PairsBoard({
   // the return floor selects the grid columns with lo ≥ min (floor presets
   // coincide with the robust band los). In a δ view the same columns are a
   // floor for return(δ) ≥ min, since return(δ) ≥ robust return on every pair.
+  // v5.1: with every selected band unsaturated and neither view effect in
+  // play, the sum is an EXACT count of the legal space — the engine's
+  // collection walk completed under the sound crossing bound.
   const selected = bucketList.filter(
     (b) => favorMin === null || (b.lo !== null && b.lo >= favorMin),
   );
@@ -116,8 +124,30 @@ export function PairsBoard({
         : b.count),
     0,
   );
-  const invSat =
-    selected.some((b) => b.saturated) || partialBucket || delta !== null;
+  // per-band honesty (v5.1) plus the two view-side demotions, each named in
+  // the note below so the line never hedges for a reason that doesn't apply
+  const bandSat = selected.some((b) => b.saturated);
+  // pre-v5 docs carry no return-band grid, so the fallback counts the whole
+  // bucket rather than this floor's slice — never label that exact
+  const missingGrid = selected.some((b) => !b.by_total);
+  const invSat = bandSat || missingGrid || partialBucket || delta !== null;
+  const floorReasons: string[] = [];
+  if (bandSat)
+    floorReasons.push(
+      "the engine's collection walk hit its budget in a selected favor bucket",
+    );
+  if (missingGrid)
+    floorReasons.push(
+      "this board doc predates the return-band grid, so each selected bucket is counted in full",
+    );
+  if (partialBucket)
+    floorReasons.push(
+      "this favor floor sits inside a bucket, so only fully-covered buckets are counted",
+    );
+  if (delta !== null)
+    floorReasons.push(
+      "a δ view counts on robust return, which return(δ) never falls below",
+    );
 
   // empty-state honesty: how many stored pairs each loosening would expose
   const withoutFavor = scored.filter(({ r }) => r >= min).length;
@@ -231,7 +261,8 @@ export function PairsBoard({
         <p className="num text-[11.5px] text-ink-muted">
           {filtered.length.toLocaleString("en-US")} stored shown ({filterLabel})
           · inventory: {invSat ? "≥ " : ""}
-          {invCount.toLocaleString("en-US")} legal ·{" "}
+          {invCount.toLocaleString("en-US")} legal{" "}
+          {invSat ? "(verified floor)" : "(exact count)"} ·{" "}
           {delta === null
             ? "sorted by guaranteed return"
             : `sorted by return(δ=${delta})`}{" "}
@@ -249,15 +280,29 @@ export function PairsBoard({
 
       {invSat ? (
         <p className="mt-2 text-[11.5px] text-ink-muted">
-          Inventory marked ≥ is a verified floor — the collection walk crosses
-          legs by their isolation floors while pairs are priced by the exact
-          combined coordinates, so completeness above a cutoff cannot be
-          certified (§5); a favor floor between bucket edges (+2.5) counts
-          only fully-covered favor buckets, and a δ view counts on robust
-          return (return(δ) is never below it). Only each favor bucket&apos;s
-          stored union (tops by robust return, ΔS, ΔF) is listed.
+          Inventory marked ≥ is a verified floor here because{" "}
+          {floorReasons.join("; ")}. Elsewhere the engine&apos;s counts are
+          exact: the collection walk crosses legs on ΔF − r·Σv sent, which is
+          exactly additive across legs and never below a pair&apos;s
+          guaranteed floor, so a walk that completes has provably enumerated
+          every qualifying pair its leg pool can form (§4a v5.1; the pool
+          keeps a capped set of package variants per signature, a disclosed
+          heuristic — §5). Only each favor bucket&apos;s stored union (tops by
+          robust return, ΔS, ΔF) is listed.
         </p>
-      ) : null}
+      ) : (
+        <p className="mt-2 text-[11.5px] text-ink-muted">
+          Inventory is an exact count (§4a v5.1): the collection walk ran to
+          completion under the sound crossing bound — it crosses legs on ΔF −
+          r·Σv sent, which is exactly additive across legs and never below a
+          pair&apos;s guaranteed floor, so every legal pair at this floor that
+          the nightly leg pool can form was enumerated. A 0 here means none
+          exists, not none found (among those legs — the pool keeps a capped
+          set of package variants per signature, a disclosed heuristic, §5).
+          Only each favor bucket&apos;s stored union (tops by robust return,
+          ΔS, ΔF) is listed.
+        </p>
+      )}
 
       {shown.length ? (
         <>
@@ -290,6 +335,11 @@ export function PairsBoard({
                 move; the board recomputes nightly.
               </>
             )}
+            {!invSat && invCount === 0 ? (
+              <> The engine&apos;s count at these dials is an exact 0 — none
+              exists among the legs the nightly run pooled, not merely none
+              stored.</>
+            ) : null}
           </p>
         </div>
       )}
