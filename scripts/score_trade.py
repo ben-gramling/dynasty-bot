@@ -55,7 +55,11 @@ OBJECT = picks | players | pos:QB|RB|WR|TE | an asset name ("Stefon Diggs",
 per §4 strict precedence (query > intel > posture, per team) unless
 --no-posture / --no-intel. Sliders: --delta (robust default), --min-return,
 --favor-min/--favor-max, plus structural --shape / --legs A+B / --with TEAM.
-Warm/cold cache and exact-vs-verified-floor counts are reported in the header.
+A favor window pushes down to LEG level before the crossing (v5.0.1), so
+favor-banded queries usually finish exhaustively; numeric-δ walks order by a
+per-leg δ-score instead of the isolation floor. Warm/cold cache and
+exact-vs-verified-floor counts are reported in the header; an empty result
+says whether the constrained space is exhausted (exact) or budget-truncated.
 """
 
 from __future__ import annotations
@@ -577,8 +581,15 @@ def run_find(args, db, league: md.LeagueState) -> None:
 
     # ---- the spreads
     if not res["spreads"]:
-        print("\nNo spreads matched. Loosen a slider or drop a constraint — the "
-              "counts above show where candidates died.")
+        if res["exact"]:
+            print("\nNo spreads matched — the COMPLETE crossing of the constrained "
+                  "space found none (exact, not a budget artifact). Loosen a slider "
+                  "or drop a constraint; the counts above show where candidates died.")
+        else:
+            print("\nNo spreads matched WITHIN THE CROSSING BUDGET — a verified "
+                  "floor, not proof of absence: the space runs deeper than the walk "
+                  "reached. Narrow the space (favor window, --legs, constraints) so "
+                  "the crossing finishes exhaustively, or loosen a slider.")
         return
     for sp in res["spreads"]:
         head = f"\n{sp['id']}"

@@ -279,6 +279,116 @@ def test_honest_counts_exact_vs_floor_11_12e(league, snapshot, cache_dir, tmp_pa
         assert s["verdict"] is True or NARROW_QUERY.get("delta", "robust") != "robust"
 
 
+def test_favor_pushdown_coverage_pin_v5_0_1(league, cache_dir):
+    """v5.0.1 coverage pin: for a δ-view favor-banded query, find_spreads'
+    matched count EQUALS an exhaustive in-test crossing of the same
+    constrained pool that applies every validity rule at PAIR level only
+    (distinct counterparties, disjoint masks, complementary signatures, leg
+    legality, pair_eval + all three sliders) — i.e. the leg-level favor
+    push-down provably drops no qualifying pair, and the filtered crossing
+    finished exhaustively (exact counts, not floors).
+
+    The v5.0 defect this pins against: the walk crossed the FULL pool in
+    isolation-floor order, and fair legs have small or NEGATIVE floors, so a
+    favor-banded δ-view query could burn the whole budget without reaching
+    the fair region (a production-shaped query returned matched=0 while an
+    exhaustive crossing held 3.1M qualifying pairs)."""
+    query = {
+        **NARROW_QUERY,
+        "delta": 0.25,
+        "min_return": 1.0,
+        "favor_min": -5.0,
+        "favor_max": 5.0,
+    }
+    r = fd.find_spreads(league, query, cache_dir=cache_dir)
+    assert r["exact"] is True  # the favor-filtered crossing fits the budget
+    # ---- independent exhaustive crossing: pool built exactly like the
+    # finder's, but the favor window applied ONLY at pair level
+    compiled, _ = cn.compile_constraints(league, query=query["constraints"])
+    tables = fd.load_leg_tables(league, cache_dir)
+    opponents = [n for n in league.opponents if n in ("cmgaither43", "Jukinski")]
+    pool = tr.build_pair_pool(
+        league,
+        enforce_posture=False,
+        opponents=opponents,
+        my_pkgs_for=lambda opp: [
+            p for p in tables[league.me] if cn.package_allowed(compiled, opp, "give", p)
+        ],
+        opp_pkgs_for=lambda opp: [
+            p for p in tables[opp] if cn.package_allowed(compiled, opp, "get", p)
+        ],
+    )
+    colin_i = pool.opp_names.index("cmgaither43")
+    juk_i = pool.opp_names.index("Jukinski")
+    me_t = league.teams[league.me]
+    legs = pool.legs
+    legal: dict = {}
+    min_ret = query["min_return"] / 100.0
+    matched = 0
+    for sig in sorted(pool.buckets):
+        if sig[0] <= 0:
+            continue
+        comp = pool.buckets.get((-sig[0], -sig[1]))
+        if not comp:
+            continue
+        for bi in pool.buckets[sig]:
+            if legs[bi][tr.L_OPP] != colin_i:  # buy_with cmgaither43
+                continue
+            for si in comp:
+                s = legs[si]
+                if s[tr.L_OPP] != juk_i:  # sell_with Jukinski
+                    continue
+                if legs[bi][tr.L_OPP] == s[tr.L_OPP]:
+                    continue
+                if legs[bi][tr.L_MASK] & s[tr.L_MASK]:
+                    continue
+                if tr._leg_legal(league, me_t, pool, bi, legal) is False:
+                    continue
+                if tr._leg_legal(league, me_t, pool, si, legal) is False:
+                    continue
+                fb, fs, fmin = pool.pair_favor(bi, si)
+                if fmin < query["favor_min"]:
+                    continue
+                if (fb if fb > fs else fs) > query["favor_max"]:
+                    continue
+                _ret, _floor, _ceil, d_s, d_f = pool.pair_eval(bi, si)
+                sent = legs[bi][tr.L_SENT] + s[tr.L_SENT]
+                rv = (d_s + query["delta"] * (d_f - d_s)) / sent
+                if rv < min_ret - 1e-12:
+                    continue
+                matched += 1
+    assert matched > 0  # non-vacuous (2,787 on the committed fixtures)
+    assert r["counts"]["matched"] == matched
+
+
+def test_favor_band_delta_view_full_slate_regression(snapshot, tmp_path):
+    """v5.0.1 regression: a δ-view query with a favor window over the FULL
+    fixture slate under a tight crossing budget MUST find matches. Pre-fix,
+    the floor-ordered full-pool walk found 6 matches in these 50,000
+    crossings (and the production case found 0 in 50M); post-fix the walk's
+    crossing space IS the favor band, δ-score ordered, so the same budget
+    yields tens of thousands (36,945 on the committed fixtures). The
+    truncation itself stays honestly disclosed: exact=False, floors only."""
+    league = md.build_league(snapshot, Params(finder_cross_budget=50_000))
+    r = fd.find_spreads(
+        league,
+        {"delta": 0.25, "min_return": 1.0, "favor_min": -5, "favor_max": 5},
+        cache_dir=tmp_path,
+    )
+    assert r["counts"]["matched"] > 30_000  # pre-fix: 6
+    assert r["counts"]["returned"] == len(r["spreads"]) == league.params.finder_top
+    # legs counts are the favor-ELIGIBLE legs — the constrained crossing space
+    assert 0 < r["counts"]["legs"]["buy"] < 20_000
+    assert 0 < r["counts"]["legs"]["sell"] < 60_000
+    # budget-truncated: a verified floor, never an estimate — and said so
+    assert r["exact"] is False
+    assert r["counts"]["crossings"] == 50_000
+    for s in r["spreads"]:
+        assert s["favor"]["min"] >= -5
+        assert max(s["favor"]["buy"], s["favor"]["sell"]) <= 5
+        assert s["return_view"] >= 1.0
+
+
 def test_sliders_filter_on_exact_figures(league, cache_dir):
     """Slider 2/3 + structural filters: favor floor/ceiling, shape, and
     with_team all filter on the exact stored figures."""

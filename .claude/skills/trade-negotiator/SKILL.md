@@ -229,7 +229,14 @@ uv run python scripts/score_trade.py find \
   `--legs A+B` (one leg with A, the other with B, either direction),
   `--with TEAM` (TEAM on some leg). Counts are EXACT when the crossing
   finished inside the 2M budget, VERIFIED FLOORS when it saturated — the
-  header says which; quote it honestly ("at least N valid pairs"). First run
+  header says which; quote it honestly ("at least N valid pairs"). A favor
+  window pushes down to LEG level before the crossing (v5.0.1: the pair min
+  bounds both legs from below, the ceiling both from above), so favor-banded
+  queries usually finish exhaustively; numeric-δ walks order by a per-leg
+  δ-score so truncation fronts what the view ranks. An EMPTY result is
+  two different sentences — "complete crossing of the constrained space
+  found none" (exact) vs "none found within budget" (a floor, NOT proof of
+  absence) — relay whichever the CLI printed, never the other. First run
   per snapshot builds the `.cache/` leg tables (~15s); warm re-queries with
   added constraints are seconds.
 - `--alternatives`: single-tweak variants, gate-passers ranked maximin (floor

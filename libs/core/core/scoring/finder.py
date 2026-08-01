@@ -5,12 +5,20 @@ Pipeline (deterministic, §4a): compile constraints (§4 — posture defaults,
 market-intel, ad-hoc query, strict per-team precedence) → filter each side's
 candidate packages BEFORE gate work (constraint push-down) → enumerate
 surviving legs per counterparty through the exact §3 gate (band, fleece,
-legality) → cross buy × sell (asset-disjoint, distinct counterparties,
-count-neutral 0/0) → exact combined coordinates per §2 (one incremental
-starter re-solve per crossing) → slider filter/sort → top `finder_top` with
-honest counts. Crossings that finish inside `finder_cross_budget` report
-EXACT counts; a budget-truncated cross saturates to verified floors — never
-estimates (§11.12(e)).
+legality) → favor push-down (v5.0.1: a favor window filters LEGS before the
+crossing — both pair favor checks decompose exactly onto the legs) → cross
+buy × sell (asset-disjoint, distinct counterparties, count-neutral 0/0) →
+exact combined coordinates per §2 (one incremental starter re-solve per
+crossing) → slider filter/sort → top `finder_top` with honest counts.
+Crossings that finish inside `finder_cross_budget` report EXACT counts — the
+favor-filtered space is usually small enough that favor-banded queries finish
+exhaustively; a budget-truncated cross saturates to verified floors — never
+estimates (§11.12(e)). Walk order is a disclosed heuristic (§5 doctrine —
+combined ΔS is non-additive, so no order certifies past a cutoff): robust
+queries by isolation floor, numeric-δ queries by the per-leg δ-score
+leg_ΔW(δ) = iso_ΔS + δ·(ΔF_leg − iso_ΔS) so truncation fronts what the view
+ranks (v5.0.1 — the floor order buried the fair region, whose floors are
+small or negative).
 
 The three sliders (§4a — VIEWS and filters, never score parameters):
 
@@ -257,7 +265,10 @@ def find_spreads(
     return_view, favor {buy, sell, min}, preferred ★, sequencing, and net
     counts; `counts` are exact when the crossing finished inside
     `finder_cross_budget` (`exact` True), verified floors otherwise —
-    never estimates (§11.12(e))."""
+    never estimates (§11.12(e)). With a favor window set, `counts.legs` are
+    the favor-ELIGIBLE legs (v5.0.1 push-down: the constrained crossing
+    space), and the crossing is exhaustive whenever that filtered space fits
+    the budget."""
     params = league.params
     q = _normalize_query(league, query)
     if intel is None:
@@ -306,12 +317,62 @@ def find_spreads(
     )
 
     legs = pool.legs
-    n_buy = sum(1 for leg in legs if leg[tr.L_NP] > 0)
-    n_sell = sum(1 for leg in legs if leg[tr.L_NP] < 0)
+
+    delta = q["delta"]
+    min_ret = float(q["min_return"]) / 100.0
+    favor_min = q["favor_min"]
+    favor_max = q["favor_max"]
+    shape = q["shape"]
+    top = q["top"]
+    budget = params.finder_cross_budget
+
+    # ---- §4a v5.0.1 favor push-down: favor is a PER-LEG property (L_FAVOR)
+    # and both pair-level favor checks decompose exactly onto the legs —
+    #   pair min(f_b, f_s) ≥ favor_min ⟺ BOTH legs' favor ≥ favor_min,
+    #   pair max(f_b, f_s) ≤ favor_max ⟺ BOTH legs' favor ≤ favor_max —
+    # so a leg outside the window can never appear in a passing pair, and
+    # dropping it BEFORE the crossing changes no pair's verdict. (The v5.0
+    # walk crossed the FULL pool in floor order, and fair legs have small or
+    # negative floors, so a favor-banded query could burn the whole budget
+    # before reaching its own region.) The filtered crossing usually fits
+    # `finder_cross_budget` and walks exhaustively → exact counts; the
+    # pair-level checks below stay as belt-and-braces on the same semantics.
+    if favor_min is not None or favor_max is not None:
+        f_lo = float("-inf") if favor_min is None else favor_min
+        f_hi = float("inf") if favor_max is None else favor_max
+        favor_ok = [f_lo <= leg[tr.L_FAVOR] <= f_hi for leg in legs]
+        eligible = favor_ok.__getitem__
+    else:
+        eligible = lambda i: True  # noqa: E731 — no window: every leg eligible
+
+    n_buy = sum(1 for i, leg in enumerate(legs) if leg[tr.L_NP] > 0 and eligible(i))
+    n_sell = sum(1 for i, leg in enumerate(legs) if leg[tr.L_NP] < 0 and eligible(i))
 
     # ---- cross buy × sell: asset-disjoint, distinct counterparties,
-    # count-neutral 0/0 (complementary signatures). Deterministic isolation-
-    # floor-descending order (the disclosed §5 heuristic), budgeted honestly.
+    # count-neutral 0/0 (complementary signatures). Deterministic descending
+    # heuristic order, budgeted honestly: robust queries walk by isolation
+    # floor (the disclosed §5 heuristic, unchanged); numeric-δ queries walk by
+    # the per-leg δ-score leg_ΔW(δ) = iso_ΔS + δ·(ΔF_leg − iso_ΔS) from the
+    # stored leg fields (§4a v5.0.1), so a truncated walk fronts the pairs the
+    # δ view actually ranks. Same doctrine either way: combined pair ΔS is NOT
+    # additive over legs, so no heuristic order certifies the space beyond a
+    # budget cutoff — truncated counts are verified floors, never estimates.
+    if delta == "robust":
+
+        def order_key(i: int) -> float:
+            return -legs[i][tr.L_FLOOR]
+
+    else:
+        dw_cache: dict[int, float] = {}
+
+        def order_key(i: int) -> float:
+            w = dw_cache.get(i)
+            if w is None:
+                leg = legs[i]
+                iso_ds = pool.index.delta(leg[tr.L_OUT4], leg[tr.L_IN4])
+                w = dw_cache[i] = iso_ds + delta * (leg[tr.L_DFACE] - iso_ds)
+            return -w
+
     buy_allowed = {pool.opp_names.index(n) for n in pool.opp_names if n in buy_teams}
     sell_allowed = {pool.opp_names.index(n) for n in pool.opp_names if n in sell_teams}
     with_oi = (
@@ -329,13 +390,6 @@ def find_spreads(
             "ignored_intel": ignored_intel,
         }
 
-    delta = q["delta"]
-    min_ret = float(q["min_return"]) / 100.0
-    favor_min = q["favor_min"]
-    favor_max = q["favor_max"]
-    shape = q["shape"]
-    top = q["top"]
-    budget = params.finder_cross_budget
     me_t = league.teams[me_name]
     legal_cache: dict[int, Any] = {}
 
@@ -351,14 +405,14 @@ def find_spreads(
         if not comp_idx:
             continue
         bs = sorted(
-            (-legs[i][tr.L_FLOOR], i)
+            (order_key(i), i)
             for i in pool.buckets[sig]
-            if legs[i][tr.L_OPP] in buy_allowed
+            if legs[i][tr.L_OPP] in buy_allowed and eligible(i)
         )
         ss = sorted(
-            (-legs[i][tr.L_FLOOR], i)
+            (order_key(i), i)
             for i in comp_idx
-            if legs[i][tr.L_OPP] in sell_allowed
+            if legs[i][tr.L_OPP] in sell_allowed and eligible(i)
         )
         if not bs or not ss:
             continue
