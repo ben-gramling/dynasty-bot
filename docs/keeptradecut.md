@@ -178,3 +178,67 @@ Saved to **`/home/bgram/dev/dynasty-bot/data/ktc_raw.json`** — `{"_meta": {...
 - **Storage/joins:** key snapshots by `playerID` + date to build our own value history (the embedded `history` arrays are empty in the list view). Join to Sleeper via normalized name + position (+ team as tiebreaker); there is no Sleeper ID in KTC data (`mflid` is MyFantasyLeague only). Watch name punctuation ("Ja'Marr", "Amon-Ra", suffixes).
 - **Fallbacks / adjacent endpoints:** individual player pages (`/dynasty-rankings/players/{slug}`) embed full value history if ever needed; KTC also has fantasy (redraft) rankings at `/fantasy-rankings` with the same embed pattern. Third-party mirrors (e.g., dynastyprocess CSV exports on GitHub) exist as an emergency fallback but lag and lack the full field set.
 - **In-season note:** expect the pick asset list to change over the year (generic tranches roll forward after rookie drafts; late-season snapshots historically add next-year tranches), and `injury`/`isOutThisWeek`/trend fields become far more active in-season. Re-verify the 36-pick assumption each scrape rather than hardcoding.
+
+## 8. Trade-calculator URL contract
+
+Deep links into `https://keeptradecut.com/trade-calculator` let a league-mate open a
+proposal already populated. Implemented in `core.scoring.ktc_link`; pinned by
+`libs/core/tests/scoring/test_ktc_link.py`.
+
+**The point of the link is that it agrees with our fairness gate.** `ktc_adjust` is an
+exact port of this calculator's value adjustment, so a link whose settings differ from
+the gate's assumptions shows the counterparty a *different* number than `adj_give` /
+`adj_get` on our card — which defeats the feature. Every parameter below is therefore
+load-bearing, not cosmetic.
+
+Emitted key order is verbatim the site's own non-startup `setURL({...})`:
+
+```
+?var=5&pickVal=0&teamOne=<ids>&teamTwo=<ids>&format=1&isStartup=0&tep=0
+```
+
+| Param | Value | Why |
+|---|---|---|
+| `var` | `5` | `tcFilters.variance`. `ktc_adjust` hardcodes 5, and `|favor| <= 5` being "FAIR" is defined against this default (§3.1). |
+| `pickVal` | `0` | Scales RDP values only: `value = round(v + v*pickVal/100)`. Non-zero would reprice every pick away from the tranche the gate used. |
+| `format` | `1` | **1 = 1QB, 2 = Superflex.** Our league is 1QB (`roster_positions` has 1×QB, no SUPER_FLEX) and we price `oneQBValues.value` throughout (§4). Omitting `format` lets the site fall back to its `formatCookie`, which defaults to Superflex — every value on the page would be the wrong column. |
+| `isStartup` | `0` | Dynasty, not startup. Read only inside the sum-toggle click handler, never on load — harmless but kept for parity with the site's own emission. |
+| `tep` | `0` | Tight-end premium off, matching our valuation (§4). `"0"` is a truthy JS string so the override branch does run and lands 0. |
+| `teamOne` | ids we SEND | Team 1 is the left column, labelled "Team 1 gets" — the counterparty's receive side. Matches `adjusted_totals(give_values, get_values, …)` treating side one as `give`, so **teamOne total == `gate.adj_give`**. |
+| `teamTwo` | ids we GET | == `gate.adj_get`. |
+
+Ids are `|`-separated (`%7C` is equivalent — the site `decodeURIComponent`s the whole
+query string). The calculator holds at most **12 assets across both sides combined**
+(`addPlayer`: `teamOne.players.length + teamTwo.players.length >= 12`).
+
+### Asset → id resolution
+
+- **Players** — `PlayerV.ktc_id`. An unvalued player (`ktc_id` = the `lineup.BIG`
+  sentinel) has no id; it is dropped from the link and **disclosed**, never silently
+  omitted.
+- **Picks** — the generic RDP tranche id for `(year, Pick.band, round)`, derived from
+  the snapshot at runtime. Never hardcode the table: §7 warns the pick asset list
+  rolls forward during the season.
+- **A pick's band follows its ORIGIN team, not its holder.** `Pick.band` already
+  encodes this. Keying on `(year, round)` alone is a bug: on the 2026-07-26 snapshot
+  `millj` holds three 2027 R4s that resolve to *two different ids* —
+  `(own)` → 1711, `(from vishan)` → 1711, `(from ronakpatel32)` → **1712**.
+
+### Current-year picks: numbered entries exist, and we deliberately do not link them
+
+When `LEAGUEYEARPHASE=2` the site's `calcPicksRookies()` injects 48 numbered records
+into `playersArray` — `"2026 Pick 1.01"` with `playerID = parseInt(year+round+pick)`,
+i.e. **202611** — priced *above* the corresponding generic tranche. The counterparty's
+own autocomplete offers both.
+
+We link the **tranche**, because that is the value our gate priced the pick at
+(`Asset.v` for a pick is `Pick.mv`). But the gap is real and discoverable in one
+keystroke, so `Link.numbered` reports every affected pick and `Link.numbered_url`
+builds the numbered-id variant for comparison. Present the gap; never substitute one
+pricing for the other silently.
+
+We do **not** reimplement KTC's numbered-pick arithmetic. It was observed live as
+roughly `min(MAXPLAYERVAL-1, r0 + round(B*(r0-r1)/8))` (`B >= 3`, `r0`/`r1` the
+adjacent tranches) but is unverified and site-side mutable — a number we computed and
+labelled "what KTC shows" would be a fabrication. Open `numbered_url` to read the
+real figure.

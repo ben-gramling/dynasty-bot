@@ -41,6 +41,7 @@ playwright-report/
 .claude/settings.local.json
 .playwright-mcp/
 .worktrees/
+.claude/worktrees/
 
 # Finder leg cache (§4a — per-snapshot, rebuildable)
 .cache/
