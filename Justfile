@@ -26,6 +26,11 @@ web-build:
 web-test:
     cd apps/web && npx playwright test
 
+# Hedge board: one exhaustive finder run per counterparty -> standalone HTML.
+# Minutes, not seconds. The trade-negotiator skill runs this and publishes it.
+hedges out="hedge-board.html":
+    uv run python scripts/score_trade.py dashboard --out {{out}}
+
 # Plan infra for a stack
 plan stack:
     cd infra/stacks/{{stack}} && terraform plan

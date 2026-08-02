@@ -26,6 +26,7 @@ Usage (from the repo root, .env required):
       --give "Mike Evans, Courtland Sutton" --get "2027 R1 (own)" \
       [--alternatives] [--hedge] [--json]
   uv run python scripts/score_trade.py pairs --min 5 --favor-min -5 [--json]
+  uv run python scripts/score_trade.py dashboard --out hedge-board.html
   uv run python scripts/score_trade.py find \
       --require "ronak receives picks" --require "joey receives pos:RB" \
       --exclude "* receives Stefon Diggs" \
@@ -51,6 +52,13 @@ floor from above) and verified FLOORS — printed ">= N" — only where the walk
 saturated; the inventory marks each bucket. "Exact" is over the POOLED legs:
 the pool keeps `variants_per_signature` package variants per (counterparty,
 give, count-signature), a disclosed pre-ranking heuristic (§5).
+
+`dashboard` (v7.1) is the negotiating session's opening move: it runs `find`
+once per counterparty — `with_team` pushes the scope into the crossing, so each
+run is exhaustive rather than budget-truncated — and renders the lot as a
+standalone HTML page (no scripts, no external requests) for the skill to
+publish. Counterparty searches are farmed to a process pool; expect minutes,
+not seconds, and a team with nothing to show is itself a real answer.
 
 `find` is the §4a v5 spread finder: constrained search over the legal pair
 space the pool enumerates (not just stored board inventory) with the three
@@ -85,12 +93,14 @@ import argparse
 import json
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from time import perf_counter
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
+from core import dashboard as dash  # noqa: E402
 from core import store  # noqa: E402
 from core.db import get_db  # noqa: E402
 from core.scoring import Params, Snapshot  # noqa: E402
@@ -675,6 +685,72 @@ def run_find(args, db, league: md.LeagueState) -> None:
                   f"±{league.params.w_min:g} noise band (display note only)")
 
 
+def run_dashboard(args, db, league: md.LeagueState, fresh: dict) -> None:
+    """The v7.1 hedge board: one exhaustive `find_spreads` per counterparty,
+    rendered as a standalone HTML page. The skill publishes the file; nothing
+    here is recomputed for display, so the page cannot disagree with `find`."""
+    if args.delta == "robust":
+        delta: str | float = "robust"
+    else:
+        try:
+            delta = float(args.delta)
+        except ValueError:
+            sys.exit(f"--delta {args.delta!r}: must be 'robust' or a number in [0, 1]")
+        if not 0.0 <= delta <= 1.0:
+            sys.exit(f"--delta {delta:g}: must lie in [0, 1]")
+    intel: list[dict] = []
+    if not args.no_intel:
+        intel = list(db["market-intel"].find({}).sort("_id", 1))
+        for doc in intel:  # skill protocol stores the subject text as `note`
+            if "subject" not in doc and doc.get("note") is not None:
+                doc["subject"] = doc["note"]
+    workers = args.workers or dash.default_workers()
+    age = None
+    if fresh["last_collect"]:
+        hrs = (
+            datetime.now(timezone.utc)
+            - fresh["last_collect"].replace(tzinfo=timezone.utc)
+        ).total_seconds() / 3600
+        age = f"{hrs:.1f}h old"
+    n_opp = len(league.opponents)
+    print(
+        f"Hedge board: {n_opp} counterparty searches on {workers} worker(s) — "
+        "each one exhaustive, so this is minutes not seconds.",
+        file=sys.stderr,
+    )
+    t0 = perf_counter()
+    payload = dash.hedge_payload(
+        league,
+        sliders={
+            "delta": delta,
+            "min_return": args.min_return,
+            "favor_min": args.favor_min,
+            "favor_max": args.favor_max,
+            "top": args.top,
+            "use_intel": not args.no_intel,
+            "use_posture": not args.no_posture,
+        },
+        intel=intel,
+        workers=workers,
+        generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        data_age=age,
+    )
+    dt = perf_counter() - t0
+    if args.json:
+        print(json.dumps(payload, indent=1, default=str))
+        return
+    out = Path(args.out)
+    out.write_text(dash.render_html(payload), encoding="utf-8")
+    t = payload["totals"]
+    print(
+        f"Wrote {out} in {dt:.0f}s — {t['with_hedges']}/{t['teams']} counterparties "
+        f"have a hedge clearing the sliders, {t['matched']:,} in total"
+        + ("" if t["all_exact"] else " (some crossings budget-truncated — counts are floors)"),
+        file=sys.stderr,
+    )
+    print(out)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -776,6 +852,32 @@ def main() -> None:
         help="result size (default: the engine's finder_top = 20)",
     )
     fd.add_argument("--json", action="store_true")
+
+    dh = sub.add_parser(
+        "dashboard",
+        help="per-counterparty hedge board as a standalone HTML page — one "
+        "exhaustive finder run per counterparty, written to --out",
+        description="Runs `find` once per counterparty (with_team push-down, "
+        "so each crossing is exhaustive) and renders the results as a "
+        "self-contained HTML file. This is what the trade-negotiator skill "
+        "publishes at the top of a negotiating session.",
+    )
+    dh.add_argument("--out", default="hedge-board.html", help="output path")
+    dh.add_argument("--top", type=int, default=5, help="hedges shown per counterparty")
+    dh.add_argument("--min-return", type=float, default=1.0, dest="min_return")
+    dh.add_argument("--favor-min", type=float, default=-5.0, dest="favor_min")
+    dh.add_argument("--favor-max", type=float, default=5.0, dest="favor_max")
+    dh.add_argument(
+        "--delta", default="robust",
+        help="'robust' (default — the guaranteed floor) or a number in [0, 1]",
+    )
+    dh.add_argument(
+        "--workers", type=int, default=0,
+        help="parallel counterparty searches; 0 = cpu_count - 1, 1 = in-process",
+    )
+    dh.add_argument("--no-intel", action="store_true")
+    dh.add_argument("--no-posture", action="store_true")
+    dh.add_argument("--json", action="store_true", help="print the payload instead of HTML")
     args = ap.parse_args()
 
     db = get_db()
@@ -784,6 +886,10 @@ def main() -> None:
     if fresh["last_collect"]:
         age_h = (datetime.now(timezone.utc) - fresh["last_collect"].replace(tzinfo=timezone.utc)).total_seconds() / 3600
         print(f"[data age: {age_h:.1f}h since last successful collect]\n", file=sys.stderr)
+
+    if args.cmd == "dashboard":
+        run_dashboard(args, db, league, fresh)
+        return
 
     if args.cmd == "pairs":
         board = tr.trade_board(league)

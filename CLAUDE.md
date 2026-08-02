@@ -25,13 +25,18 @@ are the test suite, pinned to the committed `data/` fixtures.
 - `just web` — Next.js dev server
 - `just web-build` — production build of apps/web
 - `just web-test` — Playwright smoke suite for apps/web
+- `just hedges [out]` — the per-counterparty hedge board as standalone HTML
 - `just plan <stack>` / `just deploy <stack>` — Terraform
 
 ## Skills
 
 - `/trade-negotiator` — interactive trade advisor backed by the scoring engine;
   scores arbitrary proposals two-sided via `scripts/score_trade.py` (which also
-  works standalone: `teams`, `list-assets`, `score --alternatives`).
+  works standalone: `teams`, `list-assets`, `score --alternatives`, `pairs`,
+  `find`, `dashboard`). It opens a session by generating the **hedge board** —
+  `just hedges` / `score_trade.py dashboard` runs the finder once per
+  counterparty and writes a self-contained HTML page (`core/dashboard.py`) that
+  the skill publishes as an artifact. Takes minutes: eleven exhaustive searches.
 
 ## League managers (real name ↔ Sleeper username)
 

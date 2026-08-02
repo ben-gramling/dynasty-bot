@@ -194,14 +194,46 @@ The user will feed you color like: *"trdouglas is hunting draft capital"* ·
      discloses the storage cap; `recommendations` is unpaired sell/neutral
      legs — building blocks carrying `net_players`/`net_picks`, pair before
      executing; `watch` is blocked buys with the exit each needs; `notes`).
-3. **Open with a desk brief**: per-team one-liners merging posture (+evidence
-   count), active intel, visible holes, pick inventory — then the board's top
-   legs and any intel-driven opportunities the board can't see.
+3. **Generate the HEDGE BOARD and publish it.** This is the session's headline
+   artifact and the thing the user actually reads:
+
+   ```
+   uv run python scripts/score_trade.py dashboard --out <scratch>/hedge-board.html
+   ```
+
+   It runs the finder ONCE PER COUNTERPARTY (`with_team` pushes the scope into
+   the crossing, so every run is exhaustive rather than budget-truncated) and
+   writes a self-contained HTML page: one card per team — posture, holes, pick
+   inventory, FAAB, hedge tally — over their best count-neutral hedges, each
+   expanding to both legs' packages, the KTC-calculator gate on each leg, and
+   the sequencing. Then publish it with the **Artifact tool** so the user gets
+   a link, and say in one line what the page shows.
+
+   - Takes **minutes, not seconds** (11 exhaustive searches, farmed to a
+     process pool). Say so before starting it; do not run it twice in a
+     session unless the data changed.
+   - Sliders are flags: `--top` (hedges per team, default 5), `--min-return`,
+     `--favor-min` / `--favor-max` (default the fair window −5..+5),
+     `--delta`. Re-run with different flags when the user moves a dial — a
+     dial move is a new page, not a hand-edit of the old one.
+   - The page is generated from the same `find_spreads` call the CLI makes and
+     re-derives nothing, so it can never disagree with `find`. Do NOT
+     hand-author or "improve" the HTML: fix `core/dashboard.py` instead, or the
+     next generation silently loses the change.
+   - A team with no hedge still gets a card. That is a real answer about that
+     team (the searches are exhaustive) — brief it as one, not as a gap.
+   - `--json` prints the payload instead, for when you need the numbers rather
+     than the page.
+
+4. **Open with a desk brief**: per-team one-liners merging posture (+evidence
+   count), active intel, visible holes, pick inventory — then the hedge board's
+   headline rows and any intel-driven opportunities the search can't see.
 
 ## Tools
 
 ```
 uv run python scripts/score_trade.py teams
+uv run python scripts/score_trade.py dashboard --out FILE.html   # the hedge board (publish it)
 uv run python scripts/score_trade.py list-assets [team]          # exact asset names
 uv run python scripts/score_trade.py score --opponent X \
     --give "A, B" --get "C" [--alternatives] [--hedge] [--json]
