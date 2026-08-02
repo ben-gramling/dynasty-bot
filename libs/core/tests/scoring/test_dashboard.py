@@ -225,6 +225,34 @@ def test_slider_echo_survives_into_the_page(payload):
     assert "min return" in page and "favor" in page
 
 
+def test_stale_data_is_called_out_in_red(payload):
+    """KTC re-prices continuously — a mid-tier WR drifted 2,595 -> 2,574 in six
+    hours — so a board built off an old collect quotes numbers the counterparty's
+    screen no longer shows. That is the failure this dashboard exists to avoid,
+    so age is the one thing on the page allowed to shout.
+
+    (This is here because a board rendered from the committed FIXTURE was
+    published and read as live: it showed Stefon Diggs at 2,641, the 2026-07-26
+    value, against 2,574 on the user's screen. The engine was right; the vintage
+    was a week old and the page did not say so loudly enough.)"""
+    fresh = dash.render_html({**payload, "data_age": "0.4h old", "data_age_hours": 0.4})
+    assert 'class="stale"' not in fresh
+
+    old = dash.render_html({**payload, "data_age": "31.0h old", "data_age_hours": 31.0})
+    assert 'class="stale"' in old
+    assert "31.0h old" in old and "just collect" in old
+
+    unknown = dash.render_html({**payload, "data_age": None, "data_age_hours": None})
+    assert "Unknown data age" in unknown and "just collect" in unknown
+
+    # the threshold is a real boundary, not decoration
+    assert dash._STALE_HOURS > 0
+    edge = dash.render_html(
+        {**payload, "data_age": "x", "data_age_hours": dash._STALE_HOURS - 0.01}
+    )
+    assert 'class="stale"' not in edge
+
+
 def test_html_escaping_of_asset_names():
     """Names come from KTC and Sleeper; a stray angle bracket must not become
     markup. Built by hand so the case exists regardless of the fixture."""

@@ -41,6 +41,10 @@ from core.scoring import trades as tr
 
 # ------------------------------------------------------------------- payload
 
+# KTC moves through the day; past this the board is quoting numbers the
+# counterparty's screen no longer shows, so the page says so in red.
+_STALE_HOURS = 6.0
+
 _SLIDER_DEFAULTS: dict[str, Any] = {
     "delta": "robust",
     "min_return": 1.0,
@@ -156,6 +160,7 @@ def hedge_payload(
     workers: int = 1,
     generated_at: str | None = None,
     data_age: str | None = None,
+    data_age_hours: float | None = None,
 ) -> dict:
     """The dashboard's data: per counterparty, their market read plus the best
     hedges the finder can reach for them under `sliders`.
@@ -202,6 +207,7 @@ def hedge_payload(
         "me": league.me,
         "generated_at": generated_at,
         "data_age": data_age,
+        "data_age_hours": data_age_hours,
         "sliders": query,
         "teams": teams,
         "totals": {
@@ -331,6 +337,13 @@ table.assets td.num{text-align:right;font-family:ui-monospace,Menlo,monospace;
   font-variant-numeric:tabular-nums;white-space:nowrap}
 .lens{font-size:11px;color:var(--ink-muted)}
 .note{font-size:12px;color:var(--ink-muted);padding:0 16px 14px}
+/* staleness: the one thing on this page that is allowed to shout. KTC's board
+   moves continuously (a mid-tier WR drifted 2,595 -> 2,574 in six hours), so a
+   stale board disagrees with the counterparty's screen asset by asset — the
+   exact failure this dashboard exists to avoid. */
+.stale{border:1px solid var(--star);border-radius:8px;padding:11px 14px;margin-bottom:14px;
+  background:var(--surface);font-size:13px}
+.stale b{color:var(--star)}
 .gate{font-size:12px;color:var(--ink-muted);display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:8px}
 .scroll{overflow-x:auto}
 /* calculator links: the only outbound thing on the page, so they get the one
@@ -584,7 +597,23 @@ def render_html(payload: Mapping) -> str:
             f'<span class="chip chip-flat"><span class="chip-k">data</span>'
             f'<span class="chip-v">{_esc(payload["data_age"])}</span></span>'
         )
-    cards = "".join(_team_card(x) for x in payload["teams"])
+    stale = ""
+    hrs = payload.get("data_age_hours")
+    if hrs is None:
+        stale = (
+            '<div class="stale"><b>Unknown data age.</b> This board was not built '
+            "from a dated collector run, so nothing here can be trusted against a "
+            "live calculator. Run <span class=\'mono\'>just collect</span>, then "
+            "regenerate.</div>"
+        )
+    elif hrs >= _STALE_HOURS:
+        stale = (
+            f'<div class="stale"><b>Data is {_esc(payload.get("data_age") or "old")}.</b> '
+            "KTC re-prices continuously, so every value below has drifted from what "
+            "your counterparty sees. Run <span class=\'mono\'>just collect</span> and "
+            "regenerate before you quote any of it.</div>"
+        )
+    cards = stale + "".join(_team_card(x) for x in payload["teams"])
     honesty = (
         "Every counterparty's crossing ran to completion, so the hedge tallies are "
         "exact counts over the pooled legs."

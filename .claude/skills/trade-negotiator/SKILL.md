@@ -209,7 +209,17 @@ The user will feed you color like: *"trdouglas is hunting draft capital"* ·
    the sequencing. Then publish it with the **Artifact tool** so the user gets
    a link, and say in one line what the page shows.
 
-   - Takes **minutes, not seconds** (11 exhaustive searches, farmed to a
+   - **Collect FIRST if the data is not fresh.** KTC re-prices continuously —
+     a mid-tier WR moved 2,595 → 2,574 in six hours — so a board built off a
+     stale collect quotes numbers the counterparty's screen no longer shows,
+     asset by asset. `just collect` takes ~30s. The page prints its data age
+     and puts a red banner on anything over 6 hours; never publish a board
+     wearing that banner.
+   - **Never publish a board built from the committed `data/` fixtures.**
+     Those are the 2026-07-26 test snapshot and exist to pin the suite. A
+     fixture-rendered board looks identical to a real one and is a week wrong.
+     The `dashboard` subcommand reads Mongo, which is the live path — use it.
+   - Takes **~30s to a few minutes** (11 exhaustive searches, farmed to a
      process pool). Say so before starting it; do not run it twice in a
      session unless the data changed.
    - Sliders are flags: `--top` (hedges per team, default 5), `--min-return`,

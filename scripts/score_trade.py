@@ -706,13 +706,13 @@ def run_dashboard(args, db, league: md.LeagueState, fresh: dict) -> None:
             if "subject" not in doc and doc.get("note") is not None:
                 doc["subject"] = doc["note"]
     workers = args.workers or dash.default_workers()
-    age = None
+    age, age_hours = None, None
     if fresh["last_collect"]:
-        hrs = (
+        age_hours = (
             datetime.now(timezone.utc)
             - fresh["last_collect"].replace(tzinfo=timezone.utc)
         ).total_seconds() / 3600
-        age = f"{hrs:.1f}h old"
+        age = f"{age_hours:.1f}h old"
     n_opp = len(league.opponents)
     print(
         f"Hedge board: {n_opp} counterparty searches on {workers} worker(s) — "
@@ -735,6 +735,7 @@ def run_dashboard(args, db, league: md.LeagueState, fresh: dict) -> None:
         workers=workers,
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         data_age=age,
+        data_age_hours=age_hours,
     )
     dt = perf_counter() - t0
     if args.json:
