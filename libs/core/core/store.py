@@ -14,7 +14,6 @@ Document keys:
   ktc-history   _id = "<playerID>:<date>", {playerID, date, value_1qb, value_sf, rank_1qb}
   crosswalk     _id = str(ktc playerID), + "meta" doc
   waiver-board  _id = "latest" singleton (compute_all waiver_board + meta)
-  trade-recs    _id = "latest" singleton (compute_all trade_recs + meta)
   league-table  _id = "latest" singleton (compute_all league_table + my_team + meta)
   runs          run log entries + "meta" doc (players_last_fetched)
 """
@@ -262,11 +261,13 @@ def replace_crosswalk(entries: dict[str, dict], meta: dict | None = None, db=Non
 
 def scoring_docs(outputs: dict, computed_at: datetime | None = None) -> dict[str, dict]:
     """compute_all output -> one "latest" singleton doc per tab collection.
-    The my-team detail rides on league-table (it renders on the League tab)."""
+    The my-team detail rides on league-table (it renders on the League tab).
+
+    v7.1: no `trade-recs` document. The Trades tab is gone and the pair board
+    is computed live by the CLI, so nothing reads a stored one."""
     base = {"_id": "latest", "computed_at": computed_at or _now(), "meta": outputs["meta"]}
     return {
         "waiver-board": {**base, **outputs["waiver_board"]},
-        "trade-recs": {**base, **outputs["trade_recs"]},
         "league-table": {**base, **outputs["league_table"], "my_team": outputs["my_team_detail"]},
     }
 

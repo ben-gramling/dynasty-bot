@@ -168,7 +168,11 @@ The user will feed you color like: *"trdouglas is hunting draft capital"* ·
 2. **Load the desk view**:
    - `uv run python scripts/score_trade.py teams` — L/F, posture + evidence, FAAB.
    - Active intel: `... get_db()['market-intel'].find({'active': True})` (sort by team).
-   - The nightly board: `trade-recs` doc (v5: `pairs` is the stratified
+   - The pair board: `uv run python scripts/score_trade.py pairs --json`
+     (v7.1 — there is no stored `trade-recs` doc and no Trades tab any more;
+     the board is computed live from the same engine code path, so it is
+     always fresh and the shape below is unchanged. It costs ~60s.)
+     (v5: `pairs` is the stratified
      stored pair space — count-neutral buy+sell with embedded cards, each
      pair carrying `coords {dS, dF}` (combined), `verdict` (always true on
      stored pairs), `floor`/`ceiling` (the guaranteed interval),
@@ -270,7 +274,8 @@ uv run python scripts/score_trade.py find \
   hedge counterparties with matching intel.
 - Mongo one-liners (`load_dotenv` + `get_db`) for: `market-intel`,
   `posture-overrides`, `league-table` (market block: posture/evidence/holes/
-  pick_inventory/faab), `trade-recs`, `waiver-board`, `transactions`.
+  pick_inventory/faab), `waiver-board`, `transactions`. There is no
+  `trade-recs` collection — the pair board comes from `score_trade.py pairs`.
 
 ## Playbooks
 

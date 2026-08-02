@@ -1,6 +1,6 @@
 """Score an arbitrary trade proposal against the live dynasty-bot database.
 
-Unlike the nightly trade-recs board (which enumerates from the engine's give-lists
+Unlike the pair board (which enumerates from the engine's give-lists
 — cornerstones and taxi players excluded), this resolves ANY rostered player or
 owned pick by name and scores the exact package with the v4 card: TWO objective
 coordinates per side — ΔS (change in starter value: the max-Σv legal lineup at
@@ -31,7 +31,9 @@ Usage (from the repo root, .env required):
       --exclude "* receives Stefon Diggs" \
       --min-return 1 --favor-min -5 [--delta robust] [--top 20] [--json]
 
-`pairs` computes the §5 pair board (same engine code path as the nightly run:
+`pairs` computes the §5 pair board (v7.1: this IS the board — it left the
+nightly pipeline with the Trades tab, so nothing is stored and this is always
+fresh; same engine code path as before:
 enumerate-then-filter, posture as a hard constraint, VERDICT as a hard storage
 constraint — every stored pair is objectively good — count-neutral pairs,
 storage STRATIFIED BY FAVOR BUCKET, v5) and prints the bucket inventory

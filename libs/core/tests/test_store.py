@@ -66,18 +66,17 @@ def test_scoring_docs_one_singleton_per_tab_collection():
     outputs = {
         "meta": {"mode": "offseason", "alerts": []},
         "waiver_board": {"targets": [{"player": "X"}], "mode": "offseason"},
-        "trade_recs": {"recommendations": [], "per_opponent": {}},
         "league_table": {"rows": [{"team": "me"}], "L_mean": 0.0},
         "my_team_detail": {"team": "me", "L_rank": 1},
     }
     when = datetime(2026, 7, 26, tzinfo=timezone.utc)
     docs = store.scoring_docs(outputs, when)
-    assert set(docs) == {"waiver-board", "trade-recs", "league-table"}
+    # v7.1: two collections, not three — no `trade-recs` document is written
+    assert set(docs) == {"waiver-board", "league-table"}
     for doc in docs.values():
         assert doc["_id"] == "latest"
         assert doc["computed_at"] == when
         assert doc["meta"] == outputs["meta"]
     assert docs["waiver-board"]["targets"] == [{"player": "X"}]
-    assert docs["trade-recs"]["recommendations"] == []
     assert docs["league-table"]["rows"] == [{"team": "me"}]
     assert docs["league-table"]["my_team"]["L_rank"] == 1

@@ -2,7 +2,7 @@
 
 Fantasy-football dynasty assistant for a single Sleeper league: a daily collector
 (Sleeper API sync + KeepTradeCut scrape + scoring recompute → MongoDB Atlas) and a
-Next.js dashboard (Waivers / Trades / League tabs).
+Next.js dashboard (Waivers / League tabs — trade-finding is CLI-only since v7.1).
 
 Read `docs/build-plan.md` first — it locks all architecture decisions.
 `docs/scoring-system.md` is THE scoring spec; its invariants and worked examples

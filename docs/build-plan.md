@@ -8,7 +8,7 @@ Architecture decisions locked 2026-07-26, mirroring `~/dev/tomato` conventions (
 dynasty-bot/
 ├── apps/
 │   ├── collector/      # zip Lambda: Sleeper sync + KTC scrape + scoring recompute → Mongo (daily cron + on-demand)
-│   └── web/            # Next.js dashboard (npm, OUTSIDE the uv workspace) — Waivers / Trades / League tabs
+│   └── web/            # Next.js dashboard (npm, OUTSIDE the uv workspace) — Waivers / League tabs (v7.1: no Trades tab)
 ├── libs/
 │   └── core/           # Python package `core`: sleeper client, ktc scraper, crosswalk, mongo layer, scoring engine
 ├── infra/
@@ -31,8 +31,8 @@ dynasty-bot/
 | Collector job | Sleeper pulls (league, rosters, users, traded_picks, drafts+picks, transactions, players-dump 1×/day, trending, state) → KTC scrape (playersArray, 1 request, browser UA) → crosswalk (auto-join + the 5 manual overrides from `ktc-sleeper-crosswalk.md`) → scoring engine (full recompute) → Mongo upserts + run log |
 | Scoring engine | `libs/core/core/scoring/` — pure functions over a `Snapshot` input; implements `scoring-system.md` exactly; §13 invariants + §11 worked examples are the pytest suite, pinned to committed `data/` fixtures with EXACT expected numbers |
 | Mongo | Atlas cluster `tributary-dev.ygqeljj.mongodb.net`, database **`dynasty-bot`** (new). AWS: MONGODB-AWS IAM auth reusing tomato roles (`tomato-lambda-exec-role`, `tomato-ecs-task-role` — both already Atlas-mapped, zero new secrets). Local: user/pass URI in gitignored `.env` (copy from tomato's env files) |
-| Collections (kebab-case, one accessor fn each in `core/collections.py`) | `league`, `rosters`, `users`, `picks`, `transactions`, `players` (Sleeper dump subset), `ktc-latest`, `ktc-history` (daily per-player values — powers the DIP flag), `crosswalk`, `waiver-board`, `trade-recs`, `league-table`, `runs` |
-| Web | Next.js App Router `output:"standalone"`, server components query Mongo directly (no REST layer), Tailwind, Recharts if charts needed; tabs: Waivers, Trades, League; header shows last-collector-run + Refresh button (server action → lambda invoke in AWS, local subprocess fallback) |
+| Collections (kebab-case, one accessor fn each in `core/collections.py`) | `league`, `rosters`, `users`, `picks`, `transactions`, `players` (Sleeper dump subset), `ktc-latest`, `ktc-history` (daily per-player values — powers the DIP flag), `crosswalk`, `waiver-board`, `league-table`, `runs` (v7.1 dropped `trade-recs` — the pair board is computed live by the CLI, never stored) |
+| Web | Next.js App Router `output:"standalone"`, server components query Mongo directly (no REST layer), Tailwind, Recharts if charts needed; tabs: Waivers, League (v7.1 removed Trades — spread-finding is the CLI / trade-negotiator skill, which computes its own board live); header shows last-collector-run + Refresh button (server action → lambda invoke in AWS, local subprocess fallback) |
 | Web hosting | ECS Fargate 512/1024 ×1 on `tomato-cluster` + new ALB (443-only) + Cognito (single user bgramling18@gmail.com) + NEW ACM cert; hostname `dynasty.sarikayakomzin.com` (DNS + cert-validation CNAMEs manual at external provider) |
 | ECR | New repo `dynasty-bot`, tags `<app>-<sha>` / `<app>-latest`, per-prefix lifecycle keep-10 |
 | CI | GitHub Actions: reusable deploy-ecs/deploy-lambda/deploy-infra, per-app path-filtered workflows, artifact-before-apply ordering; TFC remote runs |

@@ -139,35 +139,11 @@ def collect(dry_run: bool = False) -> dict:
         for alert in outputs["meta"]["alerts"]:
             logger.warning("scoring alert: %s", alert)
         counts["waiver_targets"] = len(outputs["waiver_board"]["targets"])
-        counts["trade_recs"] = len(outputs["trade_recs"]["recommendations"])
-        counts["trade_pairs"] = len(outputs["trade_recs"]["pairs"])
         counts["league_rows"] = len(outputs["league_table"]["rows"])
-        # §5 v3.3 dial visibility: pair counts per return preset (saturated
-        # counters are verified floors, marked with a trailing +)
-        for e in outputs["trade_recs"]["counts_by_threshold"]:
-            key = f"pairs_ge_{e['threshold']:g}pct".replace(".", "_")
-            counts[key] = e["count"]
-        logger.info(
-            "trade pairs by threshold: %s%s",
-            {f"{e['threshold']:g}%": f"{e['count']}{'+' if e['saturated'] else ''}"
-             for e in outputs["trade_recs"]["counts_by_threshold"]},
-            " (truncated: %s)" % outputs["trade_recs"]["truncated"]
-            if outputs["trade_recs"]["truncated"] else "",
-        )
-        # §5 v3.4.1 stratified storage visibility: stored/count per MAX-LEG
-        # bucket (saturated counts are verified floors, marked with a trailing
-        # +; the bottom bucket is open — buy legs run negative in market terms)
-        logger.info(
-            "trade pairs by max-leg bucket (stored/count): %s",
-            {
-                (
-                    f"[{b['lo']:g},{b['hi']:g})" if b["lo"] is not None and b["hi"] is not None
-                    else f"(-inf,{b['hi']:g})" if b["lo"] is None
-                    else f"[{b['lo']:g},inf)"
-                ): f"{b['stored']}/{b['count']}{'+' if b['saturated'] else ''}"
-                for b in outputs["trade_recs"]["bands"]
-            },
-        )
+        # v7.1: the §5 pair board no longer runs here — it was the run's most
+        # expensive pass and nothing read the stored document once the Trades
+        # tab went away. Spread-finding is `scripts/score_trade.py` /
+        # trade-negotiator, which builds its own board live.
 
         if not dry_run:
             store.upsert_league(league)

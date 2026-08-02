@@ -35,7 +35,7 @@ def _pv_inv(name: str, pos: str, v: float, i: int) -> ln.PlayerV:
 # --------------------------- 1. face conservation + the per-side coordinates
 
 
-def test_face_transfer_conserved_per_leg(result, league):
+def test_face_transfer_conserved_per_leg(board, league):
     """§11.1 as amended by v7: MARKET face still transfers exactly — each asset
     carries the same `v` on both rosters — and each side's ΔF is exactly that
     side's market face delta THROUGH ITS OWN LENS. The counterparty reads the
@@ -48,7 +48,7 @@ def test_face_transfer_conserved_per_leg(result, league):
         for a in tr.team_assets(league, t).values()
     }
     saw_pick_leg = False
-    for card in board_legs(result["trade_recs"]):
+    for card in board_legs(board):
         for a in card["give"] + card["get"]:
             v, v_me = canonical[a["key"]]
             assert a["v"] == round(v), (card["id"], a["name"])
@@ -501,7 +501,7 @@ def test_taxi_counts_in_S_and_ir_does_not(league, snapshot, params):
 # ------------------------------------------------------- 5. bundles + exclusivity
 
 
-def test_pairs_v4_contract(result, params, league):
+def test_pairs_v4_contract(board, params, league):
     """§11.5 / §5 v4: every stored pair embeds a gate-PASS buy and sell with
     DISTINCT counterparties sharing no assets, netting for my side EXACTLY
     0 players AND 0 picks (plus the carried Δ(active roster) ≤ 0). The pair's
@@ -509,7 +509,7 @@ def test_pairs_v4_contract(result, params, league):
     embedded cards — its verdict/floor/ceiling derive from them, and its
     return_pct is the guaranteed floor over face Σv sent. Pairs are unique by
     their asset multisets."""
-    pairs = result["trade_recs"]["pairs"]
+    pairs = board["pairs"]
     # v5 union storage: ≤ 3 heaps × quota × the five favor buckets
     assert 0 < len(pairs) <= 3 * params.pairs_per_band * (len(params.favor_band_edges) + 1)
     keys = lambda c: {a["key"] for a in c["give"] + c["get"]}
@@ -563,7 +563,7 @@ def test_pairs_v4_contract(result, params, league):
         assert pair["favor"]["min"] == min(pair["favor"]["buy"], pair["favor"]["sell"])
 
 
-def test_pair_coords_are_combined_not_the_leg_sum(result, league):
+def test_pair_coords_are_combined_not_the_leg_sum(board, league):
     """§2/§5 v4: pair ΔS is the two legs applied TOGETHER, never the leg sum
     (ΔF IS additive — face has no interactions). A pinned fixture pair shows
     the ΔS interaction: buy Josh Jacobs (4,853) from NoahMoell while selling
@@ -574,7 +574,7 @@ def test_pair_coords_are_combined_not_the_leg_sum(result, league):
     coordinate itself. This pair is verdict-FALSE (both coordinates negative)
     — §11.8b(d) says it is a must-never-emit, checked against the stored
     board."""
-    pairs = result["trade_recs"]["pairs"]
+    pairs = board["pairs"]
     assert all("coords" in p and "floor" in p and "ceiling" in p for p in pairs)
     buy = tr.propose_by_names(league, "NoahMoell", ["2027 R1 (own)"], ["Josh Jacobs"])
     sell = tr.propose_by_names(
@@ -635,14 +635,14 @@ def test_verdict_false_pair_never_stored_even_if_offered():
     assert sink.bucket_pairs(2) == [(0.05, 10.0, 0, 1)]
 
 
-def test_buy_legs_are_allowed_to_be_floor_negative_alone(result, pool, league):
+def test_buy_legs_are_allowed_to_be_floor_negative_alone(board, pool, league):
     """§5 v4: the per-leg return floor stays retired — a leg whose ISOLATION
     floor is negative (every buy leg paying picks for a player is: its ΔF is
     the face it ships) stays in the pool and stays pairable, because its
     partner recoups. What must hold is only the PAIR's verdict (§11.8b(d)).
     Pinned where it lives — the candidate pool — plus the fact that
     floor-negative legs of BOTH directions are eligible to pair."""
-    buys = [p["buy"] for p in result["trade_recs"]["pairs"]]
+    buys = [p["buy"] for p in board["pairs"]]
     assert buys
     # the stored board itself uses floor-negative legs: the fixture's top
     # pair carries a sell leg with negative market return (face recouped on
@@ -650,7 +650,7 @@ def test_buy_legs_are_allowed_to_be_floor_negative_alone(result, pool, league):
     assert any(
         min(p["buy"]["coords"]["me"]["dS"], p["buy"]["coords"]["me"]["dF"]) < 0
         or min(p["sell"]["coords"]["me"]["dS"], p["sell"]["coords"]["me"]["dF"]) < 0
-        for p in result["trade_recs"]["pairs"]
+        for p in board["pairs"]
     )
     neg_buys: dict[tuple[int, int], list[int]] = {}
     neg_sells: dict[tuple[int, int], list[int]] = {}
@@ -682,10 +682,10 @@ def test_buy_legs_are_allowed_to_be_floor_negative_alone(result, pool, league):
     assert pool.legs[bi][tr.L_FLOOR] < 0 and pool.legs[si][tr.L_FLOOR] < 0
 
 
-def test_no_standalone_buy_anywhere(result):
+def test_no_standalone_buy_anywhere(board):
     """§5 v3.1 invariant 2: buy legs exist ONLY inside pairs — never in the
     secondary list, and the watch list carries blockers, not proposal cards."""
-    doc = result["trade_recs"]
+    doc = board
     pair_buys = {id(p["buy"]) for p in doc["pairs"]}
 
     def walk(node):
@@ -706,13 +706,13 @@ def test_no_standalone_buy_anywhere(result):
         assert "no clean exit" in w["blocker"]
 
 
-def test_exclusive_with_and_pair_overlaps(result):
+def test_exclusive_with_and_pair_overlaps(board):
     """§11.5 (v3.3 scope): the secondary list carries exact leg-level
     exclusive_with among itself; the stored board carries the honest pair-level
     `overlaps` tally instead (leg-level id lists across a full stored board
     would be O(pairs²) payload) — verified by reconstruction on a sample. Pair
     legs carry an empty exclusive_with by design."""
-    doc = result["trade_recs"]
+    doc = board
     recs = doc["recommendations"]
     keys = {c["id"]: {a["key"] for a in c["give"] + c["get"]} for c in recs}
     for a in recs:
@@ -736,7 +736,7 @@ def test_exclusive_with_and_pair_overlaps(result):
 # ------------------------------------------------------------------- 8. legality
 
 
-def test_legality_on_both_rosters(result, league):
+def test_legality_on_both_rosters(board, league):
     """§11.8: every emitted leg leaves both rosters legal (minima, size, taxi
     routing per §8) — recomputed from scratch here, not trusted from the card."""
     by_key: dict[str, tr.Asset] = {}
@@ -744,7 +744,7 @@ def test_legality_on_both_rosters(result, league):
         for a in tr.team_assets(league, t).values():
             by_key[a.key] = a
     me_t = league.teams[league.me]
-    for card in board_legs(result["trade_recs"]):
+    for card in board_legs(board):
         give = tr.package_of(league, [by_key[a["key"]] for a in card["give"]])
         get = tr.package_of(league, [by_key[a["key"]] for a in card["get"]])
         verdicts = tr.legality(league, me_t, league.teams[card["counterparty"]], give, get)
@@ -758,10 +758,15 @@ def test_legality_on_both_rosters(result, league):
 # --------------------------------------------------------- 9. determinism, 10. cost
 
 
-def test_determinism_byte_for_byte(snapshot, params, result):
-    """§11.9: identical snapshot ⇒ identical board, byte-for-byte."""
+def test_determinism_byte_for_byte(snapshot, params, result, league, board):
+    """§11.9: identical snapshot ⇒ identical output, byte-for-byte — for the
+    stored payloads AND for the pair board, which v7.1 moved out of
+    `compute_all` but which is the half where determinism is hardest (heaps,
+    walk order, tie-breaks)."""
     again = compute_all(snapshot, params)
     assert json.dumps(again, sort_keys=True) == json.dumps(result, sort_keys=True)
+    again_board = tr.trade_board(md.build_league(snapshot, params))
+    assert json.dumps(again_board, sort_keys=True) == json.dumps(board, sort_keys=True)
 
 
 def test_runtime_within_budget(snapshot, params):
@@ -773,22 +778,30 @@ def test_runtime_within_budget(snapshot, params):
     the same one starter re-solve plus a face delta the leg already carries —
     a min() replaced the δ multiply-add (measured ≈ 30s on this box, the same
     band as v3.5's 28.9s) — so the bound stays where it was rather than
-    tightening onto measurement noise. The collector Lambda's budget is 600s
-    for the whole run (scrape included), so the 90s bound here keeps real
-    headroom while still catching the regression that matters: any unbounded
-    walk blows straight past it."""
+    tightening onto measurement noise.
+
+    v7.1 SPLIT this. `compute_all` no longer builds the pair board, so what the
+    collector actually runs nightly is now the cheap half and gets a tight
+    bound; the board keeps the old 90s bound and is measured separately,
+    because it is still the expensive pass — it just runs in the CLI now. Both
+    bounds exist to catch the same regression: any unbounded walk blows
+    straight past them."""
     t0 = time.perf_counter()
     compute_all(snapshot, params)
-    elapsed = time.perf_counter() - t0
-    assert elapsed < 90.0, elapsed
+    nightly = time.perf_counter() - t0
+    assert nightly < 20.0, nightly  # what the Lambda runs
+    t0 = time.perf_counter()
+    tr.trade_board(md.build_league(snapshot, params))
+    board_cost = time.perf_counter() - t0
+    assert board_cost < 90.0, board_cost  # what the CLI runs on demand
 
 
 # ------------------------------------------------------------------ output shape
 
 
-def test_unvalued_never_in_board_recs(result):
+def test_unvalued_never_in_board_recs(board):
     """§11.7: enumeration never floats a zero-value asset into a package."""
-    for card in board_legs(result["trade_recs"]):
+    for card in board_legs(board):
         for a in card["give"] + card["get"]:
             assert not a.get("unvalued"), card["id"]
         assert card["unvalued"] == []

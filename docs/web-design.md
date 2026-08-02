@@ -1,6 +1,6 @@
 # dynasty-bot web design plan
 
-The design contract for `apps/web`. Foundation implements the tokens/shell; tab agents (Waivers, Trades, League) follow this document exactly — every color, face, and chart decision derives from here. Subject: a one-manager front office for **Chicago Dynasty**. The user is the manager of team *what would it take* (roster 4); he returns daily to answer three questions: what do I claim, what do I offer, where do I stand. The page is a decision instrument — a scouting terminal, dense and numeric — not a marketing page.
+The design contract for `apps/web`. Foundation implements the tokens/shell; tab agents (Waivers, League — the Trades tab was removed in v7.1) follow this document exactly — every color, face, and chart decision derives from here. Subject: a one-manager front office for **Chicago Dynasty**. The user is the manager of team *what would it take* (roster 4); he returns daily to answer three questions: what do I claim, what do I offer, where do I stand. The page is a decision instrument — a scouting terminal, dense and numeric — not a marketing page.
 
 ## 1. Mode and tokens
 
@@ -34,7 +34,7 @@ One fixed masthead — a flag-band construction (thin sky band, then the white m
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │ ███████████████████████ sky band (6px) ██████████████████████████│
-│  ✶✶✶✶ CHICAGO DYNASTY   Waivers  Trades  League   ● 2h ago  ⟳    │  ← masthead (surface)
+│  ✶✶✶✶ CHICAGO DYNASTY   Waivers  League            ● 2h ago  ⟳    │  ← masthead (surface)
 │        front office      ────────                  Refresh       │  ← active tab: sky underline
 ├──────────────────────────────────────────────────────────────────┤
 │  field #F2F7FA                                                   │

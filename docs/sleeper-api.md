@@ -196,7 +196,7 @@ https://sleepercdn.com/avatars/thumbs/<avatar_id>   # thumbnail (verified: 200, 
 |---|---|
 | **Daily data-collection cron** | `state/nfl` → decide mode; `players/nfl` (once/day, cache); `trending/add` + `trending/drop` snapshots; `league/<id>` (settings drift); `rosters`, `users`, `traded_picks`; `transactions/<current leg>` (offseason: round 1); `drafts`/`draft/<id>` until rookie draft completes, then `draft/<id>/picks` once |
 | **Waiver tab** | cached players map + rosters (compute league FA pool = players not on any roster) + trending add/drop + transactions (FAAB bids incl. failed ones for price discovery) + league settings (FAAB budget $50, daily waivers) |
-| **Trades tab** | rosters + users + traded_picks + transactions (trade history) + draft `slot_to_roster_id` (pick slotting) + KTC values (external) |
+| **Trade CLI** (v7.1: no tab) | rosters + users + traded_picks + transactions (trade history) + draft `slot_to_roster_id` (pick slotting) + KTC values (external) |
 | **League strength tab** | rosters (records, fpts, ppts) + users (names) + 2025 matchups weeks 1–17 (`players_points`) + winners/losers brackets (finishes) + traded_picks (future capital) |
 
 Call-budget sanity check: a full daily refresh is ≈ 25 requests (1 players + 2 trending + 1 state + ~5 league-scoped + 17 weekly matchups on first backfill) — far below the 1000/min ceiling; only the players dump needs the once-per-day restraint.

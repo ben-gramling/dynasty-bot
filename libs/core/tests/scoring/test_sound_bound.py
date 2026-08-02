@@ -454,7 +454,7 @@ def test_v5_0_1_walk_output_is_a_subset_11_13d(league, scoped_pool):
         assert added_clearing, r
 
 
-def test_board_headline_pair_survives_v5_1(result):
+def test_board_headline_pair_survives_v5_1(board):
     """§11.13(d) at board level. The nightly collection is budget-truncated on
     the committed fixtures under EITHER key, so the honest statement is about
     the inventory it keeps: v5.1 runs the sound walk first (it is the pass that
@@ -472,7 +472,7 @@ def test_board_headline_pair_survives_v5_1(result):
     gain and that the list is return-sorted. Note ΔS is unchanged at +1,783:
     the lens cannot reach the starter coordinate, since picks never enter the
     lineup."""
-    doc = result["trade_recs"]
+    doc = board
     top = doc["pairs"][0]
     assert top["return_pct"] == 15.23
     assert top["coords"] == {"dS": 1783.0, "dF": 1933.0}

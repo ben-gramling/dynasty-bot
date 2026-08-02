@@ -1,10 +1,17 @@
-"""compute_all: one snapshot in, all four tab payloads out (JSON-serializable)."""
+"""compute_all: one snapshot in, every dashboard payload out (JSON-serializable).
+
+v7.1 — the §5 pair BOARD is no longer part of this. The Trades tab is gone and
+nothing reads a stored `trade-recs` document, so computing it nightly was pure
+cost (it is by far the most expensive pass: the pair pool runs the exact KTC
+gate over the whole enumeration). `trades.trade_board` is untouched and stays
+fully tested — `scripts/score_trade.py` calls it directly and always computed
+its own board live rather than reading the stored one. Spread-finding is a CLI
+/ trade-negotiator workflow now."""
 
 from __future__ import annotations
 
 from core.scoring import league as lg
 from core.scoring import model as md
-from core.scoring import trades as tr
 from core.scoring import waivers as wv
 from core.scoring.params import Params
 from core.scoring.snapshot import Snapshot
@@ -16,7 +23,6 @@ def compute_all(snapshot: Snapshot, params: Params | None = None) -> dict:
     me = league.teams[league.me]
 
     board = wv.waiver_board(league, me)
-    trade_recs = tr.trade_board(league)
     table = lg.league_table(league)
 
     unvalued = sorted(
@@ -35,7 +41,6 @@ def compute_all(snapshot: Snapshot, params: Params | None = None) -> dict:
             "my_team": league.me,
         },
         "waiver_board": board,
-        "trade_recs": trade_recs,
         "league_table": table,
         "my_team_detail": lg.my_team_detail(league),
     }

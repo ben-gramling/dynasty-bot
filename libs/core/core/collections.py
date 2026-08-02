@@ -57,11 +57,6 @@ def waiver_board():
     return get_db()["waiver-board"]
 
 
-def trade_recs():
-    """The trade-recs collection (scoring output)."""
-    return get_db()["trade-recs"]
-
-
 def league_table():
     """The league-table collection (scoring output)."""
     return get_db()["league-table"]

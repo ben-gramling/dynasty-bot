@@ -77,10 +77,26 @@ def me(league) -> md.TeamCtx:
 
 @pytest.fixture(scope="session")
 def result(snapshot, params) -> dict:
-    """Full compute_all output — shared because the trade pass is the expensive part."""
+    """Full compute_all output — the waivers + league payloads the collector
+    stores. v7.1: no `trade_recs` key; the pair board left the nightly pipeline
+    when the Trades tab did (see the `board` fixture)."""
     from core.scoring import compute_all
 
     return compute_all(snapshot, params)
+
+
+@pytest.fixture(scope="session")
+def board(league) -> dict:
+    """The §5 pair board, built directly off `trades.trade_board`.
+
+    v7.1 moved this OUT of `compute_all` — nothing stores it any more, and
+    `scripts/score_trade.py` calls `trade_board` exactly like this. The §5/§11
+    invariants are statements about the ENGINE, not about the collector's
+    output shape, so they keep their pins by building it here. Session-scoped:
+    it is still by far the most expensive thing in the suite."""
+    from core.scoring import trades as tr
+
+    return tr.trade_board(league)
 
 
 @pytest.fixture(scope="session")

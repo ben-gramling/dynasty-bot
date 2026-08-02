@@ -16,8 +16,12 @@ def test_output_is_json_serializable(result):
     assert len(payload) > 10_000
 
 
-def test_top_level_shape(result):
-    assert set(result) == {"meta", "waiver_board", "trade_recs", "league_table", "my_team_detail"}
+def test_top_level_shape(result, board):
+    # v7.1: the pair board left this payload with the Trades tab. It is still
+    # asserted below — built straight off `trades.trade_board`, which is how
+    # `scripts/score_trade.py` gets it — so the doc contract stays pinned even
+    # though nothing stores it.
+    assert set(result) == {"meta", "waiver_board", "league_table", "my_team_detail"}
     meta = result["meta"]
     assert meta["mode"] == "offseason"
     assert meta["draft_status"] == "pre_draft"
@@ -25,7 +29,7 @@ def test_top_level_shape(result):
     assert meta["unvalued_rostered"] == ["Darren Waller"]
     assert meta["alerts"] == []
     assert meta["w_min"] == 150.0
-    tr = result["trade_recs"]
+    tr = board
     assert set(tr) == {
         "disabled", "pairs", "presets", "favor_presets", "delta_presets",
         "counts_by_threshold", "bands", "truncated", "recommendations",
@@ -68,9 +72,9 @@ def test_top_level_shape(result):
         assert pair["net_players"] == 0 and pair["net_picks"] == 0  # §5 v3.2
 
 
-def test_card_schema_matches_contract(result):
+def test_card_schema_matches_contract(board):
     """§5/§10 field census on every displayed trade card (pair legs + sell list)."""
-    for card in board_legs(result["trade_recs"]):
+    for card in board_legs(board):
         for key in (
             "id", "action", "counterparty", "give", "get", "coords", "verdict",
             "floor", "breakeven", "coords_basis", "market_return_pct", "favor",
@@ -128,12 +132,12 @@ def test_card_schema_matches_contract(result):
         for entry in card["give"] + card["get"]:
             assert entry["type"] in ("player", "pick")
             assert {"key", "name", "v"} <= set(entry)
-    for card in result["trade_recs"]["recommendations"]:
+    for card in board["recommendations"]:
         assert "rank" in card  # ranks only on the secondary list
 
 
-def test_notes_mention_execution_protocol(result):
-    notes = result["trade_recs"]["notes"]
+def test_notes_mention_execution_protocol(board):
+    notes = board["notes"]
     assert any("recomputes" in n for n in notes)
     assert any("fire-sale" in n for n in notes)
     assert any("0 players / 0 picks" in n for n in notes)  # §5 pair unit
@@ -146,7 +150,7 @@ def test_notes_mention_execution_protocol(result):
     assert any("saturated" in n for n in notes)  # honest-counter semantics
     assert any("spread finder" in n for n in notes)  # §4a: deep queries go there
     # truncation is reported in the notes whenever the doc carries the flag
-    if result["trade_recs"]["truncated"]:
+    if board["truncated"]:
         assert any("storage cap" in n for n in notes)
 
 

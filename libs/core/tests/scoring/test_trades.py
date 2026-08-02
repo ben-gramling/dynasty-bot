@@ -320,7 +320,7 @@ def test_stored_conversion_floor_zero(league):
         assert min(d_s, d_f) == min(0.0, pick_v - bench.v)
 
 
-def test_hunter_for_a_2027_second_conversion_earns_no_floor(league, result):
+def test_hunter_for_a_2027_second_conversion_earns_no_floor(league, board):
     """§11.8b(b) pinned on the COMMITTED fixtures. Travis Hunter (4,061) is on
     my bench; selling him for ronakpatel32's 2027 2nd (market 4,139) used to be
     (ΔS 0, ΔF +78) — verdict true, floor 0, return 0.00%, below the 1% stored
@@ -353,7 +353,7 @@ def test_hunter_for_a_2027_second_conversion_earns_no_floor(league, result):
     assert card["coords"]["me"]["dS"] + second.v == 4139.0
     # any stored pair carrying the conversion leg owes its floor to the partner
     conv = ({hunter.key}, {second.key})
-    for pair in result["trade_recs"]["pairs"]:
+    for pair in board["pairs"]:
         for tag, other in (("buy", "sell"), ("sell", "buy")):
             leg = pair[tag]
             legk = ({a["key"] for a in leg["give"]}, {a["key"] for a in leg["get"]})
@@ -402,14 +402,14 @@ def test_interval_endpoints_are_the_delta_extremes(league):
             assert lo - 1e-9 <= _blend(d_s_direct, d_f_direct, delta) <= hi + 1e-9
 
 
-def test_favor_is_the_gates_own_metric_11_12a(result, league):
+def test_favor_is_the_gates_own_metric_11_12a(board, league):
     """§11.12(a): `favor` derives from the SAME adjusted totals as the gate —
     one source of truth — and `|f| ≤ 5 ⟺ check_equality(adjT1, adjT2, 5)`,
     the port's own FAIR test at the calculator's default variance. Verified
     over every displayed board leg (fresh recompute, no stored figures) and a
     systematic sample of raw package crossings including |f| near the 5.0
     boundary."""
-    for card in board_legs(result["trade_recs"])[:25]:
+    for card in board_legs(board)[:25]:
         give, get = tr.card_packages(league, card)
         a1, a2 = tr.adjusted_gap(league, give, get)
         f = tr.favor_of(a1, a2)
@@ -433,21 +433,21 @@ def test_favor_is_the_gates_own_metric_11_12a(result, league):
     assert near_boundary > 0  # the boundary region is genuinely exercised
 
 
-def test_fleece_never_on_board(result):
+def test_fleece_never_on_board(board):
     """§11.3: the §10.3 shape never surfaces, and no emitted card violates the cap."""
-    for card in board_legs(result["trade_recs"]):
+    for card in board_legs(board):
         names = ({a["name"] for a in card["give"]}, {a["name"] for a in card["get"]})
         assert names != ({"Cam Ward"}, {"Shedeur Sanders"})
         assert card["gate"]["raw_ratio"] <= 1.35
         assert card["gate"]["ratio_ok"] and card["gate"]["band_ok"]
 
 
-def test_board_gate_recomputes_exactly(result, league):
+def test_board_gate_recomputes_exactly(board, league):
     """§3/§11.3 (v3.4): every displayed leg is inside the EXACT KTC-calculator
     band and under the fleece cap, and the card's gate figures reproduce from a
     fresh gate_info call (no stale or approximated adjusted totals). The screen
     the pool scan runs ahead of the gate never lets a violator through."""
-    legs = board_legs(result["trade_recs"])
+    legs = board_legs(board)
     assert legs, "board should not be empty on the fixture snapshot"
     for card in legs:
         g = card["gate"]
@@ -494,12 +494,12 @@ def test_pool_screen_never_rejects_a_gate_passer(league):
     assert passers > 0 and screened_out > 0  # both branches exercised
 
 
-def test_board_ranking_and_ids(result):
+def test_board_ranking_and_ids(board):
     """§5 v4/§11.8b(e): stored pairs sort MAXIMIN — floor-based return desc,
     ceiling desc as tie-break, ids last — ALWAYS, whatever the cap filter later
     selects; the secondary sell/neutral list by isolation floor descending;
     ids are sequential."""
-    doc = result["trade_recs"]
+    doc = board
     keys = [(p["return_pct"], p["ceiling"]) for p in doc["pairs"]]
     assert keys == sorted(keys, key=lambda t: (-t[0], -t[1]))
     assert [p["id"] for p in doc["pairs"]] == [f"P{i + 1}" for i in range(len(doc["pairs"]))]
@@ -515,7 +515,7 @@ def test_board_ranking_and_ids(result):
     assert [c["rank"] for c in recs] == list(range(1, len(recs) + 1))
 
 
-def test_pick_cards_carry_both_lenses(result, league):
+def test_pick_cards_carry_both_lenses(board, league):
     """§1 v7: every pick on a card ships the MARKET tranche as `v` (what their
     calculator charges) and MY price as `v_me` (what ΔF booked), with a note
     naming both bands. Players never carry `v_me`. The old display-only
@@ -527,7 +527,7 @@ def test_pick_cards_carry_both_lenses(result, league):
         for a in tr.team_assets(league, t).values()
     }
     picks = players = 0
-    for card in board_legs(result["trade_recs"]):
+    for card in board_legs(board):
         for a in card["give"] + card["get"]:
             assert "concrete" not in a, a["name"]  # superseded by v_me
             if a["type"] != "pick":
@@ -605,13 +605,13 @@ def test_below_noise_floor_note(league, params):
 # --------------------------------------- §3 v3.4 ceiling annotation (band edge)
 
 
-def test_ceiling_is_band_edge_info(result, league, params):
+def test_ceiling_is_band_edge_info(board, league, params):
     """Each displayed card's ceiling ≥ the proposal's get value, and the ceiling
     package itself clears the exact gate and the fleece cap (it is the maximum
     such Σv — pure negotiating-room information, never the proposal). v3.4: the
     exact band is not monotone in Σv, so the reconstruction scans the whole
     fleece bracket instead of stopping at the first miss."""
-    legs = board_legs(result["trade_recs"])
+    legs = board_legs(board)
     assert legs
     me_t = league.teams[league.me]
     by_key = {a.key: a for a in tr.team_assets(league, me_t).values()}
@@ -737,7 +737,7 @@ def test_pinned_negative_count_signature_mismatch(league, pool):
         assert tr.pair_in_space(league, pool, bi, si) is None
 
 
-def test_posture_is_a_hard_pair_pool_constraint(league, pool, result):
+def test_posture_is_a_hard_pair_pool_constraint(league, pool, board):
     """§5 v3.3 pinned negative: ronakpatel32 is the fixture's BUYER — a
     picks-majority package at him passes the §3 gate (my 2026 2.09 for Tony
     Pollard: coords (0, +286), objectively good, gap 1.7%) yet appears
@@ -766,12 +766,12 @@ def test_posture_is_a_hard_pair_pool_constraint(league, pool, result):
     assert tr.find_pool_leg(
         pool, "ronakpatel32", [mine["2026 2.09"].key], [ron["Tony Pollard"].key]
     ) is None
-    for card in board_legs(result["trade_recs"]):
+    for card in board_legs(board):
         label = card["posture"]["label"]
         assert tr.posture_allows(label, card["posture"]["shape"]), card["id"]
 
 
-def test_board_pairs_verdict_true_and_honest_on_fixture(result, params):
+def test_board_pairs_verdict_true_and_honest_on_fixture(board, params):
     """§5 v7 / §11.12(g) on the committed fixture. Storage is stratified by
     FAVOR bucket (pair favor = min(f_buy, f_sell)): 925 pairs survive as the
     per-bucket unions of tops by robust return / dS / dF.
@@ -802,7 +802,7 @@ def test_board_pairs_verdict_true_and_honest_on_fixture(result, params):
     Every count remains a saturated verified floor: the walk orders legs by a
     per-leg key while pairs are priced by exact combined coordinates, so no
     cutoff can certify completeness."""
-    doc = result["trade_recs"]
+    doc = board
     bands = doc["bands"]
     assert doc["presets"] == [1.0, 2.5, 5.0, 10.0, 20.0]
     assert doc["favor_presets"] == [-10.0, -5.0, 0.0, 2.5, 5.0]
@@ -895,13 +895,13 @@ def test_return_bands_and_favor_bucket_math():
             assert (tr.bucket_index(buckets, m) in selected) == (m >= e), (e, m)
 
 
-def test_bucket_storage_invariant(result, params):
+def test_bucket_storage_invariant(board, params):
     """v5 stratification (§11.12(g)): every stored pair's FAVOR MIN sits
     inside its bucket, per-bucket storage is capped at the 3-heap union bound,
     each bucket's stored pairs read robust-return-desc, and the flat list is
     sorted by robust return desc globally (the favor dial filters, the δ dial
     re-sorts client-side — neither re-orders the stored doc)."""
-    doc = result["trade_recs"]
+    doc = board
     bands = doc["bands"]
     edges = [(b["lo"], b["hi"]) for b in bands]
     by_bucket: dict[int, list[float]] = {i: [] for i in range(len(bands))}
@@ -927,12 +927,12 @@ def test_bucket_storage_invariant(result, params):
     assert len(doc["pairs"]) == sum(b["stored"] for b in bands)
 
 
-def test_counts_by_threshold_consistency(result):
+def test_counts_by_threshold_consistency(board):
     """§5 floor-dial counts (compat, TOTAL return): thresholds ascend with the
     presets, counts are non-increasing in the threshold, saturation is
     downward-closed, and every count covers the stored pairs clearing that
     threshold."""
-    doc = result["trade_recs"]
+    doc = board
     entries = doc["counts_by_threshold"]
     assert [e["threshold"] for e in entries] == doc["presets"]
     counts = [e["count"] for e in entries]
@@ -944,12 +944,12 @@ def test_counts_by_threshold_consistency(result):
         assert e["count"] >= n_stored
 
 
-def test_grid_consistent_with_buckets_and_thresholds(result):
+def test_grid_consistent_with_buckets_and_thresholds(board):
     """v5 grid honesty: each favor bucket's `by_total` row partitions its
     count exactly; the grid's columns at or above a floor preset sum (across
     every bucket) to that threshold's count; and every (return floor, favor
     floor) cell read is a floor for the stored pairs matching both dials."""
-    doc = result["trade_recs"]
+    doc = board
     bands = doc["bands"]
     presets = doc["presets"]
     for b in bands:
@@ -1013,11 +1013,11 @@ def test_forced_per_bucket_truncation_honesty(snapshot):
     assert any("stratified storage" in n for n in board["notes"])
 
 
-def test_count_deltas_track_taxi_and_negate_exactly(result, league):
+def test_count_deltas_track_taxi_and_negate_exactly(board, league):
     """§5 v3.2: net_players/net_picks are asset-count arithmetic on the card
     itself (players wherever they land — taxi-routed arrivals included; picks
     regardless of year) and exactly negate across sides."""
-    for card in board_legs(result["trade_recs"]):
+    for card in board_legs(board):
         np_me = sum(1 for a in card["get"] if a["type"] == "player") - sum(
             1 for a in card["give"] if a["type"] == "player"
         )
