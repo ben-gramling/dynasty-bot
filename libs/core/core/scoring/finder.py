@@ -73,6 +73,8 @@ from core.scoring.params import Params
 from core.scoring.snapshot import Snapshot
 
 _CACHE_VERSION = 1
+# §4a v6: legs per side crossed in the warm-bar seed pass (see `find_spreads`)
+_SEED_WIDTH = 150
 DEFAULT_CACHE_DIR = Path(".cache")
 
 _QUERY_DEFAULTS: dict[str, Any] = {
@@ -87,6 +89,11 @@ _QUERY_DEFAULTS: dict[str, Any] = {
     "with_team": None,
     "shape": None,
     "top": None,  # None -> params.finder_top
+    # §4a v6: build the COMPLETE pool inside |favor| <= this instead of v5's
+    # sampled scan. Per-QUERY, not a param, because it bounds what the pool can
+    # represent: a band-5 pool cannot serve a `favor_min = -10` query at all, so
+    # making it the default would silently break the slider's own presets.
+    "favor_band": None,
 }
 
 
@@ -229,6 +236,18 @@ def _normalize_query(league: md.LeagueState, query: Mapping | None) -> dict:
             for name in legs.get(side) or ():
                 if name not in league.teams or name == league.me:
                     raise ValueError(f"legs.{side} names unknown counterparty {name!r}")
+    fb = q["favor_band"]
+    if fb is not None:
+        if not (isinstance(fb, (int, float)) and fb > 0):
+            raise ValueError(f"favor_band must be a positive number, got {fb!r}")
+        # a band-β pool cannot answer a question about legs outside ±β
+        for k in ("favor_min", "favor_max"):
+            v = q[k]
+            if v is not None and abs(v) > fb:
+                raise ValueError(
+                    f"{k}={v} lies outside favor_band={fb}: the complete pool is "
+                    f"built to |favor| <= {fb} and cannot represent that leg"
+                )
     top = q["top"]
     if top is None:
         q["top"] = league.params.finder_top
@@ -303,6 +322,12 @@ def find_spreads(
         buy_teams = sell_teams = set(league.opponents)
         opponents = list(league.opponents)
 
+    # §4a v6: which pool this query gets. `None` (the default) is v5's sampled
+    # scan; a number builds the COMPLETE pool inside |favor| ≤ that band.
+    pool_band = (
+        q["favor_band"] if q["favor_band"] is not None else params.finder_favor_band
+    )
+
     # §4a constraint push-down: candidate packages filtered BEFORE gate work.
     # Posture rides in `compiled` (§11.12(f)), so the pool's own posture gate
     # is off. Cached tables only ever get NARROWED here.
@@ -317,12 +342,19 @@ def find_spreads(
         opp_filtered[opp] = [
             p for p in tables[opp] if cn.package_allowed(compiled, opp, "get", p)
         ]
+    # §4a v6: the finder runs the COMPLETE fair-band pool — every gate-passer
+    # inside `finder_favor_band` is kept, not the best 2 of the first 3 scanned.
+    # This path is interactive and local, so it can afford the memory the
+    # nightly collector cannot (the unconstrained band-5 pool measures ~3.9 GB;
+    # a constrained negotiator query is a small fraction of that). The board
+    # keeps `pool_favor_band = None` and v5's sampled scan — see §9.
     pool = tr.build_pair_pool(
         league,
         enforce_posture=False,
         opponents=opponents,
         my_pkgs_for=lambda opp: my_filtered[opp],
         opp_pkgs_for=lambda opp: opp_filtered[opp],
+        favor_band=pool_band,
     )
 
     legs = pool.legs
@@ -422,7 +454,107 @@ def find_spreads(
     me_t = league.teams[me_name]
     legal_cache: dict[int, Any] = {}
 
+    # §4a v6: the robust objective gets the SOUND two-pointer break (§11.13).
+    # It needs `return = floor ÷ Σsent` to be the ranking, which is exactly what
+    # robust mode is; a numeric-δ view scores ΔS and ΔF separately and `floor`
+    # no longer bounds it, so those keep the v5.0.1 heuristic order and the flat
+    # walk. `min_ret == 0` is still sound — the break is then simply "ΔF_pair
+    # ≥ 0", which every qualifying pair satisfies.
+    sound_break = delta == "robust"
+
     heap: list[tuple] = []  # (view_ret, ceiling, -bi, -si, d_s, d_f, ret, sent)
+
+    def _qualifying(bi: int, si: int):
+        """Exact price + every slider, or None. The single definition of "this
+        pair counts", shared by the seed pass and the main walk so the bar the
+        seed produces is always a return some QUALIFYING pair actually achieved."""
+        b_, s_ = legs[bi], legs[si]
+        if s_[tr.L_OPP] == b_[tr.L_OPP] or (s_[tr.L_MASK] & b_[tr.L_MASK]):
+            return None
+        if with_oi is not None and with_oi not in (b_[tr.L_OPP], s_[tr.L_OPP]):
+            return None
+        if tr._leg_legal(league, me_t, pool, bi, legal_cache) is False:
+            return None
+        if tr._leg_legal(league, me_t, pool, si, legal_cache) is False:
+            return None
+        ret_, floor_, ceil_, ds_, df_ = pool.pair_eval(bi, si)
+        fb_, fs_, fmin_ = pool.pair_favor(bi, si)
+        if favor_min is not None and fmin_ < favor_min:
+            return None
+        if favor_max is not None and (fb_ if fb_ > fs_ else fs_) > favor_max:
+            return None
+        if shape == "starter>team" and not ds_ > df_:
+            return None
+        if shape == "team>starter" and not df_ > ds_:
+            return None
+        if not tr.verdict_of(ds_, df_):
+            return None
+        return ret_ if ret_ >= min_ret - 1e-12 else None
+
+    # §4a v6 WARM BAR. The sound break only bites when the bar is high, and
+    # `min_return` defaults to 0 — where the break degenerates to "ΔF_pair ≥ 0"
+    # and prunes almost nothing. So seed it: cross the richest few hundred legs
+    # per side, price them exactly, and take the K-th best return as the bar.
+    #
+    # This is EXACT, not a heuristic. Every seed value is a return that a real
+    # qualifying pair achieves, so the true K-th best return is ≥ the seed; a
+    # walk at that bar therefore still reaches every member of the true top-K.
+    # It only ever REMOVES crossings that provably cannot make the cut.
+    seed_bar = min_ret
+
+    def _u(leg) -> float:
+        """§4a v6 the walk's SEPARABLE key, negated so `sorted` runs it
+        descending: `k5 = 3·ΔF + 2·A` against `5·bar·Σsent`.
+
+        Both halves bound the pair floor from above — ΔF exactly additively,
+        `A` by matroid submodularity (§11.13(f)) — so their positively-weighted
+        blend does too: `floor = (3·floor + 2·floor)/5 ≤ (3·ΔF + 2·A)/5`. The
+        coefficients are INTEGERS on purpose: the float blend `0.6·ΔF + 0.4·A`
+        has a real one-ULP counterexample (a pair with ΔS = ΔF = A_sum = 748
+        whose blended bound comes out 747.9999999999999 and is dropped), and
+        every input here is integral, so integer weights cannot round at all.
+
+        ΔF alone is sound but a poor ORDER: it ranks a pair by face gained,
+        so high-face/low-starter crossings flood the front of a truncated walk
+        and the genuinely good pairs never get visited. Adding `A` makes the
+        key see the starter half too."""
+        return 5.0 * seed_bar * leg[tr.L_SENT] - (
+            3.0 * leg[tr.L_DFACE] + 2.0 * leg[tr.L_A]
+        )
+
+    # The seed raises the walk's bar above `min_return`, which makes the RESULT
+    # LIST exact but turns `counts.matched` into a floor — it can only count
+    # pairs at or above the bar it actually walked. §11.12(e) pins those counts
+    # as honest, so the seed runs ONLY on the complete-pool path, where the walk
+    # is budget-truncated anyway (counts already floors) and where the search is
+    # otherwise infeasible. The sampled path keeps exact v5 count semantics.
+    if sound_break and top and pool_band is not None:
+        seeds: list[float] = []
+        for sig in sorted(pool.buckets):
+            if not tr.canonical_sig(sig):
+                continue
+            comp_idx = pool.buckets.get((-sig[0], -sig[1]))
+            if not comp_idx:
+                continue
+            rank = lambda i: -legs[i][tr.L_DFACE] / legs[i][tr.L_SENT]  # noqa: E731
+            bs_seed = sorted(
+                (i for i in pool.buckets[sig]
+                 if legs[i][tr.L_OPP] in buy_allowed and eligible(i)),
+                key=rank,
+            )[:_SEED_WIDTH]
+            ss_seed = sorted(
+                (i for i in comp_idx
+                 if legs[i][tr.L_OPP] in sell_allowed and eligible(i)),
+                key=rank,
+            )[:_SEED_WIDTH]
+            for bi in bs_seed:
+                for si in ss_seed:
+                    r_ = _qualifying(bi, si)
+                    if r_ is not None:
+                        seeds.append(r_)
+        if len(seeds) >= top:
+            seeds.sort(reverse=True)
+            seed_bar = max(min_ret, seeds[top - 1])
     visits = valid = matched = 0
     complete = True
     for sig in sorted(pool.buckets):
@@ -433,16 +565,37 @@ def find_spreads(
         comp_idx = pool.buckets.get((-sig[0], -sig[1]))
         if not comp_idx:
             continue
-        bs = sorted(
-            (order_key(i), i)
-            for i in pool.buckets[sig]
-            if legs[i][tr.L_OPP] in buy_allowed and eligible(i)
-        )
-        ss = sorted(
-            (order_key(i), i)
-            for i in comp_idx
-            if legs[i][tr.L_OPP] in sell_allowed and eligible(i)
-        )
+        if sound_break:
+            # §4a v6 SOUND ordering for the robust objective: sort by
+            # `−u(leg)` with `u = ΔF − r·Σsent`, so the walk runs u-descending
+            # and can stop the moment the best remaining sell cannot lift the
+            # current buy to the bar. ΔF is exactly additive and
+            # `floor ≤ ΔF`, so `u_b + u_s < 0 ⟹ return < r` — the break can
+            # never discard a qualifying pair (§11.13). Through v5.1 this loop
+            # had NO prune at all: it sorted by a yield heuristic and walked
+            # until the budget ran out, which is survivable on a sampled pool
+            # and hopeless on a complete one.
+            bs = sorted(
+                (_u(legs[i]), i)
+                for i in pool.buckets[sig]
+                if legs[i][tr.L_OPP] in buy_allowed and eligible(i)
+            )
+            ss = sorted(
+                (_u(legs[i]), i)
+                for i in comp_idx
+                if legs[i][tr.L_OPP] in sell_allowed and eligible(i)
+            )
+        else:
+            bs = sorted(
+                (order_key(i), i)
+                for i in pool.buckets[sig]
+                if legs[i][tr.L_OPP] in buy_allowed and eligible(i)
+            )
+            ss = sorted(
+                (order_key(i), i)
+                for i in comp_idx
+                if legs[i][tr.L_OPP] in sell_allowed and eligible(i)
+            )
         if not bs or not ss:
             continue
         # §4a v6 `with_team` push-down. A pair is in scope iff the named team is
@@ -459,7 +612,7 @@ def find_spreads(
             ss_out = ss
         else:
             ss_out = [x for x in ss if legs[x[1]][tr.L_OPP] == with_oi]
-        for _, bi in bs:
+        for ub, bi in bs:
             if not complete:
                 break
             b = legs[bi]
@@ -470,8 +623,15 @@ def find_spreads(
             my_ss = ss if (with_oi is None or b_opp == with_oi) else ss_out
             if not my_ss:
                 continue
+            if sound_break and ub + my_ss[0][0] > tr.XTOL:
+                # even the best remaining sell cannot lift THIS buy to the bar,
+                # and `bs` is u-descending, so no later buy can be lifted either
+                break
+            b_a = b[tr.L_A]
             vb = None
-            for _, si in my_ss:
+            for us, si in my_ss:
+                if sound_break and ub + us > tr.XTOL:
+                    break  # below the bar (XTOL keeps exact ties, which qualify)
                 visits += 1
                 if visits > budget:
                     visits -= 1
@@ -487,6 +647,15 @@ def find_spreads(
                 if tr._leg_legal(league, me_t, pool, si, legal_cache) is False:
                     continue
                 valid += 1
+                # §11.13(f) O(1) pricing skip: `floor ≤ A_buy + A_sell`, so a
+                # pair whose add-only ceiling cannot clear the bar cannot clear
+                # it at all — skip the exact starter re-solve, which is the
+                # expensive part. Sound for the robust objective only (a δ-view
+                # scores ΔS and ΔF separately), hence the same gate as the break.
+                if sound_break and tr.pair_ds_bound(b_a, s[tr.L_A]) < seed_bar * (
+                    b[tr.L_SENT] + s[tr.L_SENT]
+                ) - tr.XTOL:
+                    continue
                 ret, floor, ceil, d_s, d_f = pool.pair_eval(bi, si)
                 fb, fs, fmin = pool.pair_favor(bi, si)
                 # ---- the three sliders (filters on the exact figures)

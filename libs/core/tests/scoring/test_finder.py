@@ -265,7 +265,13 @@ def test_honest_counts_exact_vs_floor_11_12e(league, snapshot, cache_dir, tmp_pa
                 ret, floor, _ceil, d_s, d_f = pool.pair_eval(bi, si)
                 if tr.verdict_of(d_s, d_f) and ret >= -1e-12:
                     matched += 1
-    assert r["counts"]["valid"] == valid
+    # v6: `valid` counts the legal crossings the walk VISITED, and the walk now
+    # carries a sound break, so it legitimately visits fewer than a brute force
+    # that enumerates everything. What must NOT move is `matched`: the break is
+    # sound precisely because it only ever skips crossings that provably cannot
+    # qualify, so the matched set is still exhaustive. That is the assertion
+    # worth pinning — equality on `valid` would pin the absence of a prune.
+    assert r["counts"]["valid"] <= valid
     assert r["counts"]["matched"] == matched
     # ---- budget-starved: floors, disclosed, never estimates
     starved_league = md.build_league(snapshot, Params(finder_cross_budget=50))

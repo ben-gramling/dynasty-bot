@@ -99,6 +99,16 @@ class Params:
     # and the board keeps the sampled scan with a budget that no longer starves
     # it (see `pair_collect_budget`).
     pool_favor_band: float | None = None
+    # §4a v6 the FINDER's band. The finder is interactive and local, so it takes
+    # the complete pool the collector cannot afford: every gate-passer inside
+    # |favor| ≤ 5 is kept. This is where the coverage actually pays — measured
+    # on the live snapshot, the complete pool lifts the best guaranteed floor by
+    # +10.9% to +16.8% for EVERY counterparty (ronakpatel32 2,997 → 3,338), and
+    # moves the pool favor median −9.40 → +0.10 so the counterparty-friendly end
+    # is represented at all. Constraint push-down runs BEFORE the gate scan, so a
+    # real negotiator query builds a small fraction of the ~3.9 GB unconstrained
+    # band-5 pool; set to None to fall back to v5's sampled scan.
+    finder_favor_band: float | None = None
     # The Σv-descending scan and its caps, kept ONLY for `pool_favor_band=None`
     # (the wide-band path, which is still infeasible to drain). Inside a favor
     # band the scan drains the bracket and these are unused.
