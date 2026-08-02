@@ -95,8 +95,14 @@ def test_render_is_standalone_and_escapes(payload):
     no src/href to anywhere and no script at all."""
     page = dash.render_html(payload)
     assert "<script" not in page.lower()
-    assert not re.search(r'\b(src|href)\s*=\s*"(?!#)', page)
-    assert "http://" not in page and "https://" not in page
+    # no `src` at all, and the ONLY hrefs are keeptradecut trade-calculator
+    # deep links — an outbound link the user clicks is not a page dependency,
+    # so it costs nothing under the artifact CSP
+    assert not re.search(r'\bsrc\s*=', page)
+    hrefs = re.findall(r'href="([^"]+)"', page)
+    assert hrefs, "the calculator links must actually be rendered"
+    assert all(h.startswith("https://keeptradecut.com/trade-calculator?") for h in hrefs)
+    assert "http://" not in page
     # no <html>/<head>/<body> — the artifact harness supplies the skeleton.
     # Matched as complete tags: `<header>` is ours and must not trip this.
     assert not re.search(r"<\s*(!doctype|html|head|body)\b", page, re.I)
@@ -106,6 +112,86 @@ def test_render_is_standalone_and_escapes(payload):
     assert page.count("<details class=\"hedge\">") == sum(
         len(t["spreads"]) for t in payload["teams"]
     )
+
+
+def test_every_hedge_carries_leg_and_spread_calculator_links(payload):
+    """Per leg AND for the whole spread as one hypothetical trade. The leg links
+    are the real ones — each leg IS a trade with one counterparty, and the link
+    opens the calculator at the settings the gate ports, so its page total is
+    `gate.adj_give` / `adj_get`. The spread link is a what-if and is labeled as
+    one on the page."""
+    seen = 0
+    for team in payload["teams"]:
+        for sp in team["spreads"]:
+            links = sp["links"]
+            assert set(links) == {"buy", "sell", "spread"}
+            for leg in ("buy", "sell"):
+                url = links[leg]["url"]
+                assert url and url.startswith("https://keeptradecut.com/trade-calculator?")
+                # the settings the gate assumes — format=1 is load-bearing, a
+                # Superflex page prices every asset in the wrong column
+                for want in ("var=5", "pickVal=0", "format=1", "isStartup=0", "tep=0"):
+                    assert want in url, (leg, want)
+                assert "teamOne=" in url and "teamTwo=" in url
+                # teamOne is what I SEND, which is what makes the page total
+                # line up with adj_give (ktc_link's stated convention)
+                one = url.split("teamOne=")[1].split("&")[0]
+                assert one.count("%7C") + 1 == len(sp[leg]["give"]) - len(
+                    links[leg]["dropped"]
+                ) or links[leg]["dropped"]
+            sprd = links["spread"]
+            assert sprd["url"] or sprd.get("blocked")
+            seen += 1
+    assert seen > 0
+
+
+def test_spread_link_is_both_legs_rolled_into_one_trade(payload):
+    """It sends everything both legs send and receives everything they receive
+    — the whole spread as a single trade against a single manager."""
+    for team in payload["teams"]:
+        for sp in team["spreads"]:
+            sprd = sp["links"]["spread"]
+            if not sprd["url"]:
+                continue  # KTC's 12-asset cap; disclosed as `blocked`
+            n_give = len(sp["buy"]["give"]) + len(sp["sell"]["give"])
+            n_get = len(sp["buy"]["get"]) + len(sp["sell"]["get"])
+            one = sprd["url"].split("teamOne=")[1].split("&")[0]
+            two = sprd["url"].split("teamTwo=")[1].split("&")[0]
+            dropped = len(sprd["dropped"])
+            assert (one.count("%7C") + 1) + (two.count("%7C") + 1) + dropped == (
+                n_give + n_get
+            )
+
+
+def test_a_page_with_no_linkable_assets_says_so_instead_of_linking(payload):
+    """`url=None` means one side emptied out; a link then would render as a
+    one-sided giveaway on the counterparty's screen. The page must say why."""
+    page = dash.render_html(
+        {
+            **payload,
+            "teams": [
+                {
+                    **payload["teams"][0],
+                    "spreads": [
+                        {
+                            **payload["teams"][0]["spreads"][0],
+                            "links": {
+                                "buy": {"url": None, "numbered_url": None,
+                                        "dropped": ["Some Guy"], "numbered": []},
+                                "sell": {"url": None, "numbered_url": None,
+                                         "dropped": [], "numbered": []},
+                                "spread": {"url": None, "numbered_url": None,
+                                           "dropped": [], "numbered": [],
+                                           "blocked": "too many assets"},
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    assert "not linkable" in page and "giveaway" in page
+    assert "too many assets" in page
 
 
 def test_render_uses_the_ledger_conventions(payload):

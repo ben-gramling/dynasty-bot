@@ -37,6 +37,8 @@ are the test suite, pinned to the committed `data/` fixtures.
   `just hedges` / `score_trade.py dashboard` runs the finder once per
   counterparty and writes a self-contained HTML page (`core/dashboard.py`) that
   the skill publishes as an artifact. Takes minutes: eleven exhaustive searches.
+  Every hedge carries KTC trade-calculator deep links (`core/scoring/ktc_link.py`)
+  per leg and for the whole spread.
 
 ## League managers (real name ↔ Sleeper username)
 

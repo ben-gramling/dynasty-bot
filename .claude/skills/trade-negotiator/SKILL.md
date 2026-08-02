@@ -224,6 +224,13 @@ The user will feed you color like: *"trdouglas is hunting draft capital"* ·
      team (the searches are exhaustive) — brief it as one, not as a gap.
    - `--json` prints the payload instead, for when you need the numbers rather
      than the page.
+   - Every hedge carries **KTC calculator deep links**: one per leg — pinned to
+     the settings the gate ports, so the page total IS `adj_give`/`adj_get` —
+     and one for the whole spread rolled into a single hypothetical trade.
+     Quote the LEG links when you pitch: that is the trade the manager
+     actually takes, and the number on their screen will match what you told
+     them. The spread link is a shape check for you, not a proposal; the page
+     labels it as such and so should you.
 
 4. **Open with a desk brief**: per-team one-liners merging posture (+evidence
    count), active intel, visible holes, pick inventory — then the hedge board's

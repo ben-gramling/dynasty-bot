@@ -34,8 +34,10 @@ import os
 from typing import Any, Mapping, Sequence
 
 from core.scoring import finder as fd
+from core.scoring import ktc_link as kl
 from core.scoring import league as lg
 from core.scoring import model as md
+from core.scoring import trades as tr
 
 # ------------------------------------------------------------------- payload
 
@@ -92,6 +94,59 @@ def default_workers() -> int:
     return max(1, (os.cpu_count() or 2) - 1)
 
 
+def _link_dict(link: kl.Link) -> dict:
+    return {
+        "url": link.url,
+        "numbered_url": link.numbered_url,
+        "dropped": list(link.dropped),
+        "numbered": [
+            {"name": n.name, "tranche_v": n.tranche_v} for n in link.numbered
+        ],
+    }
+
+
+def _spread_links(league: md.LeagueState, sp: Mapping, ids: Mapping) -> dict:
+    """Calculator links for a hedge: one per leg, plus the whole spread rolled
+    into a single hypothetical trade.
+
+    The per-leg links are the real ones — each leg IS a trade with one
+    counterparty, and its `teamOne` total is exactly `gate.adj_give` because
+    the link opens the calculator at the settings our gate ports (var 5,
+    format 1, no pick scaling).
+
+    The combined link is a DIFFERENT question: "what would this whole spread
+    look like as one trade against one manager?" Nobody executes it that way —
+    the legs go to two different teams — and KTC's value adjustment does not
+    cancel across the pair (§3.1 v3.4), so its fairness reading is genuinely
+    its own, not the sum of the two legs'. It is here because it is the
+    quickest way to see the shape of what you are actually doing; the page
+    says both of those things next to it.
+
+    Links are best-effort: an asset with no KTC identity is dropped and
+    disclosed, and the 12-asset calculator cap can make the combined link
+    impossible even when both legs are fine."""
+    buy_give, buy_get = tr.card_packages(league, sp["buy"])
+    sell_give, sell_get = tr.card_packages(league, sp["sell"])
+    cy = league.current_year
+    out = {
+        "buy": _link_dict(kl.tc_link(buy_give.assets, buy_get.assets, ids, current_year=cy)),
+        "sell": _link_dict(kl.tc_link(sell_give.assets, sell_get.assets, ids, current_year=cy)),
+    }
+    try:
+        combined = kl.tc_link(
+            list(buy_give.assets) + list(sell_give.assets),
+            list(buy_get.assets) + list(sell_get.assets),
+            ids,
+            current_year=cy,
+        )
+    except ValueError as exc:  # KTC holds at most 12 assets across both sides
+        out["spread"] = {"url": None, "numbered_url": None, "dropped": [],
+                         "numbered": [], "blocked": str(exc)}
+    else:
+        out["spread"] = _link_dict(combined)
+    return out
+
+
 def hedge_payload(
     league: md.LeagueState,
     *,
@@ -110,6 +165,9 @@ def hedge_payload(
     re-derived for display, so the page can never disagree with `find`."""
     query = {**_SLIDER_DEFAULTS, **(sliders or {})}
     results = _search_all(league, query, intel, cache_dir, workers)
+    # derived from the snapshot every run — the RDP asset list rolls forward
+    # during the season and must never be hardcoded (docs/keeptradecut.md)
+    ids = kl.rdp_ids(league)
 
     teams = []
     for name in sorted(league.opponents):
@@ -121,7 +179,14 @@ def hedge_payload(
             # hedge partner — a hedge always touches two teams)
             side = "buy" if sp["buy"]["counterparty"] == name else "sell"
             other = sp["sell" if side == "buy" else "buy"]["counterparty"]
-            spreads.append({**sp, "their_side": side, "partner": other})
+            spreads.append(
+                {
+                    **sp,
+                    "their_side": side,
+                    "partner": other,
+                    "links": _spread_links(league, sp, ids),
+                }
+            )
         teams.append(
             {
                 "name": name,
@@ -268,6 +333,16 @@ table.assets td.num{text-align:right;font-family:ui-monospace,Menlo,monospace;
 .note{font-size:12px;color:var(--ink-muted);padding:0 16px 14px}
 .gate{font-size:12px;color:var(--ink-muted);display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:8px}
 .scroll{overflow-x:auto}
+/* calculator links: the only outbound thing on the page, so they get the one
+   interactive hue and never compete with a numeral */
+.ktc{margin-top:8px;display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12px;align-items:baseline}
+.ktc a{color:var(--sky-deep);text-decoration:none;border-bottom:1px solid var(--line);
+  padding-bottom:1px}
+.ktc a:hover{border-bottom-color:var(--sky-deep)}
+.ktc .warn{color:var(--ink-muted)}
+.spread-link{padding:0 16px 14px;font-size:12.5px;display:flex;flex-wrap:wrap;
+  gap:4px 12px;align-items:baseline}
+.spread-link a{color:var(--sky-deep)}
 footer{max-width:1200px;margin:0 auto;padding:0 20px 40px;font-size:12px;color:var(--ink-muted)}
 footer p{margin:.5em 0}
 """
@@ -339,7 +414,38 @@ def _assets_table(title: str, assets: Sequence[Mapping]) -> str:
     )
 
 
-def _leg_block(leg: Mapping, *, role: str, is_theirs: bool) -> str:
+def _ktc_links(link: Mapping, *, label: str, aside: str = "") -> str:
+    """The calculator link plus every disclosure it carries. A dropped asset or
+    a numbered-pick gap changes what the counterparty's screen totals, so it is
+    stated next to the link rather than swallowed by it."""
+    if link.get("blocked"):
+        return f'<div class="ktc"><span class="warn">{_esc(label)}: {_esc(link["blocked"])}</span></div>'
+    if not link.get("url"):
+        return (
+            '<div class="ktc"><span class="warn">'
+            f"{_esc(label)}: not linkable — every asset on one side is missing a "
+            "KTC id, and a one-sided link would read as a giveaway</span></div>"
+        )
+    bits = [f'<a href="{_esc(link["url"])}">{_esc(label)}</a>']
+    if aside:
+        bits.append(f'<span class="warn">{_esc(aside)}</span>')
+    if link.get("dropped"):
+        bits.append(
+            '<span class="warn">not on the calculator: '
+            f'{_esc(", ".join(link["dropped"]))}</span>'
+        )
+    if link.get("numbered_url"):
+        names = ", ".join(n["name"] for n in link["numbered"])
+        bits.append(
+            f'<a href="{_esc(link["numbered_url"])}">numbered picks</a>'
+            f'<span class="warn">— {_esc(names)} also exist on KTC as numbered '
+            "entries priced above the tranche this link uses; that version totals "
+            "differently from the gate</span>"
+        )
+    return '<div class="ktc">' + "".join(bits) + "</div>"
+
+
+def _leg_block(leg: Mapping, *, role: str, is_theirs: bool, link: Mapping | None) -> str:
     g = leg["gate"]
     cls = "leg theirs" if is_theirs else "leg"
     who = f'with {_esc(leg["counterparty"])}' + (" — this team" if is_theirs else "")
@@ -352,11 +458,17 @@ def _leg_block(leg: Mapping, *, role: str, is_theirs: bool) -> str:
         f'<span>ratio <span class="mono">{_esc(g["raw_ratio"])}</span></span>'
         f'<span>{_esc(g["verdict"])}</span></div>'
     )
+    link_html = (
+        _ktc_links(link, label="Open this leg in KTC",
+                   aside="totals exactly what the gate above shows")
+        if link is not None
+        else ""
+    )
     return (
         f'<div class="{cls}"><h3>{_esc(role)}</h3><div class="who">{who}</div>'
         f'{_assets_table("You send", leg["give"])}'
         f'{_assets_table("You get", leg["get"])}'
-        f"{gate}</div>"
+        f"{gate}{link_html}</div>"
     )
 
 
@@ -379,11 +491,27 @@ def _hedge(sp: Mapping, rank: int) -> str:
         '</svg></span></summary>'
     )
     their_side = sp["their_side"]
+    links = sp.get("links") or {}
     audit = (
         '<div class="audit">'
-        + _leg_block(sp["buy"], role="Buy leg", is_theirs=their_side == "buy")
-        + _leg_block(sp["sell"], role="Sell leg", is_theirs=their_side == "sell")
+        + _leg_block(sp["buy"], role="Buy leg", is_theirs=their_side == "buy",
+                     link=links.get("buy"))
+        + _leg_block(sp["sell"], role="Sell leg", is_theirs=their_side == "sell",
+                     link=links.get("sell"))
         + "</div>"
+        + (
+            '<div class="spread-link">'
+            + _ktc_links(
+                links["spread"],
+                label="Open the WHOLE spread in KTC as one trade",
+                aside="a what-if, not the trade: the two legs go to different "
+                "managers, and KTC's adjustment does not cancel across a pair, "
+                "so this reads differently from either leg above",
+            )
+            + "</div>"
+            if links.get("spread")
+            else ""
+        )
         + f'<p class="note">{_esc(sp["sequencing"])}. '
         f'Partner on the other leg: {_esc(sp["partner"])}. '
         f'Nets 0 players / 0 picks; active roster {_num(sp["net_roster"], signed=True)}.</p>'
@@ -494,5 +622,10 @@ def render_html(payload: Mapping) -> str:
   <p>Guaranteed floor is min(starters, face) and the ceiling is the max — the gain lies
   between them at every rational preference, so quote the floor and never a blend.
   Favor is the signed skew toward the counterparty in KTC's own variance units;
-  |favor| ≤ 5 is their calculator's FAIR window.{gen}</p>
+  |favor| ≤ 5 is their calculator's FAIR window.</p>
+  <p>The only links on this page open keeptradecut.com's trade calculator, pinned to
+  the settings the gate ports (variance 5, 1QB, no pick scaling) so a leg's page total
+  is exactly its <em>you</em> / <em>them</em> figures above. Picks link at their tranche,
+  which is what the gate priced; where KTC also carries a numbered entry for the same
+  pick, the second link shows that version and says so.{gen}</p>
 </footer>"""
