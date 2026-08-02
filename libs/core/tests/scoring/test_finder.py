@@ -427,6 +427,46 @@ def test_sliders_filter_on_exact_figures(league, cache_dir):
     assert all(s["return_view"] >= 5.0 for s in high["spreads"])
 
 
+def test_with_team_is_scoped_before_the_walk_not_after(snapshot, tmp_path):
+    """§4a v6: `with_team` decides which crossings are WALKED, not which ones
+    survive after the budget has already been charged for them.
+
+    Through v5.1 the test lived in the innermost loop AFTER `visits += 1`, so a
+    per-counterparty query spent its whole budget walking the league-wide space
+    and then discarded everything off-team. The full slate under a tight budget
+    is exactly that pathology: pinned here so a regression cannot hide behind a
+    query (like `NARROW_QUERY`) that already restricts both sides to a single
+    counterparty, where scoping is legitimately a no-op.
+
+    Scoping is a PARTITION, not a sample: legs in a pair always have distinct
+    counterparties, so "the buy leg is theirs" and "the sell leg is theirs" are
+    mutually exclusive and jointly cover every in-scope pair — nothing is lost
+    and nothing is counted twice."""
+    league = md.build_league(snapshot, Params(finder_cross_budget=50_000))
+    q = {"delta": 0.25, "min_return": 1.0, "favor_min": -5, "favor_max": 5}
+    base = fd.find_spreads(league, q, cache_dir=tmp_path)
+    assert base["exact"] is False, "budget must bind for this pin to mean anything"
+
+    team = base["spreads"][0]["buy"]["counterparty"]
+    scoped = fd.find_spreads(league, {**q, "with_team": team}, cache_dir=tmp_path)
+
+    assert all(
+        team in (s["buy"]["counterparty"], s["sell"]["counterparty"])
+        for s in scoped["spreads"]
+    )
+    # the same budget now buys strictly more of the region actually asked for:
+    # pre-fix both walks visited the identical league-wide crossings and the
+    # scoped one merely threw most away, so its matched count could only be
+    # LOWER than base's. Post-fix every visit is in scope.
+    assert scoped["counts"]["matched"] > 0
+    base_in_scope = sum(
+        1
+        for s in base["spreads"]
+        if team in (s["buy"]["counterparty"], s["sell"]["counterparty"])
+    )
+    assert len(scoped["spreads"]) >= base_in_scope
+
+
 def test_prefer_is_soft_never_filters_or_reorders(league, cache_dir):
     """§4: a prefer-constraint tags ★ and NOTHING else — the identical query
     with a prefer added returns the same counts and the same spreads in the

@@ -90,6 +90,7 @@ from itertools import combinations
 from typing import Any, Sequence
 
 from core.scoring import ktc_adjust as ka
+from core.scoring import ktc_fast as kf
 from core.scoring import model as md
 from core.scoring import posture as ps
 
@@ -973,7 +974,7 @@ def build_pair_pool(
             c[3].append(p)
             # raw adjustment at r_max = the package's OWN max — valid for every
             # candidate whose max dominates the give side (about half of them)
-            c[4].append(ka.side_raw_adj(p.vals, p.vals[0], cap, presorted=True))
+            c[4].append(kf.side_raw_adj(p.vals, p.vals[0], top_v))
         for g, gp, shape, deficit, mask in g_info:
             if enforce_posture and not posture_allows(label, shape):
                 continue
@@ -1018,12 +1019,10 @@ def build_pair_pool(
                     else:
                         r_max = g_max
                         pre2 = None  # entries built only if the screen passes
-                        a_tot = _raw_adj_total(t_vals, r_max, cap)
+                        a_tot = kf.raw_adj_total(t_vals, r_max, top_v)
                     pre1 = e_cache.get(r_max)
                     if pre1 is None:
-                        pre1 = e_cache[r_max] = ka.side_raw_adj(
-                            g_vals, r_max, cap, presorted=True
-                        )
+                        pre1 = e_cache[r_max] = kf.side_raw_adj(g_vals, r_max, top_v)
                     raw_gap = pre1[0] - a_tot
                     if raw_gap < 0.0:
                         raw_gap = -raw_gap
@@ -1044,10 +1043,13 @@ def build_pair_pool(
                     if raw_gap > 1.15 * _process_v0(b_star, r_max, cap):
                         continue
                     if pre2 is None:
-                        pre2 = ka.side_raw_adj(t_vals, r_max, cap, presorted=True)
+                        pre2 = kf.side_raw_adj(t_vals, r_max, top_v)
                     t = lst[i]
-                    adj_g, adj_t = ka.adjusted_totals(
-                        g_vals, t_vals, top_v, pre1=pre1, pre2=pre2, presorted=True
+                    # §3.1 v6: the memoized fast path (M5 hoists gv/t_v/r_max and
+                    # both raw-adjustment passes — the scan already holds them).
+                    # `ktc_fast` is pinned bit-identical to the port by §11.14.
+                    adj_g, adj_t = kf.adjusted_totals_pre(
+                        gv, t_v, r_max, pre1[0], pre1[1], pre2[0], pre2[1], top_v
                     )
                     if not _band_ok(params, adj_g, adj_t):
                         continue

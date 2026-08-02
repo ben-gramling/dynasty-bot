@@ -433,13 +433,33 @@ def find_spreads(
         )
         if not bs or not ss:
             continue
+        # §4a v6 `with_team` push-down. A pair is in scope iff the named team is
+        # on ONE of its legs; legs in a pair always have distinct counterparties,
+        # so exactly one of "buy leg is theirs" / "sell leg is theirs" holds and
+        # the two cases PARTITION the in-scope crossings — no pair is counted
+        # twice. Through v5.1 this test lived in the innermost loop AFTER
+        # `visits += 1`, so a per-counterparty query walked (and charged its
+        # whole budget to) the entire league-wide space and then discarded most
+        # of it. Choosing the sell list per buy leg keeps the buy order and each
+        # leg's relative sell order untouched, so what a truncation keeps is
+        # unchanged for unscoped queries.
+        if with_oi is None:
+            ss_out = ss
+        else:
+            ss_out = [x for x in ss if legs[x[1]][tr.L_OPP] == with_oi]
         for _, bi in bs:
             if not complete:
                 break
             b = legs[bi]
             b_opp, b_mask = b[tr.L_OPP], b[tr.L_MASK]
+            # buy leg is with the named team → every sell leg is in scope
+            # (same-counterparty pairs are rejected below); otherwise only the
+            # sell legs that ARE with the named team can form an in-scope pair
+            my_ss = ss if (with_oi is None or b_opp == with_oi) else ss_out
+            if not my_ss:
+                continue
             vb = None
-            for _, si in ss:
+            for _, si in my_ss:
                 visits += 1
                 if visits > budget:
                     visits -= 1
@@ -447,8 +467,6 @@ def find_spreads(
                     break
                 s = legs[si]
                 if s[tr.L_OPP] == b_opp or (s[tr.L_MASK] & b_mask):
-                    continue
-                if with_oi is not None and with_oi not in (b_opp, s[tr.L_OPP]):
                     continue
                 if vb is None:
                     vb = tr._leg_legal(league, me_t, pool, bi, legal_cache)
