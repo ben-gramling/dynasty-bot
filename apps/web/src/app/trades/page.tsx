@@ -88,8 +88,9 @@ export default async function TradesPage() {
           guaranteed between the floor and the ceiling whatever you think
           stored future capital is worth; the chip is the guaranteed ΔW, and
           the shipped ranking is maximin: best guaranteed floor first, ceiling
-          as the tie-break. Coordinates are per side (face is zero-sum on a
-          leg, starters are not), so a trade can be genuinely good for both
+          as the tie-break. Coordinates are per side, and your face is priced
+          your way — a pick you send is assumed to land early in its round, a
+          pick you receive late — so a trade can be genuinely good for both
           parties, and a buy leg on its own can be floor-negative; the pair
           numbers are both legs together. Every leg passes the fairness gate —
           literally the totals their KTC calculator shows — and respects

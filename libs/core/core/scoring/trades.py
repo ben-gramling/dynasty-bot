@@ -14,7 +14,8 @@ What the score IS (§2, v4):
   `ΔS` = change in STARTER value (the max-Σv legal lineup at raw KTC solved
   over ACTIVE + TAXI — taxi is promote-anytime, §8; IR and empty slots are 0)
   and `ΔF` = change in TOTAL FACE owned (Σ v in − Σ v out, players and picks
-  alike, picks at tranche). Any single-number ledger is
+  alike; players at v, picks at v_me on my side / at tranche on theirs — §1
+  v7). Any single-number ledger is
   `ΔW(δ) = ΔS + δ·(ΔF − ΔS)` for some stored-value preference δ ∈ [0, 1] — a
   time preference, not a measurable fact — so v4 reports the endpoints
   themselves and blends nothing.
@@ -24,10 +25,20 @@ What the score IS (§2, v4):
   guaranteed gain. RANKING (maximin): floor desc, ceiling desc, ids. A spread
   failing one coordinate is a PREFERENCE trade and carries the derived
   breakeven `δ* = ΔS / (ΔS − ΔF)` — labeled, never recommended.
-- Both coordinates are PER SIDE. `ΔF` is exactly zero-sum across the parties
-  of a leg (§11.1: face transfers exactly, so `Δface = get.v_sum − give.v_sum`
-  is free); `ΔS` is not — deployment differs by roster, which is why both
-  sides of a good spread can genuinely gain.
+- Both coordinates are PER SIDE, and MY side reads them through MY lens. Every
+  asset carries two prices: `v`, the market face KTC every league-mate sees,
+  and `v_me`, the same number for players but a different one for picks (§1 v7
+  — exact board slot in the current year, Early when I own it / Late when they
+  do beyond that). `ΔF(me)` is `get.v_me_sum − give.v_me_sum`; `ΔF(them)` is
+  reported at market `v`, because pricing my picks dear and theirs cheap only
+  reads as caution from my seat.
+  BOTH lenses are single global price vectors, so ΔF is still exactly CONSERVED
+  across a leg's parties within either one, and exactly ADDITIVE across legs —
+  which is all any bound in this module uses. What v7 changes is only that the
+  two PRINTED numbers come from different lenses and therefore need not negate
+  (§11.1b): a presentation choice, not a lost invariant. `ΔS` never negated
+  anyway — deployment differs by roster, which is why both sides of a good
+  spread can genuinely gain.
 - A pair's coordinates are COMBINED (both legs applied together): ΔS via one
   combined starter re-solve — the legs interact through the lineup — and ΔF
   additive across legs. Leg cards carry their isolation coordinates, labeled;
@@ -60,7 +71,8 @@ pair permutations clear the band on real data):
   about the whole legal package space.
 - The pair walks cross legs ordered and pruned on `ΔF(leg) − r·Σsent(leg)`
   (v5.1, §4a "sound crossing bound"). That key is SOUND for the floor
-  objective: ΔF is exactly additive across legs (§11.1 face conservation) and
+  objective: ΔF is exactly additive across legs (a static per-asset price
+  vector, §11.1b — NOT cross-party conservation, which the bound never uses) and
   `floor = min(ΔS, ΔF) ≤ ΔF`, so `u_buy + u_sell < 0 ⟹ ΔF_pair < r·sent_pair
   ⟹ floor_pair < r·sent_pair ⟹ return < r` — the prune can only discard pairs
   that genuinely fail the bar (exact ties on the bar are kept — `XTOL`). Every
@@ -105,7 +117,11 @@ class Asset:
     kind: str  # "player" | "pick"
     key: str
     name: str
-    v: float  # face value: player KTC v; pick KTC tranche (§1)
+    v: float  # MARKET face: player KTC v; pick KTC tranche (§1) — the gate's input
+    # §1 v7 MY lens: identical to `v` for players; for picks the conservative
+    # price (exact board slot in the current year, Early when I own it / Late
+    # when the counterparty does). The ΔF coordinate's input, and ONLY that.
+    v_me: float
     pos: str | None
     unvalued: bool
     concrete: float | None  # current-year picks: rookie-board slot value (display only)
@@ -115,7 +131,7 @@ class Asset:
 
 def player_asset(p) -> Asset:
     return Asset(
-        kind="player", key=p.sid, name=p.name, v=p.v, pos=p.pos,
+        kind="player", key=p.sid, name=p.name, v=p.v, v_me=p.v, pos=p.pos,
         unvalued=p.unvalued, concrete=None, player=p,
     )
 
@@ -123,7 +139,7 @@ def player_asset(p) -> Asset:
 def pick_asset(league: md.LeagueState, p) -> Asset:
     concrete = p.p if p.year == league.current_year and p.p != p.mv else None
     return Asset(
-        kind="pick", key=p.key, name=p.label, v=p.mv, pos=None,
+        kind="pick", key=p.key, name=p.label, v=p.mv, v_me=p.p_me, pos=None,
         unvalued=False, concrete=concrete, pick=p,
     )
 
@@ -162,6 +178,11 @@ def team_assets(league: md.LeagueState, t: md.TeamCtx) -> dict[str, Asset]:
 class Package:
     assets: tuple[Asset, ...]
     v_sum: float
+    # §1 v7: the same sum through MY lens. Differs from `v_sum` only when the
+    # package holds picks, and drives ΔF(me) alone — every market-facing use
+    # (the gate, the fleece ratio, the pricing bracket, the return denominator,
+    # the anchor ask) stays on `v_sum`.
+    v_me_sum: float
     n_players: int
     pos_out: tuple[tuple[str, int], ...]
     has_unvalued: bool
@@ -170,7 +191,7 @@ class Package:
     vals: tuple[float, ...]
     # §2 v4 ΔS input: the package's players as raw-value columns in
     # lineup.POS4 order (the ΔS solve). The ΔF coordinate needs no per-class
-    # column — it reads `v_sum`, which already covers players AND picks.
+    # column — it reads `v_me_sum`, which already covers players AND picks.
     cols: tuple[tuple[float, ...], ...]
 
     @property
@@ -195,6 +216,7 @@ def package_of(league: md.LeagueState, assets: Sequence[Asset]) -> Package:
     return Package(
         assets=tuple(assets),
         v_sum=sum(a.v for a in assets),
+        v_me_sum=sum(a.v_me for a in assets),
         n_players=sum(1 for a in assets if a.kind == "player"),
         pos_out=tuple(sorted(pos_out.items())),
         has_unvalued=any(a.unvalued for a in assets),
@@ -229,12 +251,34 @@ def team_index(t: md.TeamCtx) -> StarterIndex:
     return StarterIndex(starter_pool(t))
 
 
-def total_face(t: md.TeamCtx) -> float:
+def total_face(t: md.TeamCtx, *, lens: str) -> float:
     """§2 v4 the F coordinate's LEVEL: Σ face value the side owns — every
     player the S-solve ranges over (active + taxi, IR excluded — §11.8) at raw
-    KTC v, plus every owned pick at tranche. `ΔF` on a trade is the change in
-    this quantity; `ΔW(1) = ΔF` (the old face ledger's endpoint)."""
-    return sum(p.v for p in starter_pool(t)) + t.picks_mv
+    KTC v, plus every owned pick. `ΔF` on a trade is the change in this
+    quantity; `ΔW(1) = ΔF` (the old face ledger's endpoint).
+
+    §1 v7 — `lens` is REQUIRED and has no default on purpose: it must be the
+    same lens `coords_delta` was given for that side, or the identity
+    `ΔF == total_face(after) − total_face(before)` silently returns a plausible
+    wrong number (on the counterparty's roster the my-lens answer comes back
+    as `−ΔF(me)`, which looks exactly like conservation "proving" itself).
+    `"me"` reads `Pick.p_me`, `"market"` reads the tranche.
+
+    The identity holds because `p_me` is minted once at snapshot pricing time
+    and `model.apply_tx` carries it across unchanged — a pick I receive keeps
+    its Late price on arrival instead of re-pricing to Early. Note this is a
+    within-snapshot property: the next daily build re-prices that pick to Early
+    because I now own it. That is correct for a decision rule (at every instant
+    I price what I would send dear and what I would receive cheap) but it does
+    mean `total_face` is not a state function across snapshots, and nothing in
+    the engine treats it as one — it is a test oracle, not a reported level."""
+    if lens == "me":
+        picks = sum(p.p_me for p in t.picks)
+    elif lens == "market":
+        picks = t.picks_mv
+    else:
+        raise ValueError(f"lens must be 'me' or 'market', got {lens!r}")
+    return sum(p.v for p in starter_pool(t)) + picks
 
 
 def verdict_of(d_s: float, d_f: float) -> bool:
@@ -266,23 +310,33 @@ def coords_delta(
     index: StarterIndex,
     out_pkgs: Sequence[Package],
     in_pkgs: Sequence[Package],
+    *,
+    mine: bool = True,
 ) -> tuple[float, float]:
     """§2 v4 `(ΔS, ΔF)` for ONE side when `out_pkgs` leave that roster and
     `in_pkgs` arrive, all applied together. Per-side — ΔS is never negated for
-    the counterparty; ΔF is exactly zero-sum across the leg's parties (§11.1).
+    the counterparty.
+
+    §1 v7 — `mine` selects the FACE LENS, not the side. My own ΔF prices picks
+    my way (`Package.v_me_sum`); the counterparty's is reported at market face
+    (`v_sum`), because the pick lens is a statement about MY exposure to an
+    unknown draft slot and reads backwards from the other seat. Each lens is a
+    single global price vector, so ΔF conserves exactly across a leg's parties
+    within either one — it is the MIXED REPORTING that stops the two printed
+    numbers from negating, and it is reversible.
 
     No stored-value bookkeeping exists: what a starter loses to the bench (or
     the bench gains from a promotion) is already inside `ΔS`, and `ΔF` is the
-    leg's face delta, free by face conservation."""
+    leg's face delta, free by face conservation within the lens."""
     out4: tuple = EMPTY4
     in4: tuple = EMPTY4
     d_face = 0.0
     for pkg in out_pkgs:
         out4 = _merge4(out4, pkg.cols)
-        d_face -= pkg.v_sum
+        d_face -= pkg.v_me_sum if mine else pkg.v_sum
     for pkg in in_pkgs:
         in4 = _merge4(in4, pkg.cols)
-        d_face += pkg.v_sum
+        d_face += pkg.v_me_sum if mine else pkg.v_sum
     return index.coords_delta(out4, in4, d_face)
 
 
@@ -540,9 +594,19 @@ def _asset_dict(a: Asset) -> dict:
     d: dict = {"type": a.kind, "key": a.key, "name": a.name, "v": round(a.v)}
     if a.unvalued:
         d["unvalued"] = True
-    if a.concrete is not None:
-        d["concrete"] = round(a.concrete)
-        d["note"] = "rookie-board slot value shown for information — the coordinates use the tranche"
+    if a.v_me != a.v:
+        # §1 v7: the two lenses disagree — always a pick. `v` is what the
+        # counterparty's calculator charges; `v_me` is what I book it at.
+        # (This supersedes the old `concrete` annotation, which carried the same
+        # board number for current-year picks and is no longer emitted here.)
+        d["v_me"] = round(a.v_me)
+        p = a.pick
+        d["note"] = (
+            f"pick priced {round(a.v_me)} on my side ({p.band_me}) vs "
+            f"{round(a.v)} on the market ({p.band}) — ΔF uses mine, the gate uses theirs"
+            if p is not None
+            else "priced on my own lens; the gate uses the market value"
+        )
     return d
 
 
@@ -555,14 +619,15 @@ def build_card(
     ceiling: float | None = None,
 ) -> dict:
     """The §5/§10 card for one leg. `coords` carries EACH SIDE'S OWN (ΔS, ΔF)
-    against its own roster (§2 v4) — ΔF exactly zero-sum across the parties,
+    against its own roster (§2 v4) — mine through the v7 pick lens and theirs
+    at market face, so the two ΔFs negate only when no pick crosses (§11.1b),
     ΔS not: a good leg can be objectively good for both sides (§11.1). Leg
     coordinates are ISOLATION figures; a pair's are the combined ones (§5)."""
     params = league.params
     me_t = league.teams[league.me]
     opp_t = league.teams[opp_name]
     ds_me, df_me = coords_delta(team_index(me_t), [give], [get])
-    ds_them, df_them = coords_delta(team_index(opp_t), [get], [give])
+    ds_them, df_them = coords_delta(team_index(opp_t), [get], [give], mine=False)
     floor_me, floor_them = min(ds_me, df_me), min(ds_them, df_them)
     gate = gate_info(league, give, get)
     verdicts = leg if leg is not None else legality(league, me_t, opp_t, give, get)
@@ -612,7 +677,8 @@ def build_card(
         "give": [_asset_dict(a) for a in give.assets],
         "get": [_asset_dict(a) for a in get.assets],
         # §2 v4: per-side coordinates against each side's OWN roster. ΔF is
-        # exactly zero-sum across the parties (§11.1); ΔS is not. The ceiling
+        # reported in different lenses (mine v7, theirs market), so it negates
+        # only when no pick crosses (§11.1b); ΔS never did. The ceiling
         # max(ΔS, ΔF) is derivable from `coords`; `ceiling` on this card stays
         # the §3 band-edge annotation.
         "coords": {
@@ -1145,7 +1211,11 @@ def build_pair_pool(
                     favor = favor_of(adj_g, adj_t)
                     if band is not None and not -band <= favor <= band:
                         continue  # v6: outside the pool's band — not inventory
-                    d_face = t_v - gv
+                    # §1 v7: ΔF is MY lens (picks conservatively priced), while
+                    # `gv`/`t_v` above stay market face — they are the gate's and
+                    # the bracket's currency, and `L_SENT` below is the return
+                    # denominator, which is what I shipped at market price.
+                    d_face = t.v_me_sum - g.v_me_sum
                     d_s, d_f = my_index.coords_delta(g.cols, t.cols, d_face)
                     floor = d_s if d_s < d_f else d_f
                     best.append((-floor, t.keys, t, d_face, favor))
@@ -2358,10 +2428,13 @@ def trade_board(league: md.LeagueState) -> dict:
         "favor selects WITHIN it",
         "the score is two objective coordinates (§2 v4): dS = change in starter "
         "value (max-Σv lineup at raw KTC over active+taxi) and dF = change in "
-        "total face owned (players + picks at tranche) — no blend, no parameter. "
+        "total face owned (players at KTC, picks at YOUR v7 price: exact board "
+        "slot this year, dear end of the round when you send / cheap end when you "
+        "receive beyond it) — no blend, no parameter. "
         "Every stored pair is objectively good: dS > 0 AND dF > 0, so the gain is "
         "guaranteed between the floor and the ceiling for every rational "
-        "stored-value preference. Coordinates are PER SIDE (dF zero-sum per leg, "
+        "stored-value preference. Coordinates are PER SIDE (your dF prices picks "
+        "your way, theirs is market face, so the two need not negate; "
         "dS not): a good pair can be good for both parties. A pair's coordinates "
         "are the two legs applied TOGETHER; each leg card carries its isolation "
         "coords, and a buy leg alone can still be floor-negative",

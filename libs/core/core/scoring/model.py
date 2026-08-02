@@ -256,6 +256,7 @@ def build_league(snapshot: Snapshot, params: Params) -> LeagueState:
             year=year, rnd=rnd, origin_rid=origin_rid, origin_name=rid2name[origin_rid],
             owner_rid=owner_rid, owner_name=rid2name[owner_rid], current_year=current_year,
             slot_of_roster=slot_of_roster, board=board, tranches=tranches, rank_l=rank_l,
+            my_rid=int(snapshot.my_roster_id),
         )
         teams[rid2name[owner_rid]].picks.append(p)
 

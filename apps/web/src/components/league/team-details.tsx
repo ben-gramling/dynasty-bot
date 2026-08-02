@@ -110,7 +110,7 @@ function PicksTable({ picks, total }: { picks: PickDetail[]; total: number }) {
               {anyConcrete ? (
                 <td
                   className="num text-ink-muted"
-                  title="Rookie-board slot-implied value — information only, never scored"
+                  title="Rookie-board slot-implied value — since v7 this is what your ledger books a current-year pick at (the tranche beside it stays the market/gate number)"
                 >
                   {p.concrete !== undefined ? fmtValue(p.concrete) : "—"}
                 </td>

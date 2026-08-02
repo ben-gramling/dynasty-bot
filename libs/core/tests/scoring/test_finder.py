@@ -380,15 +380,19 @@ def test_favor_band_delta_view_full_slate_regression(snapshot, tmp_path):
     `canonical_sig` restored the Δplayers == 0 crossing family and a FIXED
     budget spread over a larger space reaches less of it. That is the same
     starvation `pair_collect_budget` was raised 10× for; this test pins the
-    budget at 50,000 on purpose, so it sees the trade-off undiluted. The
-    assertion's job is unchanged — guard the v5.0 defect, where this was 6."""
+    budget at 50,000 on purpose, so it sees the trade-off undiluted.
+
+    v7 re-pin: 29,110 → 22,599. Pricing picks my way costs the modal leg ~1,000
+    of ΔF, and this is a δ = 0.25 view scored off ΔF, so fewer crossings clear
+    the 1% bar. The assertion's job is unchanged — guard the v5.0 defect, where
+    this was 6."""
     league = md.build_league(snapshot, Params(finder_cross_budget=50_000))
     r = fd.find_spreads(
         league,
         {"delta": 0.25, "min_return": 1.0, "favor_min": -5, "favor_max": 5},
         cache_dir=tmp_path,
     )
-    assert r["counts"]["matched"] > 25_000  # pre-fix: 6; v5.1: 36,945; v6: 29,110
+    assert r["counts"]["matched"] > 20_000  # pre-fix: 6; v5.1: 36,945; v6: 29,110; v7: 22,599
     assert r["counts"]["returned"] == len(r["spreads"]) == league.params.finder_top
     # legs counts are the favor-ELIGIBLE legs — the constrained crossing space
     assert 0 < r["counts"]["legs"]["buy"] < 20_000

@@ -4,15 +4,17 @@ Unlike the nightly trade-recs board (which enumerates from the engine's give-lis
 — cornerstones and taxi players excluded), this resolves ANY rostered player or
 owned pick by name and scores the exact package with the v4 card: TWO objective
 coordinates per side — ΔS (change in starter value: the max-Σv legal lineup at
-raw KTC over active + taxi) and ΔF (change in total face owned: players + picks
-at tranche) — with the derived verdict (objectively good ⟺ both ≥ 0, one
+raw KTC over active + taxi) and ΔF (change in total face owned: players at KTC
+face; picks at YOUR v7 price — exact board slot this year, dear end of the round
+when you send / cheap end when you receive beyond it) — with the derived verdict (objectively good ⟺ both ≥ 0, one
 strict), the guaranteed interval [floor, ceiling] = [min, max], and, on
 preference trades, the breakeven δ* = ΔS/(ΔS − ΔF) (§2). Plus the exact
 KTC-calculator fairness gate (§3), posture shape (§4) and sequencing (§5).
 Powers the trade-negotiator skill.
 
-Coordinates are per side: ΔF is exactly zero-sum across a leg's parties, ΔS is
-not — a good spread can be objectively good for BOTH sides. A buy leg can be
+Coordinates are per side, and since v7 through per-side LENSES: yours prices
+picks your way, theirs at market face, so neither coordinate negates across the
+parties — a good spread can be objectively good for BOTH sides. A buy leg can be
 floor-negative on its own — pair it with a sell leg and read the PAIR's
 combined coordinates, which `--hedge` computes exactly (both legs applied
 together).
@@ -400,8 +402,10 @@ def fmt_legline(card: dict) -> str:
 
 def fmt_asset(a: dict) -> str:
     tag = f"{a['name']} ({a['v']}"
-    if a.get("concrete") is not None:
-        tag += f"; board slot {a['concrete']} — info only"
+    if a.get("v_me") is not None:
+        # v7 §1: market price first (it is what their calculator charges), then
+        # what your ledger books it at
+        tag += f" market / {a['v_me']} yours"
     if a.get("unvalued"):
         tag += "; UNVALUED"
     return tag + ")"
@@ -424,7 +428,7 @@ def fmt_card(card: dict, header: str = "") -> str:
         + ("  (this leg alone)" if card.get("coords_basis") == "isolation" else ""),
         f"  Their side: "
         f"{fmt_verdict(coords['them'], card['verdict']['them'], card['breakeven']['them'])}"
-        "  (dF is zero-sum on a leg; dS is each side's own deployment)",
+        "  (your dF prices picks conservatively — v7 §1; theirs is market face)",
         f"  Floor-based return: {card['return_pct']:g}% of the "
         f"{sum(a['v'] for a in card['give'])} face you send"
         if card.get("return_pct") is not None
@@ -934,7 +938,7 @@ def main() -> None:
         for name, a in sorted(tr.team_assets(league, t).items(), key=lambda kv: -kv[1].v):
             mark = "*" if name in shoppable else " "
             kind = a.pos or "PICK"
-            extra = f"  (board slot {a.concrete:.0f} — info only)" if a.concrete is not None else ""
+            extra = f"  (yours {a.v_me:.0f})" if a.v_me != a.v else ""
             extra += "  [UNVALUED]" if a.unvalued else ""
             print(f" {mark} {name:32} {kind:4} v {a.v:>7.0f}{extra}")
         return

@@ -1,6 +1,8 @@
-"""§11 implementation invariants (v4): face conservation (ΔF zero-sum per
-leg), the per-side two-coordinate score (ΔS, ΔF), independence from the lineup
-model, import graph, bundles, exclusivity, legality, determinism, runtime.
+"""§11 implementation invariants (v4, amended v7): market-face conservation
+(exact per leg) and the my-lens split that stops the two REPORTED ΔFs from
+negating (§11.1b), the per-side two-coordinate score (ΔS, ΔF), independence
+from the lineup model, import graph, bundles, exclusivity, legality,
+determinism, runtime.
 
 Pins computed from the COMMITTED fixtures (see test_trades docstring)."""
 
@@ -34,24 +36,42 @@ def _pv_inv(name: str, pos: str, v: float, i: int) -> ln.PlayerV:
 
 
 def test_face_transfer_conserved_per_leg(result, league):
-    """§11.1: on every leg the FACE-KTC transfer is exact — each asset carries
-    the same v on both rosters, so `ΔF(side A) = −ΔF(side B)` on every leg.
-    This, not ΔS, is what v4 conserves; verified from the cards' own coords."""
+    """§11.1 as amended by v7: MARKET face still transfers exactly — each asset
+    carries the same `v` on both rosters — and each side's ΔF is exactly that
+    side's market face delta THROUGH ITS OWN LENS. The counterparty reads the
+    market lens, so `ΔF(them)` is still the negated market delta on every leg.
+    MY ΔF reads the v7 pick lens instead, so it equals the `v_me` delta and
+    negates their side only when no pick crosses (§11.1c)."""
     canonical = {
-        a.key: a.v for t in league.teams.values() for a in tr.team_assets(league, t).values()
+        a.key: (a.v, a.v_me)
+        for t in league.teams.values()
+        for a in tr.team_assets(league, t).values()
     }
+    saw_pick_leg = False
     for card in board_legs(result["trade_recs"]):
         for a in card["give"] + card["get"]:
-            assert a["v"] == round(canonical[a["key"]]), (card["id"], a["name"])
+            v, v_me = canonical[a["key"]]
+            assert a["v"] == round(v), (card["id"], a["name"])
+            assert a.get("v_me", a["v"]) == round(v_me), (card["id"], a["name"])
         out_me = sum(a["v"] for a in card["give"])
         in_me = sum(a["v"] for a in card["get"])
-        # ΔF is exactly zero-sum across the leg's parties (§11.1)
+        out_mine = sum(a.get("v_me", a["v"]) for a in card["give"])
+        in_mine = sum(a.get("v_me", a["v"]) for a in card["get"])
         c = card["coords"]
-        assert c["me"]["dF"] == -c["them"]["dF"], card["id"]
-        assert c["me"]["dF"] == round(float(in_me - out_me), 1), card["id"]
+        # their side: market face, still exactly conserved (§11.1)
+        assert c["them"]["dF"] == round(float(out_me - in_me), 1), card["id"]
+        # my side: the v7 lens — my own face delta, picks priced my way
+        assert c["me"]["dF"] == round(float(in_mine - out_mine), 1), card["id"]
+        # the two negate iff the lenses agree, i.e. iff no pick crossed
+        lens_agrees = (out_mine, in_mine) == (out_me, in_me)
+        assert (c["me"]["dF"] == -c["them"]["dF"]) == lens_agrees, card["id"]
+        saw_pick_leg |= not lens_agrees
         # and the packages the engine priced carry exactly those sums
         give, get = tr.card_packages(league, card)
         assert round(give.v_sum) == out_me and round(get.v_sum) == in_me
+        assert round(give.v_me_sum) == out_mine and round(get.v_me_sum) == in_mine
+    # the split is real on this fixture, not a vacuous branch
+    assert saw_pick_leg
 
 
 def test_coords_are_per_side_dF_zero_sum_dS_not(league):
@@ -61,7 +81,12 @@ def test_coords_are_per_side_dF_zero_sum_dS_not(league):
     exactly +191 at every rational preference (floor = ceiling). Ron's side is
     (ΔS +96, ΔF −191) — a preference trade, good for δ < δ* ≈ 0.3345 (the
     win-now read). ΔF negates exactly; ΔS does not — deployment differs by
-    roster, which is the arbitrage."""
+    roster, which is the arbitrage.
+
+    v7 note: this is a PLAYER-for-player trade, and after the two-lens split it
+    is the surviving witness that ΔF negates across the parties — it does so
+    precisely because no pick crosses, so my lens and the market lens coincide
+    (`Asset.v_me == Asset.v` for every player)."""
     card = tr.propose_by_names(
         league, "ronakpatel32", ["Javonte Williams"], ["Zay Flowers"]
     )
@@ -123,15 +148,23 @@ def test_both_sides_objectively_good_pinned(league):
 def test_coordinate_levels_pinned(league, me):
     """§2 v4 the two coordinates' LEVELS on my fixture roster: `S` is the
     max-Σv legal lineup over ACTIVE + TAXI at raw KTC; `total_face` is
-    everything I own — players at face plus picks at tranche (IR in neither,
-    §11.8). ΔS/ΔF on any trade are the changes in exactly these two numbers
-    (asserted trade-by-trade in test_trades §11.8b(c))."""
+    everything I own — players at face plus picks (IR in neither, §11.8).
+    ΔS/ΔF on any trade are the changes in exactly these two numbers (asserted
+    trade-by-trade in test_trades §11.8b(c)).
+
+    v7 gives the F level a LENS, and it is a required argument: at `market` the
+    picks come in at their tranche (127,094, what the league sees); at `me`
+    they come in at my price (131,145 — every future pick I hold books Early,
+    because I would be the one sending it). ΔF is computed in the `me` lens, so
+    that is the one the identity is asserted against."""
     s = ln.starter_sum(tr.starter_pool(me))
     assert s == 51832.0
     assert me.picks_mv == 39921.0
+    assert sum(p.p_me for p in me.picks) == 43972.0
     # everything the F coordinate sees: active + taxi at face plus the picks
     assert sum(p.v for p in tr.starter_pool(me)) == 87173.0
-    assert tr.total_face(me) == 87173.0 + 39921.0 == 127094.0
+    assert tr.total_face(me, lens="market") == 87173.0 + 39921.0 == 127094.0
+    assert tr.total_face(me, lens="me") == 87173.0 + 43972.0 == 131145.0
 
 
 # ------------------------------------------------ 2. independence + import graph
@@ -160,7 +193,7 @@ def test_lineup_perturbations_never_move_coords(snapshot, league):
     replacement; and no other parameter exists in the score at all, v4)."""
     base = _coords_ex1(league)
     assert base == {
-        "me": {"dS": -64.0, "dF": 1358.0},
+        "me": {"dS": -64.0, "dF": -786.0},
         "them": {"dS": 1216.0, "dF": -1358.0},
     }
     for params in PERTURBED:
@@ -211,7 +244,9 @@ def test_roster_counts_never_move_coords_but_face_is_a_coordinate(snapshot, para
             assert ln.starter_sum(tr.starter_pool(me2)) == ln.starter_sum(
                 tr.starter_pool(me)
             )  # he never started
-            assert tr.total_face(me) - tr.total_face(me2) == victim.v
+            assert tr.total_face(me, lens="me") - tr.total_face(
+                me2, lens="me"
+            ) == victim.v
     # …and trading him moves exactly one coordinate: ΔS stays 0 (he never
     # started), ΔF is the face delta itself
     jake = tr.team_assets(league, league.teams["jaketoppen"])
@@ -220,8 +255,11 @@ def test_roster_counts_never_move_coords_but_face_is_a_coordinate(snapshot, para
         league, "jaketoppen", [mine[my_bench.name]], [jake["2028 R4 (own)"]]
     )
     assert card["coords"]["me"]["dS"] == 0.0  # he never started
+    # v7: the RHS is the pick's MY-lens price (Late 1,451 — jaketoppen owns it,
+    # so I would be receiving it), not its 1,759 market tranche
+    assert jake["2028 R4 (own)"].v == 1759.0
     assert card["coords"]["me"]["dF"] == pytest.approx(
-        jake["2028 R4 (own)"].v - my_bench.v, abs=0.05
+        jake["2028 R4 (own)"].v_me - my_bench.v, abs=0.05
     )
 
 
@@ -395,7 +433,7 @@ def test_coords_delta_matches_direct_recompute(league):
     for t in league.teams.values():
         base = tr.starter_pool(t)
         base_s = ln.starter_sum(base)
-        base_face = tr.total_face(t)
+        base_face = tr.total_face(t, lens="me")
         index = ln.StarterIndex(base)
         for _ in range(60 // len(league.teams) + 1):
             out = rng.sample(base, rng.randrange(0, min(5, len(base) + 1)))
@@ -542,14 +580,18 @@ def test_pair_coords_are_combined_not_the_leg_sum(result, league):
     sell = tr.propose_by_names(
         league, "jaketoppen", ["Kenneth Walker III"], ["2027 R1 (from vishan)"]
     )
-    assert buy["coords"]["me"] == {"dS": 0.0, "dF": -1265.0}
-    assert sell["coords"]["me"] == {"dS": -2220.0, "dF": 1117.0}
+    # v7 moves both ΔFs (I send my own 2027 1st at Early 7,398 and receive
+    # vishan's at Late 5,562) and leaves every ΔS untouched — picks never enter
+    # the lineup, which is exactly what this test is about
+    assert buy["coords"]["me"] == {"dS": 0.0, "dF": -2545.0}
+    assert sell["coords"]["me"] == {"dS": -2220.0, "dF": -719.0}
     pair = tr.pair_coords(league, buy, sell)
     assert pair["dS"] == -1428.0  # combined ≠ leg sum (−2,220)
     ds_sum = buy["coords"]["me"]["dS"] + sell["coords"]["me"]["dS"]
     assert pair["dS"] - ds_sum == 792.0  # the lineup interaction, raw
-    # ΔF is exactly additive across legs — no interaction exists in face
-    assert pair["dF"] == buy["coords"]["me"]["dF"] + sell["coords"]["me"]["dF"] == -148.0
+    # ΔF is exactly additive across legs — no interaction exists in face, and
+    # the v7 lens is a static per-asset price so additivity is untouched
+    assert pair["dF"] == buy["coords"]["me"]["dF"] + sell["coords"]["me"]["dF"] == -3264.0
     # superadditivity guarantee (§2): combined ΔS is never BELOW the leg sum
     assert pair["dS"] >= ds_sum
     # §11.8b(d): verdict-false — and absent from the stored board

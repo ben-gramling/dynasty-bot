@@ -170,7 +170,8 @@ class StarterIndex:
         forms none — it reports the endpoints themselves.
 
         `d_face` IS `ΔF`: the change in Σ face value of everything the side
-        owns (players at raw v + picks at tranche) — for a trade leg simply
+        owns (players at raw v; picks at whichever lens the caller passed —
+        v7 my-lens for my side, tranche for theirs) — for a trade leg simply
         `get.v_sum − give.v_sum`, since face transfers exactly (§11.1). It is
         passed through untouched; `ΔS` costs one incremental starter re-solve.
         """

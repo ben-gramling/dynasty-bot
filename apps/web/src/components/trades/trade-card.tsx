@@ -7,8 +7,10 @@ import { favorLabel, legLabel, ord, postureEvidenceNote } from "./derive";
  * One ranked trade leg (scoring-system.md v4 §2–§5): You send / You get at
  * face KTC value, the headline GUARANTEED FLOOR (min of the two objective
  * coordinates) with the interval up to the ceiling, both sides' own
- * coordinates ("starters +X · face +Y" — dF negates across sides, dS does
- * not), the §3 gate strip (KTC-calculator gap, anti-fleece ratio, PASS), the
+ * coordinates ("starters +X · face +Y" — neither negates across sides: dS
+ * because deployment differs, dF because v7 prices YOUR picks conservatively
+ * while theirs stays market face), the §3 gate strip (KTC-calculator gap,
+ * anti-fleece ratio, PASS), the
  * §4 posture shape line with visible holes, and the §5 execution notes
  * (sequencing, exclusive-with, anchor ask). Pre-v4 docs (no `coords`) fall
  * back to the stored ledger line. The row-per-asset columns keep a 3-for-1 as
@@ -154,7 +156,7 @@ function CoordsLines({ rec }: { rec: TradeRec }) {
           <span> — this leg alone; the pair combines both legs</span>
         ) : null}
       </p>
-      <p title="Their own coordinates against their own roster — dF is the exact negation of yours (face conserves), dS is not (deployment differs), so both sides can genuinely gain (§11.1)">
+      <p title="Their own coordinates against their own roster, at market face. dS never negates yours (deployment differs) and since v7 dF need not either — your side prices picks conservatively — so both sides can genuinely gain (§11.1)">
         them: starters <span className="num">{fmtSigned(c.them.dS)}</span> · face{" "}
         <span className="num">{fmtSigned(c.them.dF)}</span>
         <SideVerdict rec={rec} side="them" />
@@ -249,12 +251,15 @@ function AssetColumn({ title, assets }: { title: string; assets: TradeAsset[] })
             </span>
             <span className="num ml-auto text-right text-[13px]">
               {a.unvalued ? "—" : fmtValue(a.v)}
-              {a.concrete !== undefined ? (
+              {a.v_me !== undefined ? (
                 <span
                   className="block text-[10.5px] text-ink-muted"
-                  title={a.note ?? "Rookie-board slot value — information only, never scored"}
+                  title={
+                    a.note ??
+                    "What your ledger books this pick at (§1 v7). The number above is the market tranche the fairness gate uses."
+                  }
                 >
-                  concrete {fmtValue(a.concrete)}
+                  yours {fmtValue(a.v_me)}
                 </span>
               ) : null}
             </span>

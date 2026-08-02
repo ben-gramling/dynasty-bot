@@ -1,4 +1,37 @@
-"""§3.2 pick pricing: concrete 2026 board truth, tranche perception, sell floors."""
+"""§3.2 pick pricing: concrete 2026 board truth, tranche perception, my lens.
+
+v7 adds a SECOND lens. `mv` stays the market number — the generic KTC tranche
+every league-mate sees in the calculator, and the only pick price the fairness
+gate may use, because KTC ships no numbered per-pick asset (36 RDP tranche
+records, `docs/keeptradecut.md`). `p_me` is MY lens, and it runs on TWO
+different rules with two different justifications — do not describe it as
+uniformly conservative:
+
+- **Current year — EXACTNESS, not pessimism.** The draft order is known, so the
+  slot is known: price the pick at its exact board rank,
+  `board_value(12·(rnd−1) + slot)`. This is board-vs-tranche error and it points
+  BOTH ways — on the committed fixture my 1.01 books 7,762 against a 6,243
+  tranche while my 2.09 books 3,236 against 3,504. Acquiring an underpriced
+  current-year pick can therefore book ΔF the market does not offer. That is the
+  intended reading of "we can calculate it from the actual draft order", but it
+  is not a safety property.
+- **Future years — PESSIMISM.** The slot is unknown and KTC only publishes
+  Early/Mid/Late. Assume the bad end of that range in whichever direction I
+  would trade it: a pick I OWN is one I would send, so it is priced **Early**
+  (the dear end); a pick the counterparty owns is one I would receive, so it is
+  priced **Late** (the cheap end). Ownership fixes the direction because every
+  leg is me ↔ one counterparty and the owner is always the sender. Here
+  `p_me ≤ mv` on acquisition and `p_me ≥ mv` on disposal, always.
+
+`p_me` is a single per-asset price vector fixed at snapshot build — every asset
+has exactly one of them, whoever is looking. So ΔF is still exactly conserved
+across a leg's parties WITHIN this lens; the cards simply choose to report my
+side through it and the counterparty's through `mv` (§11.1b).
+
+The next-year `rank_L` projection survives as the MARKET band on `mv` — it is
+what the league prices the pick at; it just no longer sets what I am willing to
+pay, since a forecast of the origin team's finish is not a guarantee of slot.
+"""
 
 from __future__ import annotations
 
@@ -30,21 +63,19 @@ class Pick:
     n: int | None  # overall pick number, 2026 only
     p: float  # truth value — Score/RV/A/F
     mv: float  # market-visible (tranche) value — fairness/anchoring layer
-    sell_floor: float
     band: str
     band_reason: str
     label: str
+    # §1 v7 MY lens: exact board price in the current year, pessimistic tranche
+    # beyond it (Early when I own the pick, Late when the counterparty does).
+    # This is the ΔF input; `mv` remains the gate's input.
+    p_me: float
+    band_me: str
+    mine: bool
 
     @property
     def key(self) -> str:
         return f"pick:{self.year}:R{self.round}:{self.origin_rid}"
-
-    def pricing(self) -> dict:
-        return {
-            "rule": "board" if self.year == 2026 else "tranche",
-            "band": self.band,
-            "band_reason": self.band_reason,
-        }
 
 
 def build_board(ktc_assets: Sequence[Mapping]) -> dict[int, BoardEntry]:
@@ -100,6 +131,15 @@ def band_of_rank_l(rank_l: int) -> str:
     return "Early" if rank_l >= 9 else "Mid" if rank_l >= 5 else "Late"
 
 
+def pessimistic_band(mine: bool) -> str:
+    """§1 v7: the band MY lens prices an unknown-slot pick at. A pick I own is
+    one I would be sending, so assume it lands Early (the dear end of the
+    round); a pick the counterparty owns is one I would be receiving, so assume
+    it lands Late. Never a forecast — a deliberate worst case in the direction
+    the asset would travel."""
+    return "Early" if mine else "Late"
+
+
 def price_pick(
     *,
     year: int,
@@ -113,19 +153,30 @@ def price_pick(
     board: Mapping[int, BoardEntry],
     tranches: Mapping[tuple[int, str, int], float],
     rank_l: Mapping[str, int],
+    my_rid: int,
 ) -> Pick:
     own = " (own)" if origin_rid == owner_rid else f" (from {origin_name})"
+    mine = owner_rid == my_rid
     if year == current_year:
         slot = slot_of_roster[origin_rid]
         n = 12 * (rnd - 1) + slot
-        p = board_value(board, n).value
+        # v7: rounded because this value now enters ΔF, and three separate
+        # arguments (XTOL's reachable-tie rationale, the integer k5 walk key,
+        # and §11.13f's no-tolerance bound) rest on the coordinates being
+        # integral. `board_value` interpolates between missing ranks and can
+        # return a fraction — today the board is gapless over 1..48, so this is
+        # a no-op that keeps a snapshot accident from becoming a premise.
+        p = float(round(board_value(board, n).value))
         band = band_of_slot(slot)
         mv = tranches[(year, band, rnd)]
+        # v7: the order is known, so MY lens is the exact board price — no
+        # pessimism where there is no uncertainty, in either direction.
         return Pick(
             year=year, round=rnd, origin_rid=origin_rid, origin_name=origin_name,
             owner_rid=owner_rid, slot=slot, n=n, p=p, mv=mv,
-            sell_floor=max(p, mv), band=band, band_reason=f"slot {slot}",
+            band=band, band_reason=f"slot {slot}",
             label=f"{year} {rnd}.{slot:02d}",
+            p_me=p, band_me=f"exact slot {slot}", mine=mine,
         )
     if year == current_year + 1:
         rl = rank_l[origin_name]
@@ -135,10 +186,15 @@ def price_pick(
         band = "Mid"
         reason = "two years out: flat Mid"
     v = tranches[(year, band, rnd)]
+    # v7: the slot is unknown, so MY lens takes the bad end of the round in the
+    # direction this asset would travel (`pessimistic_band`). The rank_L / flat-Mid
+    # projection above stays on `mv` — it is what the market charges, not what I pay.
+    band_me = pessimistic_band(mine)
     return Pick(
         year=year, round=rnd, origin_rid=origin_rid, origin_name=origin_name,
-        owner_rid=owner_rid, slot=None, n=None, p=v, mv=v, sell_floor=v,
+        owner_rid=owner_rid, slot=None, n=None, p=v, mv=v,
         band=band, band_reason=reason, label=f"{year} R{rnd}{own}",
+        p_me=tranches[(year, band_me, rnd)], band_me=band_me, mine=mine,
     )
 
 

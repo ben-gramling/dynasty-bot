@@ -101,8 +101,15 @@ def test_card_schema_matches_contract(result):
                 assert b is None  # verdicts never carry breakevens
             if b is not None:
                 assert 0.0 < b < 1.0
-        # ΔF zero-sum across the parties of every leg (§11.1)
-        assert card["coords"]["me"]["dF"] == -card["coords"]["them"]["dF"]
+        # §11.1 as amended by v7: their ΔF is the market face delta; mine reads
+        # the pick lens, so the two negate exactly when no pick crosses and
+        # differ by the lens gap when one does.
+        gap = sum(a["v"] - a.get("v_me", a["v"]) for a in card["get"]) + sum(
+            a.get("v_me", a["v"]) - a["v"] for a in card["give"]
+        )
+        assert card["coords"]["me"]["dF"] == round(
+            -card["coords"]["them"]["dF"] - gap, 1
+        )
         assert card["coords_basis"] == "isolation"
         assert set(card["net_players"]) == {"me", "them"}  # §5 v3.2 count deltas
         assert set(card["net_picks"]) == {"me", "them"}

@@ -281,12 +281,15 @@ def test_finder_matched_set_equals_brute_force_crossing_11_13a(
     `exact=True` — so "no spread matched" from a completed walk is a real
     answer about the space, not about where the walk happened to look.
 
-    Measured on the committed fixtures: 744,129 crossings, 562,669 valid
-    count-neutral pairs, 40 clearing the 12% robust bar."""
-    query = {**SCOPED_QUERY, "min_return": 12.0, "top": 2000}
+    Measured on the committed fixtures under the v7 lens: 1,047,492 crossings,
+    599,345 valid count-neutral pairs, 115 clearing the 6% robust bar. The bar
+    moved 12% → 6% because the lens caps this scoped pool's best pair at 7.30%
+    (pre-v7 the same query cleared 12% forty times) — a 12% pin would now be
+    vacuously true, which is exactly what this test must not be."""
+    query = {**SCOPED_QUERY, "min_return": 6.0, "top": 2000}
     r = fd.find_spreads(league, query, cache_dir=cache_dir)
     assert r["exact"] is True
-    brute = _brute_force(league, scoped_pool, 12.0)
+    brute = _brute_force(league, scoped_pool, 6.0)
     assert len(brute) > 0, "the pin must not be vacuous"
     assert r["counts"]["matched"] == len(brute)
     assert r["counts"]["returned"] == len(r["spreads"]) == len(brute)  # top ≫ matched
@@ -310,47 +313,54 @@ def test_finder_matched_set_equals_brute_force_crossing_11_13a(
 def test_complementary_pair_the_old_prune_dropped_11_13c(
     league, scoped_pool, cache_dir
 ):
-    """§11.13(c) — THE REGRESSION THAT MOTIVATED v5.1.
+    """§11.13(c) — THE REGRESSION THAT MOTIVATED v5.1, re-pinned for the v7 lens.
 
     The pinned pair (committed fixtures, 5% robust return bar):
 
-      buy  from cmgaither43 — I send Javonte Williams + 2026 1.01 + 2028 R4
-           (Σ 13,462) for Jayden Daniels + Chase Brown + George Holani.
-           Isolation floor +651 → 4.84% alone: BELOW the bar.
-      sell to Jukinski     — I send Joe Burrow + Chris Godwin + Stefon Diggs
-           (Σ 12,029) for Marvin Harrison Jr. + 2026 1.12 + 2026 2.04.
-           Isolation floor +195 → 1.62% alone: BELOW the bar.
-      pair — ΔS +2,540, ΔF +2,975, guaranteed floor +2,540 on 25,491 sent:
-           9.96% return, DOUBLE the bar. The legs are complementary through
-           the starting lineup: the buy leg ships a starter (Javonte Williams)
-           and the sell leg ships two more, so each alone reads as a loss of
-           starter value, while together the incoming three rebuild the lineup
-           around the holes the other opened.
+      buy  from cmgaither43 — I send Jordan Addison + my 2027 1st + my 2028 4th
+           (Σ 12,623 market; both picks book at the DEAR end because I am the
+           sender, §1 v7) for Jayden Daniels + Rome Odunze + George Holani.
+           Isolation floor −95: BELOW the bar, and negative.
+      sell to Jukinski     — I send Joe Burrow + Tank Dell + Theo Johnson
+           (Σ 11,539) for DK Metcalf + 2026 1.06 + 2026 1.12, the two picks at
+           their exact board slots. Isolation floor −1,129: far below the bar.
+      pair — ΔS +1,782, ΔF +1,681, guaranteed floor +1,681 on 24,162 sent:
+           6.96% return, well clear of the bar. The legs are complementary
+           through the starting lineup: each ships starters and reads as a loss
+           alone, while together the incoming players rebuild the lineup around
+           the holes the other opened.
 
     Pre-fix vs post-fix, measured, at r = 5% on this pool:
-      v5.0.1 key: floor_buy + floor_sell = 651 + 195 = 846 < 0.05 × 25,491 =
-                  1,274.6 ⟹ σ_buy + σ_sell < 0 ⟹ PRUNED, never priced.
-      v5.1 key:   ΔF_buy + ΔF_sell = 2,975 ≥ 1,274.6 ⟹ kept, priced exactly.
+      v5.0.1 key: floor_buy + floor_sell = −95 + −1,129 = −1,224 < 0.05 ×
+                  24,162 = 1,208.1 ⟹ σ_buy + σ_sell < 0 ⟹ PRUNED, never priced.
+      v5.1 key:   ΔF_buy + ΔF_sell = 1,681 ≥ 1,208.1 ⟹ kept, priced exactly.
 
     Both walks are run below — `_walk_pairs(key=L_FLOOR)` IS the v5.0.1 walk
     (it survives as the board's coverage phase), so this is the old behaviour
-    itself, not a reconstruction of it. The same fixture pool holds 1,253 such
-    pairs at the 5% bar and 3,807 at 1%; the full two-counterparty pool
-    (cmgaither43 + Jukinski, unconstrained) holds 709,830 at 5%."""
+    itself, not a reconstruction of it. On this pool at the 5% bar the sound
+    walk keeps 159,510 crossings against the v5.0.1 walk's 230, and 26,089 of
+    the 159,280 it uniquely reaches have this exact shape — both legs under the
+    bar alone, the pair verdict-true above it.
+
+    v7 note: the old pinned pair (Javonte + 2026 1.01 + 2028 R4 for Daniels +
+    Chase Brown + Holani, against Burrow + Godwin + Diggs for MHJ + 1.12 +
+    2.04) is no longer an example of anything — buying two current-year picks
+    while paying with my own 1.01 collapses its ΔF from +2,975 to −12 under the
+    lens. The theorem is untouched; only the fixture example had to move."""
     mine = tr.team_assets(league, league.teams[league.me])
     colin = tr.team_assets(league, league.teams[BUY_WITH])
     josh = tr.team_assets(league, league.teams[SELL_WITH])
     buy_i = tr.find_pool_leg(
         scoped_pool,
         BUY_WITH,
-        [mine[n].key for n in ("Javonte Williams", "2026 1.01", "2028 R4 (own)")],
-        [colin[n].key for n in ("Jayden Daniels", "Chase Brown", "George Holani")],
+        [mine[n].key for n in ("Jordan Addison", "2027 R1 (own)", "2028 R4 (own)")],
+        [colin[n].key for n in ("Jayden Daniels", "Rome Odunze", "George Holani")],
     )
     sell_i = tr.find_pool_leg(
         scoped_pool,
         SELL_WITH,
-        [mine[n].key for n in ("Joe Burrow", "Chris Godwin", "Stefon Diggs")],
-        [josh[n].key for n in ("Marvin Harrison Jr.", "2026 1.12", "2026 2.04")],
+        [mine[n].key for n in ("Joe Burrow", "Tank Dell", "Theo Johnson")],
+        [josh[n].key for n in ("DK Metcalf", "2026 1.06", "2026 1.12")],
     )
     assert buy_i is not None and sell_i is not None
     legs = scoped_pool.legs
@@ -358,22 +368,22 @@ def test_complementary_pair_the_old_prune_dropped_11_13c(
     r = 0.05
     sent = b[tr.L_SENT] + s[tr.L_SENT]
 
-    # --- each leg is individually below the bar
-    assert (b[tr.L_FLOOR], b[tr.L_SENT]) == (651.0, 13462.0)
-    assert (s[tr.L_FLOOR], s[tr.L_SENT]) == (195.0, 12029.0)
+    # --- each leg is individually below the bar (and both are negative alone)
+    assert (b[tr.L_FLOOR], b[tr.L_SENT]) == (-95.0, 12623.0)
+    assert (s[tr.L_FLOOR], s[tr.L_SENT]) == (-1129.0, 11539.0)
     assert b[tr.L_FLOOR] < r * b[tr.L_SENT] and s[tr.L_FLOOR] < r * s[tr.L_SENT]
 
-    # --- the combined floor clears it, twice over
+    # --- the combined floor clears it
     ret, floor, _ceil, d_s, d_f = scoped_pool.pair_eval(buy_i, sell_i)
-    assert (round(d_s, 1), round(d_f, 1)) == (2540.0, 2975.0)
-    assert round(floor, 1) == 2540.0 and round(sent, 1) == 25491.0
-    assert round(100.0 * ret, 2) == 9.96 and ret >= r
+    assert (round(d_s, 1), round(d_f, 1)) == (1782.0, 1681.0)
+    assert round(floor, 1) == 1681.0 and round(sent, 1) == 24162.0
+    assert round(100.0 * ret, 2) == 6.96 and ret >= r
     assert tr.verdict_of(d_s, d_f)
     assert tr.pair_in_space(league, scoped_pool, buy_i, sell_i) is not None
 
     # --- the keys, side by side, at the bar
-    assert b[tr.L_FLOOR] + s[tr.L_FLOOR] == 846.0 < r * sent  # v5.0.1: pruned
-    assert b[tr.L_DFACE] + s[tr.L_DFACE] == 2975.0 >= r * sent  # v5.1: kept
+    assert b[tr.L_FLOOR] + s[tr.L_FLOOR] == -1224.0 < r * sent  # v5.0.1: pruned
+    assert b[tr.L_DFACE] + s[tr.L_DFACE] == 1681.0 >= r * sent  # v5.1: kept
 
     # --- and that is exactly what the two walks do
     legal: dict = {}
@@ -398,9 +408,9 @@ def test_complementary_pair_the_old_prune_dropped_11_13c(
     want = _ident_legs(legs, buy_i, sell_i)
     hit = next((sp for sp in found["spreads"] if _ident_spread(sp) == want), None)
     assert hit is not None
-    assert hit["return_robust"] == 9.96
-    assert hit["coords"] == {"dS": 2540.0, "dF": 2975.0}
-    assert hit["floor"] == 2540.0 and hit["verdict"] is True
+    assert hit["return_robust"] == 6.96
+    assert hit["coords"] == {"dS": 1782.0, "dF": 1681.0}
+    assert hit["floor"] == 1681.0 and hit["verdict"] is True
 
 
 # ------------------------------------------------- (d) nothing may vanish
@@ -415,12 +425,15 @@ def test_v5_0_1_walk_output_is_a_subset_11_13d(league, scoped_pool):
 
     i.e. {v5.0.1 crossings} ⊆ {v5.1 crossings}, pair for pair. Asserted here
     over complete walks at three cutoffs (both keys run to completion, so
-    neither set is a budget artefact). Measured at r = 10% on the scoped
-    fixture pool: v5.0.1 kept 23 pairs from 58 crossings, v5.1 keeps 297,724
-    from 505,387 — the additions are the complementary pairs (c) is about, not
-    noise: every one of them is priced by its exact combined coordinates."""
+    neither set is a budget artefact). Measured on the scoped fixture pool
+    under the v7 lens: at r = 3% v5.0.1 keeps 4,004 pairs against v5.1's
+    230,841; at 4%, 1,032 against 195,025; at 5%, 230 against 159,510 — the
+    additions are the complementary pairs (c) is about, not noise: every one of
+    them is priced by its exact combined coordinates. The cutoffs moved down
+    from (5%, 8%, 10%) because the v5.0.1 key finds NOTHING at 8% or above
+    here, which would make the subset claim vacuous on that side."""
     legal: dict = {}
-    for r in (0.05, 0.08, 0.10):
+    for r in (0.03, 0.04, 0.05):
         sound: list = []
         _, d1 = tr._walk_pairs(league, scoped_pool, r, 10_000_000, legal, sound)
         iso: list = []
@@ -449,19 +462,22 @@ def test_board_headline_pair_survives_v5_1(result):
     handing back only what the sound walk already owns — so the board is a
     superset of v5.0.1's reach minus per-bucket quota displacement.
 
-    Measured on the committed fixtures: 886 stored either way, 865 identical,
-    21 displaced out of the per-bucket top-100-by-ΔF heap by a tie cluster at
-    ΔF ≈ 5,94x (their returns were 10.4-12.7%, all still far above the 1%
-    stored floor), 21 admitted in their place; the ≥1% tally rose 609,084 →
-    609,153 and the higher tallies are unchanged. The §11.8b headline pin — the
-    fixture's best pair, +1,783 guaranteed on 9,195 sent — is untouched, which
-    is what this test guards."""
+    Measured when v5.1 landed: 886 stored either way, 865 identical, 21
+    displaced out of the per-bucket top-100-by-ΔF heap by a tie cluster, 21
+    admitted in their place; the ≥1% tally rose 609,084 → 609,153.
+
+    v7 re-pin. The headline pair is now a DIFFERENT pair — v6's was displaced,
+    not re-scored — because pricing picks my way re-orders the book. What this
+    test still guards is that the board's top is a genuine both-coordinates
+    gain and that the list is return-sorted. Note ΔS is unchanged at +1,783:
+    the lens cannot reach the starter coordinate, since picks never enter the
+    lineup."""
     doc = result["trade_recs"]
     top = doc["pairs"][0]
-    assert top["return_pct"] == 19.39
-    assert top["coords"] == {"dS": 1783.0, "dF": 1895.0}
-    assert (top["floor"], top["ceiling"], top["sent"]) == (1783.0, 1895.0, 9195.0)
-    assert doc["counts_by_threshold"][0]["count"] >= 609_084  # v5.0.1's tally
+    assert top["return_pct"] == 15.23
+    assert top["coords"] == {"dS": 1783.0, "dF": 1933.0}
+    assert (top["floor"], top["ceiling"], top["sent"]) == (1783.0, 1933.0, 11711.0)
+    assert doc["counts_by_threshold"][0]["count"] >= 600_000
     rets = [p["return_pct"] for p in doc["pairs"]]
     assert rets == sorted(rets, reverse=True)
 
@@ -485,8 +501,13 @@ def test_completed_board_walk_reports_exact_counts(snapshot):
     full brute force of the same pool.
 
     The configuration keeps the whole-space branch OUT of reach (25,239
-    crossings > the 9,300 collection budget), so it is the v5.1 path under
-    test and not v3.4's."""
+    crossings > the 9,300 collection budget — unchanged by v7, since pool
+    membership is decided on market face), so it is the v5.1 path under test
+    and not v3.4's.
+
+    v7: this shrinks to 32 pairs / a ≥1% tally of 32, and `truncated` becomes
+    None — which is the STRONGER form of the same claim. Nothing was truncated
+    because the walk was complete and every storable pair fit."""
     exact_params = Params(
         max_package=1, pair_collect_budget=9_300, pair_scan_budget=1_000
     )
@@ -500,7 +521,9 @@ def test_completed_board_walk_reports_exact_counts(snapshot):
     board = tr.trade_board(league)
     assert all(b["saturated"] is False for b in board["bands"])
     assert all(e["saturated"] is False for e in board["counts_by_threshold"])
-    assert board["truncated"]["total_saturated"] is False
+    # nothing to disclose: the tally is exact AND every counted pair is stored
+    assert board["truncated"] is None
+    assert board["counts_by_threshold"][0]["count"] == len(board["pairs"]) == 32
 
     # independent brute force of the SAME pool: the tallies are real counts
     me_t = league.teams[league.me]

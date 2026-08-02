@@ -96,9 +96,20 @@ export interface TradeAsset {
   name: string;
   /** Face KTC value — what the market prices the asset at (§3). 0 when unvalued. */
   v: number;
+  /**
+   * §1 v7 my-lens price, present only when it differs from `v` (always a pick).
+   * Current-year picks book at their exact board slot; future picks book at the
+   * dear end of the round when you send them and the cheap end when you receive
+   * them. `dF.me` is computed from these; the fairness gate never sees them.
+   */
+  v_me?: number;
   /** No KTC price on record — contributes 0 to ΔW; card flags it. */
   unvalued?: boolean;
-  /** Current-year picks: rookie-board slot value (information only, never scored). */
+  /**
+   * Pre-v7 boards only: the rookie-board slot value, then a display annotation.
+   * v7 supersedes it with `v_me` (identical number for current-year picks) and
+   * stops emitting it on trade cards; kept optional so old docs still parse.
+   */
   concrete?: number;
   note?: string;
 }
@@ -134,7 +145,8 @@ export interface TradeGate {
 /**
  * §2 v4 the two objective coordinates: `dS` is the change in STARTER value —
  * the max-Σv legal lineup at raw KTC over active + taxi (IR never counts) —
- * and `dF` the change in TOTAL FACE owned (players + picks at tranche).
+ * and `dF` the change in TOTAL FACE owned (players at KTC face; picks at your
+ * own v7 price on your side, at the market tranche on theirs).
  * Parameter-free; the verdict, floor, ceiling and breakeven all derive from
  * them (ceiling = max(dS, dF)).
  */
@@ -171,11 +183,12 @@ export interface TradeRec {
   give: TradeAsset[];
   get: TradeAsset[];
   /**
-   * §2 v4 the two coordinates, PER SIDE against each side's own roster. `dF`
-   * is exactly zero-sum across the parties of a leg (face conservation);
-   * `dS` is not — deployment differs by roster, so a good leg can be
-   * objectively good for BOTH sides. Absent on pre-v4 docs (render `dW`
-   * instead).
+   * §2 v4 the two coordinates, PER SIDE against each side's own roster.
+   * `dS` is not zero-sum — deployment differs by roster, so a good leg can be
+   * objectively good for BOTH sides. Nor is `dF` any longer: v7 prices YOUR
+   * side's picks conservatively (`TradeAsset.v_me`) while theirs stays market
+   * face, so the two negate only when no pick crosses. Absent on pre-v4 docs
+   * (render `dW` instead).
    */
   coords?: { me: Coords; them: Coords };
   /** §2 v4 objective verdict per side: dS ≥ 0 AND dF ≥ 0, one strict. */
