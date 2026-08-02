@@ -78,14 +78,52 @@ class Params:
     # interactive CLI/skill path — it never runs on the collector Lambda, so
     # this does not touch the §11.10 board budget (§9, v5.1).
     finder_cross_budget: int = 16_000_000
+    # §4a v6 the COMPLETE fair-band pool. `pool_favor_band` bounds the whole
+    # enumeration to |leg favor| ≤ β — the band the desk actually trades in —
+    # and in exchange the v3.4/v5 SAMPLING is retired: every gate-passer inside
+    # the band is kept, not the best 2 of the first 3 scanned. That sampling was
+    # the engine's central unsoundness (disclosed since v5): it retained 0.449%
+    # of the fair inventory, and because the bracket was scanned Σv-DESCENDING
+    # the survivors skewed hard to the me-favorable end (pool favor median
+    # −9.40 against a true population median +0.10) — i.e. it was worst at
+    # exactly the counterparty-friendly trades a spread needs. Set to None to
+    # enumerate the whole §3.1 gate band instead (26.2M legs / 1,043 MB on the
+    # live snapshot — it does NOT fit the collector Lambda; see §9).
+    #
+    # DEFAULT IS None PENDING THE LEG REPRESENTATION. The complete |favor| ≤ 5
+    # pool is 11,911,255 legs and MEASURES 3,904 MB peak RSS as Python tuples
+    # holding Package objects (~330 B/leg). The design study's 479 MB figure was
+    # for a columnar layout it never had to integrate with the walks, the sinks
+    # or `pair_eval`. Until the legs are columnar this cannot run on the
+    # collector, so the band stays opt-in (`build_pair_pool(..., favor_band=5)`)
+    # and the board keeps the sampled scan with a budget that no longer starves
+    # it (see `pair_collect_budget`).
+    pool_favor_band: float | None = None
+    # The Σv-descending scan and its caps, kept ONLY for `pool_favor_band=None`
+    # (the wide-band path, which is still infeasible to drain). Inside a favor
+    # band the scan drains the bracket and these are unused.
     variants_per_signature: int = 2  # gets kept per (opponent, give, count-signature), isolation floor desc
-    # v3.4 scan bound: gate-passers evaluated per (opponent, give, count-signature)
-    # before the top-`variants_per_signature` are taken. The exact KTC gate and the
-    # starter-sum re-solve are ~30× the retired adjv comparison, so the bracket is
-    # sampled from its Σv-desc top rather than drained (disclosed in the board notes).
     variant_scan_cap: int = 3
+    # §3.1 v6 screen slack. The raw-adjustment-gap screen rejects candidates
+    # whose adjusted gap provably cannot clear the target band. Evaluating
+    # processV at nerf 0 and at r_max (rather than reverseAdjust's rescaled max)
+    # already pushes the threshold UP; this multiplier covers reverse_adjust's
+    # 2.5% tolerance, which the port does not always honour (it is non-monotone).
+    # Calibration, not proof: the minimum factor that admits every fair leg on
+    # the live snapshot measures 1.0308, so 1.15 carries ~11.6% headroom.
+    screen_slack: float = 1.15
     pair_scan_budget: int = 40_000  # pair visits per COUNTING pass; counters saturate honestly
-    pair_collect_budget: int = 400_000  # pair visits for the stored-pair collection walk
+    # §5 v6 raised 400,000 → 4,000,000. `canonical_sig` restored the Δplayers==0
+    # crossing family (+6.1% of the space), and a FIXED collection budget spread
+    # over a larger space stores FEWER pairs, not more — measured on the live
+    # snapshot with the fix in: 400k → 619 stored / 19 both-legs-fair, 1.6M →
+    # 1,101 / 478, 4M → 1,133 / 528. The old budget turned a coverage fix into a
+    # regression. 4M costs 61.0 s and 236 MB peak against the collector's 900 s
+    # / 2048 MB, and is what makes the fair band actually populated (v5.1 stored
+    # 1,079 pairs total). This is a mitigation, not the cure — the budget is a
+    # walk cutoff, so it still certifies nothing; `pool_favor_band` plus a
+    # per-cell exact top-K is the real fix and is blocked on the leg layout.
+    pair_collect_budget: int = 4_000_000  # pair visits for the stored-pair collection walk
     top_league_wide: int = 10  # unpaired sell/neutral legs kept as `recommendations` (isolation floor desc)
     watch_max: int = 5  # unpaired buys surfaced as watch-list notes
 

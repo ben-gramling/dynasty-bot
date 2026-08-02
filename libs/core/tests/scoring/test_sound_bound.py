@@ -41,6 +41,7 @@ from core.scoring import constraints as cn
 from core.scoring import finder as fd
 from core.scoring import model as md
 from core.scoring import trades as tr
+from core.scoring.lineup import EMPTY4
 
 # The scoped query every pin runs against: the fixture-pinned Holani-buy /
 # Burrow-sell shape, asset-required on all four package sides so the crossing
@@ -95,7 +96,7 @@ def _brute_force(league, pool, min_return: float) -> dict:
     legal: dict = {}
     out: dict[tuple, dict] = {}
     for sig in sorted(pool.buckets):
-        if sig[0] <= 0:
+        if not tr.canonical_sig(sig):
             continue
         comp = pool.buckets.get((-sig[0], -sig[1]))
         if not comp:
@@ -167,7 +168,7 @@ def test_bound_rests_on_floor_le_df_and_df_additivity_11_13b(league, scoped_pool
     legal: dict = {}
     checked = ds_non_additive = 0
     for sig in sorted(scoped_pool.buckets):
-        if sig[0] <= 0:
+        if not tr.canonical_sig(sig):
             continue
         comp = scoped_pool.buckets.get((-sig[0], -sig[1]))
         if not comp:
@@ -195,6 +196,77 @@ def test_bound_rests_on_floor_le_df_and_df_additivity_11_13b(league, scoped_pool
                 checked += 1
     assert checked > 100, checked
     assert ds_non_additive > 0, "the fixture must exhibit real lineup coupling"
+
+
+def test_add_only_gain_bounds_the_pairs_joint_ds_11_13f(league, scoped_pool):
+    """§11.13(f) v6: `ΔS_pair ≤ A_buy + A_sell`, the second half of the
+    separable floor bound.
+
+    `A` is the add-only starter gain of a leg's RECEIVED package: what it would
+    add to the current lineup with nothing sent away. Starter sum is the
+    max-weight basis of a transversal matroid, hence monotone submodular, so
+    removals can only lower it and the two additions are subadditive — see
+    `tr.pair_ds_bound`.
+
+    The contrast matters as much as the bound: the sum of the legs' ISOLATION
+    ΔS values is NOT a bound, and this test asserts the fixture actually
+    exhibits that (v5.1's coverage bug was exactly this confusion). A bound
+    that were merely 'usually right' would reintroduce it."""
+    legs = scoped_pool.legs
+    assert legs
+    me_t = league.teams[league.me]
+    legal: dict = {}
+    checked = iso_sum_violations = 0
+    for sig in sorted(scoped_pool.buckets):
+        if not tr.canonical_sig(sig):
+            continue
+        comp = scoped_pool.buckets.get((-sig[0], -sig[1]))
+        if not comp:
+            continue
+        for bi in scoped_pool.buckets[sig][:60]:
+            for si in comp[:60]:
+                b, s = legs[bi], legs[si]
+                if s[tr.L_OPP] == b[tr.L_OPP] or (s[tr.L_MASK] & b[tr.L_MASK]):
+                    continue
+                if tr._leg_legal(league, me_t, scoped_pool, bi, legal) is False:
+                    continue
+                if tr._leg_legal(league, me_t, scoped_pool, si, legal) is False:
+                    continue
+                _ret, floor, _ceil, d_s, d_f = scoped_pool.pair_eval(bi, si)
+                bound = tr.pair_ds_bound(b[tr.L_A], s[tr.L_A])
+                # NO tolerance: every input is integral, so a sound bound holds
+                # exactly. Slack is allowed; a violation is not.
+                assert d_s <= bound, (d_s, bound, bi, si)
+                # and therefore the floor is bounded by the separable minimum
+                assert floor <= min(bound, b[tr.L_DFACE] + s[tr.L_DFACE])
+                iso_b = scoped_pool.index.delta(b[tr.L_OUT4], b[tr.L_IN4])
+                iso_s = scoped_pool.index.delta(s[tr.L_OUT4], s[tr.L_IN4])
+                if d_s > iso_b + iso_s + 1e-9:
+                    iso_sum_violations += 1
+                checked += 1
+    assert checked > 100, checked
+    assert iso_sum_violations > 0, (
+        "the fixture must contain pairs whose joint ΔS exceeds the isolation "
+        "sum — otherwise this test cannot distinguish the sound bound from the "
+        "unsound one it replaces"
+    )
+
+
+def test_add_only_gain_depends_only_on_the_received_package(league, scoped_pool):
+    """§11.13(f) v6: `A` is a function of the GET package alone.
+
+    That is what lets it be solved once per distinct package instead of once
+    per leg, and it holds because `pos_columns` drops picks — a leg's received
+    STARTABLE set is exactly its received players. If this ever fails, the
+    per-package cache in `build_pair_pool` is silently wrong."""
+    by_get: dict[tuple[str, ...], float] = {}
+    for leg in scoped_pool.legs:
+        keys = leg[tr.L_GET].keys
+        prev = by_get.setdefault(keys, leg[tr.L_A])
+        assert prev == leg[tr.L_A], keys
+        # and it IS the add-only solve, not something else
+        assert leg[tr.L_A] == scoped_pool.index.delta(EMPTY4, leg[tr.L_IN4])
+    assert len(by_get) > 1
 
 
 # ------------------------------------------ (a) matched set == brute force
@@ -435,7 +507,7 @@ def test_completed_board_walk_reports_exact_counts(snapshot):
     legal: dict = {}
     tally = [0] * len(board["presets"])
     for sig in sorted(pool.buckets):
-        if sig[0] <= 0:
+        if not tr.canonical_sig(sig):
             continue
         comp = pool.buckets.get((-sig[0], -sig[1]))
         if not comp:
@@ -515,7 +587,7 @@ def test_exact_tie_on_the_bar_is_kept_11_13e(league, scoped_pool):
     legal: dict = {}
     tie = None
     for sig in sorted(scoped_pool.buckets):
-        if sig[0] <= 0 or tie is not None:
+        if not tr.canonical_sig(sig) or tie is not None:
             continue
         comp = scoped_pool.buckets.get((-sig[0], -sig[1]))
         if not comp:
@@ -584,7 +656,7 @@ def test_coverage_phase_only_hands_back_a_region_that_was_walked_11_13e(
     legs = scoped_pool.legs
     b_i, s_i = None, None
     for sig in sorted(scoped_pool.buckets):
-        if sig[0] <= 0:
+        if not tr.canonical_sig(sig):
             continue
         comp = scoped_pool.buckets.get((-sig[0], -sig[1]))
         if comp:

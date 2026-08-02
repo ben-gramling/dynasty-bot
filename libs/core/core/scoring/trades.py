@@ -577,7 +577,17 @@ def build_card(
     np_me = get.n_players - give.n_players
     nk_me = get.n_picks - give.n_picks
     standalone = np_me == 0 and nk_me == 0
-    leg_type = "buy" if np_me > 0 else "sell" if np_me < 0 else "neutral"
+    # v6: leg_type follows the CROSSING family, not the player count alone.
+    # "neutral" means genuinely standalone (0 players AND 0 picks); everything
+    # else needs a complement, and `canonical_sig` says which side of the pair
+    # it is. Through v5.1 a leg netting 0 players but ±k picks was mislabelled
+    # "neutral" — it is not executable alone, and it is now pairable.
+    if standalone:
+        leg_type = "neutral"
+    elif canonical_sig((np_me, nk_me)):
+        leg_type = "buy"
+    else:
+        leg_type = "sell"
     if leg_type == "buy":
         if verdicts["me"]["overflow"] > 0:
             sequencing = (
@@ -763,6 +773,11 @@ _MIN4 = tuple(MIN_POS[p] for p in _POS4)
 # the same adjusted totals the gate read during the scan)
 L_RET, L_FLOOR, L_SENT, L_NP, L_NK, L_OPP, L_MASK, L_GIVE, L_GET = range(9)
 L_OUT4, L_IN4, L_DFACE, L_FAVOR = 9, 10, 11, 12
+# §4a v6 the ADD-ONLY starter gain: what this leg's RECEIVED package alone would
+# add to the current starting lineup, with nothing sent away. Depends only on
+# the get package (so it is solved once per distinct package, not per leg), and
+# it upper-bounds the pair's joint ΔS — see `_pair_ds_bound`.
+L_A = 13
 
 # v5.1 crossing tolerance. The walks test the pair bound in SPLIT form —
 # `(r·sent_b − key_b) + (r·sent_s − key_s) ≤ 0` — while the bound itself is the
@@ -789,6 +804,54 @@ XTOL = 1e-6
 # This pad (1e-9 KTC points, 100× the worst rounding error at these magnitudes
 # and 1000× below XTOL) makes every estimate a true upper bound on visits.
 _EST_PAD = 1e-9
+
+
+def pair_ds_bound(a_buy: float, a_sell: float) -> float:
+    """§4a v6: a SOUND upper bound on a pair's joint ΔS from per-leg figures.
+
+    Starter sum is the max-weight basis of a transversal matroid over the
+    startable player pool (QB / 2RB / 3WR / TE / 2FLEX), so it is monotone and
+    submodular in the set of players available. Write `R` for my current pool,
+    `in_b`/`in_s` for the two legs' received players and `out_b`/`out_s` for the
+    sent ones. Then
+
+        ΔS_pair = L(R − out_b − out_s + in_b + in_s) − L(R)
+                ≤ L(R + in_b + in_s) − L(R)                     (monotone: the
+                                                     removals can only lower it)
+                ≤ [L(R+in_b) − L(R)] + [L(R+in_s) − L(R)]       (submodular)
+                = A(buy) + A(sell)
+
+    which is exactly this. Note what it is NOT: the sum of the legs' ISOLATION
+    ΔS values, which is not a bound at all (v5.1 was a coverage bug for
+    precisely that reason — measured 5,875,757 violations over 20.1M crossings,
+    worst overshoot 4,852). This one was audited at 0 violations over 24.4M
+    crossings with no tolerance, and picks contribute nothing to either side
+    since `pos_columns` drops them.
+
+    Combined with the exactly-additive ΔF, it gives the pair floor a fully
+    separable bound: floor = min(ΔS, ΔF) ≤ min(A_b + A_s, ΔF_b + ΔF_s)."""
+    return a_buy + a_sell
+
+
+def canonical_sig(sig: tuple[int, int]) -> bool:
+    """§4a v6: is this count-signature the one that OWNS its crossing family?
+
+    A legal spread's two legs have complementary signatures summing to (0, 0),
+    so bucket `sig` crosses bucket `−sig` and every walk must visit each
+    unordered bucket-pair exactly once. Through v5.1 the test was `sig[0] > 0`,
+    which silently dropped the WHOLE Δplayers == 0 family: `(0, +k)` crosses
+    `(0, −k)`, and `sig[0] > 0` rejects both sides, so no walk could ever reach
+    them. Those are genuine hedges — swap players evenly with two teams while
+    netting a pick from one to the other — and on the live pool they are 41,722
+    legs carrying ~169M crossings (+6.1% of the space).
+
+    `(0, 0)` is deliberately NOT canonical, and that is a scope decision rather
+    than an oversight. A `(0, 0)` leg is already roster-neutral by itself, so
+    pairing two of them is not a hedge — it is two unrelated even swaps stapled
+    together, and there are 51,443 such legs on the live pool (≈1.3e9 pairings)
+    which would swamp the board with noise. Single neutral legs already surface
+    through `top_league_wide`; §5's `recommendations`."""
+    return sig[0] > 0 or (sig[0] == 0 and sig[1] > 0)
 
 
 @dataclass(slots=True)
@@ -877,6 +940,9 @@ def _pos_vec(pkg: Package) -> tuple[int, int, int, int]:
     return (d.get("QB", 0), d.get("RB", 0), d.get("WR", 0), d.get("TE", 0))
 
 
+_POOL_BAND_DEFAULT = object()  # sentinel: "take it from params"
+
+
 def build_pair_pool(
     league: md.LeagueState,
     enforce_posture: bool = True,
@@ -884,6 +950,7 @@ def build_pair_pool(
     opponents: Sequence[str] | None = None,
     my_pkgs_for=None,
     opp_pkgs_for=None,
+    favor_band: float | None = _POOL_BAND_DEFAULT,
 ) -> PairPool:
     """§5 v3.3 enumeration — no minimal-gap pruning, no W_min gate. Per opponent,
     per give-package, per get count-signature: walk the Σv window
@@ -929,6 +996,19 @@ def build_pair_pool(
     fl = params.fleece_ratio
     top_v = league.top_ktc_value
     cap = top_v + 80.0
+    # §4a v6: inside a favor band the bracket is DRAINED (no caps) and the
+    # screen tightens to that band; outside one, v5's sampled scan survives.
+    band = params.pool_favor_band if favor_band is _POOL_BAND_DEFAULT else favor_band
+    if band is None:
+        b_star_factor = None  # the §3.1 gate band — b* = max(500, 0.25·T_max)
+    else:
+        # |favor| ≤ β ⟹ the adjusted gap G ≤ (2β/100)·adj_max, and adj_max is
+        # itself at most T_max + G, so G ≤ T_max · 2β/(100 − β). The adjustment
+        # is monotone in the raw-adjustment gap, so a raw gap above processV of
+        # that bound cannot land inside the band. Strictly tighter than the §3.1
+        # screen for every β < 11.1, which is why it removes ~95% of gate calls.
+        b_star_factor = 2.0 * band / (100.0 - band)
+    slack = params.screen_slack
 
     def _g_info(pkgs: Sequence[Package]) -> list[tuple]:
         out = []
@@ -947,6 +1027,8 @@ def build_pair_pool(
         return out
 
     g_info_all = _g_info(my_pkgs) if my_pkgs_for is None else None
+    # §4a v6: add-only starter gain per distinct GET package (see `pair_ds_bound`)
+    a_cache: dict[tuple[str, ...], float] = {}
     legs: list[tuple] = []
     buckets: dict[tuple[int, int], list[int]] = {}
     opp_pkgs: dict[str, tuple[list[float], list[Package]]] = {}
@@ -1027,9 +1109,14 @@ def build_pair_pool(
                     if raw_gap < 0.0:
                         raw_gap = -raw_gap
                     max_tot = gv if gv > t_v else t_v
-                    b_star = 0.25 * max_tot
-                    if b_star < 500.0:
-                        b_star = 500.0
+                    if b_star_factor is None:
+                        b_star = 0.25 * max_tot
+                        if b_star < 500.0:
+                            b_star = 500.0
+                    else:
+                        # v6: the favor band's own (much tighter) bound — no
+                        # absolute floor, because the band is relative
+                        b_star = b_star_factor * max_tot
                     # Necessary condition, from the calculator's own arithmetic:
                     # the adjusted gap S obeys S ≤ max(500, 0.25·max side total)
                     # (the band is 0.20 of a side that is itself at most
@@ -1040,7 +1127,7 @@ def build_pair_pool(
                     # 1.15 factor for its 2.5% tolerance, all push the threshold
                     # UP — the screen can only reject trades the exact gate
                     # rejects too (§11.3 asserts the two agree on the fixtures).
-                    if raw_gap > 1.15 * _process_v0(b_star, r_max, cap):
+                    if raw_gap > slack * _process_v0(b_star, r_max, cap):
                         continue
                     if pre2 is None:
                         pre2 = kf.side_raw_adj(t_vals, r_max, top_v)
@@ -1053,26 +1140,43 @@ def build_pair_pool(
                     )
                     if not _band_ok(params, adj_g, adj_t):
                         continue
+                    # v5: leg favor from the SAME adjusted totals this scan just
+                    # computed for the band — the port never runs twice (§11.12(a))
+                    favor = favor_of(adj_g, adj_t)
+                    if band is not None and not -band <= favor <= band:
+                        continue  # v6: outside the pool's band — not inventory
                     d_face = t_v - gv
                     d_s, d_f = my_index.coords_delta(g.cols, t.cols, d_face)
                     floor = d_s if d_s < d_f else d_f
-                    # v5: leg favor from the SAME adjusted totals this scan just
-                    # computed for the band — the port never runs twice (§11.12(a))
-                    best.append((-floor, t.keys, t, d_face, favor_of(adj_g, adj_t)))
-                    passers += 1
-                    if passers >= scan_cap:
-                        break
+                    best.append((-floor, t.keys, t, d_face, favor))
+                    if band is None:
+                        # v5 sampled path: stop after `variant_scan_cap` passers
+                        passers += 1
+                        if passers >= scan_cap:
+                            break
                 if not best:
                     continue
-                best.sort()  # isolation floor desc, deterministic ties on the keys
-                for _neg_floor, _k, t, d_face, favor in best[:K]:
+                # v6: inside a band the bracket was DRAINED and everything in it
+                # is kept, so the sort/truncate is the wide-band path only. It
+                # still runs there for byte-identical v5 behaviour.
+                if band is None:
+                    best.sort()  # isolation floor desc, deterministic on the keys
+                    best = best[:K]
+                for _neg_floor, _k, t, d_face, favor in best:
                     floor = -_neg_floor
+                    # §4a v6 add-only starter gain. A function of the GET
+                    # package alone, so it is solved once per distinct package
+                    # and reused across every leg that receives it.
+                    a_add = a_cache.get(t.keys)
+                    if a_add is None:
+                        a_add = a_cache[t.keys] = my_index.delta(EMPTY4, t.cols)
                     buckets.setdefault((np_, nk), []).append(len(legs))
                     legs.append(
                         (
                             floor / gv, floor, gv, np_, nk, oi, mask, g, t,
                             g.cols, t.cols, d_face,
                             favor,  # §4a v5 leg favor, from the gate's own totals
+                            a_add,  # §4a v6 add-only ΔS bound contribution
                         )
                     )
     return PairPool(
@@ -1106,7 +1210,7 @@ def _tp_estimate(pool: PairPool, r: float, key: int = L_DFACE) -> int:
     legs = pool.legs
     total = 0
     for sig, idxs in pool.buckets.items():
-        if sig[0] <= 0:
+        if not canonical_sig(sig):
             continue
         comp = pool.buckets.get((-sig[0], -sig[1]))
         if not comp:
@@ -1154,7 +1258,7 @@ def _tp_estimate_below(pool: PairPool, r: float, key: int = L_DFACE) -> int:
     legs = pool.legs
     total = 0
     for sig, idxs in pool.buckets.items():
-        if sig[0] <= 0:
+        if not canonical_sig(sig):
             continue
         comp = pool.buckets.get((-sig[0], -sig[1]))
         if not comp:
@@ -1191,7 +1295,7 @@ def _walk_pairs_below(
     me_t = league.teams[league.me]
     visits = 0
     for sig in sorted(pool.buckets):
-        if sig[0] <= 0:
+        if not canonical_sig(sig):
             continue
         comp_idx = pool.buckets.get((-sig[0], -sig[1]))
         if not comp_idx:
@@ -1279,7 +1383,7 @@ def _walk_pairs(
     me_t = league.teams[league.me]
     visits = 0
     for sig in sorted(pool.buckets):
-        if sig[0] <= 0:
+        if not canonical_sig(sig):
             continue
         comp_idx = pool.buckets.get((-sig[0], -sig[1]))
         if not comp_idx:
@@ -1354,7 +1458,7 @@ def _walk_pairs_range(
     visits = 0
     scanned = 0
     for sig in sorted(pool.buckets):
-        if sig[0] <= 0:
+        if not canonical_sig(sig):
             continue
         comp_idx = pool.buckets.get((-sig[0], -sig[1]))
         if not comp_idx:
@@ -1436,7 +1540,7 @@ def _walk_pairs_below_range(
     visits = 0
     scanned = 0
     for sig in sorted(pool.buckets):
-        if sig[0] <= 0:
+        if not canonical_sig(sig):
             continue
         comp_idx = pool.buckets.get((-sig[0], -sig[1]))
         if not comp_idx:
@@ -1728,7 +1832,11 @@ def pair_in_space(league: md.LeagueState, pool: PairPool, buy_i: int, sell_i: in
     — no enumeration needed: the cross over complementary buckets is total, so
     pool membership plus these constraints IS membership in the pair space.)"""
     b, s = pool.legs[buy_i], pool.legs[sell_i]
-    if b[L_NP] <= 0 or s[L_NP] >= 0:
+    # v6: the buy leg must own its crossing family (`canonical_sig`) and the
+    # sell leg must be its exact complement. Through v5.1 this read
+    # `b[L_NP] <= 0 or s[L_NP] >= 0`, which — like the walks — excluded the
+    # whole Δplayers == 0 family from the pair space.
+    if not canonical_sig((b[L_NP], b[L_NK])):
         return None
     if b[L_NP] + s[L_NP] != 0 or b[L_NK] + s[L_NK] != 0:
         return None
@@ -2163,7 +2271,15 @@ def trade_board(league: md.LeagueState) -> dict:
     seen_rec: set[tuple] = set()
     attempts = 0
     for i in sorted(
-        (i for i, leg in enumerate(legs) if leg[L_NP] <= 0 and i not in stored_leg_ids),
+        (
+            i
+            for i, leg in enumerate(legs)
+            # v6: sell/neutral == NOT the leg that owns its crossing family —
+            # which now correctly routes a (0, +k) leg to `watch` (it needs a
+            # complement) instead of here. A (0, 0) leg is neutral and
+            # standalone-executable, so it belongs in this list.
+            if not canonical_sig((leg[L_NP], leg[L_NK])) and i not in stored_leg_ids
+        ),
         key=lambda i: (-legs[i][L_FLOOR], i),
     ):
         if len(recommendations) >= params.top_league_wide or attempts >= 200:
@@ -2190,7 +2306,14 @@ def trade_board(league: md.LeagueState) -> dict:
     seen_w: set[tuple] = set()
     attempts = 0
     for i in sorted(
-        (i for i, leg in enumerate(legs) if leg[L_NP] > 0 and i not in stored_leg_ids),
+        (
+            i
+            for i, leg in enumerate(legs)
+            # v6: an unpaired leg that OWNS its crossing family is the one still
+            # looking for an exit — including the (0, +k) family the walks
+            # could not reach before.
+            if canonical_sig((leg[L_NP], leg[L_NK])) and i not in stored_leg_ids
+        ),
         key=lambda i: (-legs[i][L_FLOOR], i),
     ):
         if len(watch) >= params.watch_max or attempts >= 200:

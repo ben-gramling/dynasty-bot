@@ -243,7 +243,7 @@ def test_honest_counts_exact_vs_floor_11_12e(league, snapshot, cache_dir, tmp_pa
     legal: dict = {}
     valid = matched = 0
     for sig in sorted(pool.buckets):
-        if sig[0] <= 0:
+        if not tr.canonical_sig(sig):
             continue
         comp = pool.buckets.get((-sig[0], -sig[1]))
         if not comp:
@@ -326,7 +326,7 @@ def test_favor_pushdown_coverage_pin_v5_0_1(league, cache_dir):
     min_ret = query["min_return"] / 100.0
     matched = 0
     for sig in sorted(pool.buckets):
-        if sig[0] <= 0:
+        if not tr.canonical_sig(sig):
             continue
         comp = pool.buckets.get((-sig[0], -sig[1]))
         if not comp:
@@ -367,15 +367,22 @@ def test_favor_band_delta_view_full_slate_regression(snapshot, tmp_path):
     the floor-ordered full-pool walk found 6 matches in these 50,000
     crossings (and the production case found 0 in 50M); post-fix the walk's
     crossing space IS the favor band, δ-score ordered, so the same budget
-    yields tens of thousands (36,945 on the committed fixtures). The
-    truncation itself stays honestly disclosed: exact=False, floors only."""
+    yields tens of thousands. The truncation itself stays honestly disclosed:
+    exact=False, floors only.
+
+    v6 re-pin: 36,945 → 29,110 at this deliberately tiny budget, because
+    `canonical_sig` restored the Δplayers == 0 crossing family and a FIXED
+    budget spread over a larger space reaches less of it. That is the same
+    starvation `pair_collect_budget` was raised 10× for; this test pins the
+    budget at 50,000 on purpose, so it sees the trade-off undiluted. The
+    assertion's job is unchanged — guard the v5.0 defect, where this was 6."""
     league = md.build_league(snapshot, Params(finder_cross_budget=50_000))
     r = fd.find_spreads(
         league,
         {"delta": 0.25, "min_return": 1.0, "favor_min": -5, "favor_max": 5},
         cache_dir=tmp_path,
     )
-    assert r["counts"]["matched"] > 30_000  # pre-fix: 6
+    assert r["counts"]["matched"] > 25_000  # pre-fix: 6; v5.1: 36,945; v6: 29,110
     assert r["counts"]["returned"] == len(r["spreads"]) == league.params.finder_top
     # legs counts are the favor-ELIGIBLE legs — the constrained crossing space
     assert 0 < r["counts"]["legs"]["buy"] < 20_000

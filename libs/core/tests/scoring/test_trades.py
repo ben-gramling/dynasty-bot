@@ -716,17 +716,23 @@ def test_posture_is_a_hard_pair_pool_constraint(league, pool, result):
 
 
 def test_board_pairs_verdict_true_and_honest_on_fixture(result, params):
-    """§5 v5 / §11.12(g) on the committed fixture. Storage is stratified by
-    FAVOR bucket (pair favor = min(f_buy, f_sell)): 886 pairs survive as the
-    per-bucket unions of tops by robust return / dS / dF. The two HIGH-favor
-    buckets ([0,5) and [5,∞)) are EMPTY — a pair where BOTH counterparties'
-    calculators read the leg as fair-or-better while I still keep a ≥1%
-    guaranteed floor return did not surface within the walk budget: my
-    guaranteed floor is bounded by my raw face gain, which is the negation of
-    the counterparties' — edge on my side of the calculator's metric is where
-    stored-universe pairs live. Every count is a saturated verified floor
-    (the walk orders legs by their isolation floors while pairs are priced by
-    the exact combined coordinates, so no cutoff can certify completeness)."""
+    """§5 v6 / §11.12(g) on the committed fixture. Storage is stratified by
+    FAVOR bucket (pair favor = min(f_buy, f_sell)): 1,178 pairs survive as the
+    per-bucket unions of tops by robust return / dS / dF.
+
+    v5 recorded here that the two HIGH-favor buckets were EMPTY, and reasoned
+    that a pair both counterparties' calculators like while I keep a ≥1%
+    guaranteed floor essentially could not exist. That reasoning was wrong, and
+    it was wrong because of a SEARCH defect rather than the market: the walks
+    skipped every Δplayers == 0 crossing family outright, and a fixed collection
+    budget then starved what remained. With both fixed, [0,+5) holds 282 of its
+    300 quota. The geometry argument survives only for [+5,∞), which is still
+    empty — giving away MORE than the fair window while keeping a positive
+    guaranteed floor really is hard.
+
+    Every count remains a saturated verified floor: the walk orders legs by a
+    per-leg key while pairs are priced by exact combined coordinates, so no
+    cutoff can certify completeness."""
     doc = result["trade_recs"]
     bands = doc["bands"]
     assert doc["presets"] == [1.0, 2.5, 5.0, 10.0, 20.0]
@@ -741,8 +747,15 @@ def test_board_pairs_verdict_true_and_honest_on_fixture(result, params):
     assert top["verdict"] is True
     assert top["favor"] == {"buy": -8.6, "sell": -10.8, "min": -10.8}
     assert top["sent"] == 9195.0
-    assert len(doc["pairs"]) == sum(b["stored"] for b in bands) == 886
-    assert [b["stored"] for b in bands] == [300, 300, 286, 0, 0]
+    # v6 re-pin, 886 → 1,178. Two changes compound, both ADDITIVE: `canonical_sig`
+    # restored the Δplayers == 0 crossing family, and `pair_collect_budget` rose
+    # 10× so the larger space is not walked more shallowly. The headline pair
+    # above is UNCHANGED — nothing was displaced, inventory was added.
+    assert len(doc["pairs"]) == sum(b["stored"] for b in bands) == 1178
+    # the counterparty-favorable end is the whole point: the [0,+5) bucket —
+    # trades their OWN calculator scores as even-or-better for them — went
+    # 0 → 282 of a 300 quota. v5.1 could not populate it at all here.
+    assert [b["stored"] for b in bands] == [300, 300, 296, 282, 0]
     for b in bands:
         # v5 union storage: at most 3 top-quota heaps' worth per bucket
         assert b["stored"] <= 3 * params.pairs_per_band
@@ -762,8 +775,8 @@ def test_board_pairs_verdict_true_and_honest_on_fixture(result, params):
         assert tr.pair_count_deltas(pair["buy"], pair["sell"]) == (0, 0)
         assert pair["return_pct"] >= doc["presets"][0]
     t = doc["truncated"]
-    assert t is not None and t["stored"] == 886
-    assert t["total"] >= 886 and t["total_saturated"] is True
+    assert t is not None and t["stored"] == 1178
+    assert t["total"] >= 1178 and t["total_saturated"] is True
     for card in doc["recommendations"]:
         assert card["leg_type"] in ("sell", "neutral")
         if card["standalone"]:
@@ -945,9 +958,19 @@ def test_count_deltas_track_taxi_and_negate_exactly(result, league):
         assert card["net_players"] == {"me": np_me, "them": -np_me}
         assert card["net_picks"] == {"me": nk_me, "them": -nk_me}
         assert card["standalone"] == (np_me == 0 and nk_me == 0)
-        assert card["leg_type"] == (
-            "buy" if np_me > 0 else "sell" if np_me < 0 else "neutral"
+        # v6: leg_type follows the CROSSING family, not the player count alone.
+        # "neutral" means executable alone — 0 players AND 0 picks. A leg that
+        # nets 0 players but ±k picks is NOT standalone and is now pairable, so
+        # `canonical_sig` decides which side of the spread it is (through v5.1
+        # it was mislabelled "neutral" and no walk could reach it at all).
+        expect = (
+            "neutral"
+            if (np_me == 0 and nk_me == 0)
+            else "buy"
+            if tr.canonical_sig((np_me, nk_me))
+            else "sell"
         )
+        assert card["leg_type"] == expect
     # taxi routing never hides a count: sending my taxi-stashed Arroyo is −1
     # player for me / +1 for them even though neither active roster changes
     my_assets = tr.team_assets(league, league.teams[league.me])

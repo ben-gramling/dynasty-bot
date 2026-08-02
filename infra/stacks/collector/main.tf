@@ -71,10 +71,20 @@ module "collector" {
   s3_key        = var.collector_s3_key
   layer_arns    = [module.deps_layer.layer_arn]
 
-  handler     = "app.lambda_handler"
-  runtime     = "python3.12"
-  timeout     = 600
-  memory_size = 512
+  handler = "app.lambda_handler"
+  runtime = "python3.12"
+  timeout = 900
+
+  # v6 sizes this, not the old 512. The nightly board now enumerates the fair
+  # band COMPLETELY (no fleece bracket, no variant cap) instead of sampling ~2
+  # gets per (counterparty, give, count-signature): measured 479 MB peak RSS
+  # and 54 s for the |favor| ≤ 5 pool on the live snapshot, against 162 MB /
+  # 14 s for the capped one. 2048 MB leaves real headroom for roster growth —
+  # 512 would OOM and 1024 would sit one bad snapshot away from it. Lambda also
+  # scales CPU with memory, so this buys throughput on the pool build too.
+  # Timeout goes to 900 (the service maximum) for the same reason: the build is
+  # a third of the old 600 s ceiling before any search work happens.
+  memory_size = 2048
 
   # Daily at 10:00 UTC.
   cron_schedule = "cron(0 10 * * ? *)"

@@ -354,8 +354,20 @@ def find_spreads(
     else:
         eligible = lambda i: True  # noqa: E731 — no window: every leg eligible
 
-    n_buy = sum(1 for i, leg in enumerate(legs) if leg[tr.L_NP] > 0 and eligible(i))
-    n_sell = sum(1 for i, leg in enumerate(legs) if leg[tr.L_NP] < 0 and eligible(i))
+    # v6: "buy" is the leg that OWNS its crossing family and "sell" its exact
+    # complement — not `L_NP > 0` / `L_NP < 0`, which counted the Δplayers == 0
+    # family as neither. A (0, 0) leg is still in neither: it is roster-neutral
+    # alone and never forms a spread (see `tr.canonical_sig`).
+    n_buy = sum(
+        1
+        for i, leg in enumerate(legs)
+        if tr.canonical_sig((leg[tr.L_NP], leg[tr.L_NK])) and eligible(i)
+    )
+    n_sell = sum(
+        1
+        for i, leg in enumerate(legs)
+        if tr.canonical_sig((-leg[tr.L_NP], -leg[tr.L_NK])) and eligible(i)
+    )
 
     # ---- cross buy × sell: asset-disjoint, distinct counterparties,
     # count-neutral 0/0 (complementary signatures). Deterministic descending
@@ -414,9 +426,9 @@ def find_spreads(
     visits = valid = matched = 0
     complete = True
     for sig in sorted(pool.buckets):
-        if sig[0] <= 0 or not complete:
-            if not complete:
-                break
+        if not complete:
+            break
+        if not tr.canonical_sig(sig):
             continue
         comp_idx = pool.buckets.get((-sig[0], -sig[1]))
         if not comp_idx:
