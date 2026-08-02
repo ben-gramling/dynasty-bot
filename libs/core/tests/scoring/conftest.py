@@ -57,6 +57,12 @@ def snapshot(transactions_fixture) -> Snapshot:
         my_roster_id=4,
         player_names=player_names,
         transactions=transactions_fixture,
+        # §1 v7.4: KTC's calculator globals. They are not in the values payload
+        # (they live in site.min.js) so the committed snapshot cannot carry them
+        # implicitly. 2026-07-26 sat in the same rookie-draft season as the
+        # 2026-08-02 capture that pins `ktc_picks`, so phase 2 / DRAFTYEAR 2026
+        # is the site state that produced these values.
+        ktc_calculator={"league_year_phase": 2, "draft_year": 2026},
     )
 
 

@@ -160,6 +160,7 @@ def build_snapshot_from_store(db) -> tuple[Snapshot, dict]:
         value_history_max=store.ktc_value_history_max(db=db),
         transactions=transactions,
         posture_overrides=store.posture_overrides(db=db),
+        ktc_calculator=store.ktc_calculator(db=db),
     )
     last_run = next(iter(db["runs"].find({"ok": True}).sort("finished", -1)), None)
     freshness = {"last_collect": last_run["finished"] if last_run else None}

@@ -1,11 +1,13 @@
 """§1 pick pricing, TWO LENSES since v7.
 
-`mv` is the MARKET tranche — the number every league-mate sees and the only pick
-price the §3 gate may use. `p_me` is MY lens and is what ΔF books: the exact
-rookie-board slot price in the current year (the order is known, so no pessimism
-is warranted), and a deliberately conservative tranche beyond it — Early for a
-pick I own (I would be sending it), Late for one the counterparty owns (I would
-be receiving it). The `rank_L` projection survives on `mv` only."""
+v7.4: CURRENT-YEAR picks carry ONE number and it is KTC's own — the calculator
+publishes a price for the exact slot ("2026 Pick 1.01"), so `p == mv == p_me`
+and there is nothing for a lens to disagree about. (v7.0 used the rookie board's
+n-th-player value as a stand-in, on the mistaken belief that KTC published no
+per-pick price; that proxy missed in both directions.) FUTURE picks keep the two
+lenses, because that is where the slot is genuinely unknown: `mv` is the
+`rank_L`-banded tranche the league sees, `p_me` the pessimistic one — Early for a
+pick I own (I would be sending it), Late for one the counterparty owns."""
 
 from __future__ import annotations
 
@@ -16,42 +18,47 @@ from core.scoring import picks as pk
 from .conftest import pick_of
 
 
-def test_my_2026_concrete_prices(league, me):
-    """Board-slot values: 1.01 = 7,762 · 2.09 = 3,236 · 3.03 = 2,927 ·
-    4.01 = 1,922. v7 promoted these from display annotation to MY lens — the
-    draft order is known, so the current-year branch prices the slot exactly
-    and `p_me == p` in both directions (an opponent's current-year pick is just
-    as knowable as mine)."""
+def test_my_2026_picks_are_ktcs_own_numbered_prices(league, me):
+    """§1 v7.4. KTC generates a price for every numbered current-year pick and
+    `ktc_picks` reproduces it exactly, so a 1.01 is worth what the calculator
+    says a 1.01 is worth — no proxy, no band, no lens.
+
+    Note 1.01 is NOT an integer (7,994.86): KTC derives the top two picks off
+    the rookie ladder rather than a tranche, and passes the unrounded figure
+    into its own adjustment. We pass the same number for the same reason."""
     p101 = pick_of(me, 2026, 1)
     p209 = pick_of(me, 2026, 2)
     p303 = pick_of(me, 2026, 3)
     p401 = pick_of(me, 2026, 4)
-    assert (p101.p, p101.n) == (7762, 1)
-    assert (p209.p, p209.n) == (3236, 21)
-    assert (p303.p, p303.n) == (2927, 27)
-    assert (p401.p, p401.n) == (1922, 37)
-    # v7: the same numbers ARE the my-lens price, and they cut both ways —
-    # 1.01 books ABOVE its tranche (7,762 > 6,243) while 2.09 books below
-    # (3,236 < 3,504). Exactness, not pessimism, is the current-year rule.
+    assert (p101.mv, p101.n) == (7994.860000000001, 1)
+    assert (p209.mv, p209.n) == (3560.0, 21)
+    assert (p303.mv, p303.n) == (2804.0, 27)
+    assert (p401.mv, p401.n) == (2205.0, 37)
+    # one number: the gate's, the ledger's and mine are the same figure
     for p in (p101, p209, p303, p401):
-        assert p.p_me == p.p and p.band_me == f"exact slot {p.slot}"
-    assert sum(p.p_me for p in me.picks if p.year == 2026) == 15847
-    # and an opponent's current-year picks price exactly too
-    opp = league.teams["ronakpatel32"]
-    for p in opp.picks:
+        assert p.p == p.mv == p.p_me
+        assert p.band_me == f"KTC {p.year} Pick {p.round}.{p.slot:02d}"
+    assert sum(p.mv for p in me.picks if p.year == 2026) == 16563.86
+    # an opponent's current-year picks price identically — the slot is as
+    # knowable for them as for me, and KTC quotes one price per slot
+    for p in league.teams["ronakpatel32"].picks:
         if p.year == 2026:
-            assert p.p_me == p.p and not p.mine
+            assert p.p == p.mv == p.p_me and not p.mine
 
 
-def test_my_2026_tranche_values(me):
-    """The mv tranche numbers — the MARKET lens: what the §3 fairness gate,
-    favorability and the return denominator use, and the only pick price KTC's
-    calculator actually holds. v7 left every one of them untouched."""
-    assert pick_of(me, 2026, 1).mv == 6243  # Early 1st (slot 1)
-    assert pick_of(me, 2026, 2).mv == 3504  # Late 2nd (slot 9)
-    assert pick_of(me, 2026, 3).mv == 2835  # Early 3rd (slot 3)
-    assert pick_of(me, 2026, 4).mv == 2033  # Early 4th (slot 1)
-    assert sum(p.mv for p in me.picks if p.year == 2026) == 14615
+def test_the_generic_2026_tranche_is_no_longer_a_price(league, me):
+    """The 36 generic tranches are still scraped and still price FUTURE years,
+    but no current-year pick is valued at one any more. Pinned as a negative,
+    because reverting to the tranche is precisely the silent failure that made
+    our gate disagree with the counterparty's screen."""
+    tr_ = league.tranches
+    assert tr_[(2026, "Early", 1)] == 6243  # still there, still scraped
+    for p in me.picks:
+        if p.year != 2026:
+            continue
+        assert p.mv != tr_[(2026, p.band, p.round)]
+        # and the band survives only as a label on the slot
+        assert p.band == pk.band_of_slot(p.slot)
 
 
 def test_2027_band_projection(league):
@@ -110,35 +117,46 @@ def test_future_picks_price_by_trade_direction_not_by_rank_l(league):
     best = pick_of(league.teams["jaketoppen"], 2027, 1, origin_rid=8)
     assert (best.band, best.mv) == ("Early", 7398)
     assert (best.band_me, best.p_me) == ("Late", 5562)
-    # my whole future inventory books ABOVE market; every opponent's below
+    # my FUTURE inventory books above market and every opponent's below; the
+    # current-year picks are identical on both lenses and so cancel out of the
+    # comparison entirely (v7.4)
     me_t = league.teams["bengramling"]
-    assert sum(p.p_me for p in me_t.picks) == 43972 > round(me_t.picks_mv) == 39921
+    assert sum(p.p_me for p in me_t.picks) == 44688.86 > me_t.picks_mv == 41869.86
     for name, t in league.teams.items():
+        cy = [p for p in t.picks if p.year == league.current_year]
+        assert all(p.p_me == p.mv for p in cy)
         if name != league.me:
             assert sum(p.p_me for p in t.picks) < t.picks_mv, name
 
 
 def test_future_assets(league):
-    """F at MARKET face tranche: F(trdouglas) = 58,571 · F(me) = 47,354. The
-    league tab ranks 12 teams against each other, so it stays on the market
-    lens — v7 must not move these (`v_me` has no meaning for a pick moving
-    between two teams that aren't me)."""
-    assert round(league.teams["trdouglas"].f) == 58571
-    assert round(league.teams["bengramling"].f) == 47354
+    """F at market face: F(trdouglas) = 58,233 · F(me) = 49,303. The league tab
+    ranks 12 teams against each other so it stays on the MARKET lens — but v7.4
+    moved that lens for current-year picks (KTC's numbered price replaced the
+    generic tranche), so these numbers moved with it."""
+    assert round(league.teams["trdouglas"].f) == 58233
+    assert round(league.teams["bengramling"].f) == 49303
     me_t = league.teams["bengramling"]
-    assert round(me_t.f - sum(p.v for p in me_t.taxi)) == 39921  # picks at tranche
+    assert round(me_t.f - sum(p.v for p in me_t.taxi)) == 41870  # picks at market
 
 
 def test_all_96_plus_48_picks_price(league):
     """Every 2026/2027 pick (48 each) + all 48 own 2028 picks price cleanly."""
     counts = {2026: 0, 2027: 0, 2028: 0}
+    fractional: list[str] = []
     for t in league.teams.values():
         for p in t.picks:
             assert p.p > 0 and p.mv > 0 and p.p_me > 0, p.label
-            # every coordinate input stays integral (§11.13f / XTOL rest on it)
-            assert p.p_me == int(p.p_me), p.label
+            if p.p_me != int(p.p_me):
+                fractional.append(p.label)
             counts[p.year] += 1
     assert counts == {2026: 48, 2027: 48, 2028: 48}
+    # §11.13f / XTOL lean on integral coordinates. v7.4 admits exactly two
+    # exceptions, and they are KTC's, not ours: the calculator derives 1.01 and
+    # 1.02 off the rookie ladder and passes the unrounded figure into its own
+    # adjustment, so matching it means carrying the fraction. XTOL (1e-6)
+    # absorbs a hundredth; rounding would put us off KTC's number.
+    assert sorted(set(fractional)) == ["2026 1.01", "2026 1.02"]
 
 
 def test_board_interpolation(league):

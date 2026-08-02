@@ -13,6 +13,7 @@ Document keys:
   ktc-latest    _id = str(playerID), raw KTC asset
   ktc-history   _id = "<playerID>:<date>", {playerID, date, value_1qb, value_sf, rank_1qb}
   crosswalk     _id = str(ktc playerID), + "meta" doc
+  ktc-calc      _id = "latest" singleton (KTC LEAGUEYEARPHASE + DRAFTYEAR)
   waiver-board  _id = "latest" singleton (compute_all waiver_board + meta)
   league-table  _id = "latest" singleton (compute_all league_table + my_team + meta)
   runs          run log entries + "meta" doc (players_last_fetched)
@@ -254,6 +255,24 @@ def replace_crosswalk(entries: dict[str, dict], meta: dict | None = None, db=Non
     docs = [{**e, "_id": ktc_id} for ktc_id, e in entries.items()]
     docs.append({"_id": "meta", **(meta or {}), "built_at": _now()})
     return _replace_all(_db(db)["crosswalk"], docs) - 1
+
+
+def replace_ktc_calculator(globals_: dict, db=None) -> None:
+    """§1 v7.4: KTC's two calculator globals as a `ktc-calc` singleton. They are
+    not in the values payload (they live in site.min.js) and without them
+    current-year picks have no price, so they travel with the snapshot."""
+    _db(db)["ktc-calc"].replace_one(
+        {"_id": "latest"}, {"_id": "latest", **globals_, "fetched_at": _now()}, upsert=True
+    )
+
+
+def ktc_calculator(db=None) -> dict:
+    doc = _db(db)["ktc-calc"].find_one({"_id": "latest"}) or {}
+    return {
+        k: int(doc[k])
+        for k in ("league_year_phase", "draft_year")
+        if isinstance(doc.get(k), int)
+    }
 
 
 # ---- scoring outputs ----

@@ -16,18 +16,19 @@ def _rank(values: dict[str, float], name: str) -> int:
 def _pick_detail(league: md.LeagueState, p) -> dict:
     d = {
         "label": p.label,
-        "v": round(p.mv),  # face tranche value — the wealth/market number (§1)
+        # §1 the market number: KTC's numbered price for a current-year pick
+        # (v7.4), the generic tranche for a future one
+        "v": round(p.mv),
         "band": p.band,
         "band_reason": p.band_reason,
-        # §1 v7 my-lens price — what ΔF books this pick at: the exact board slot
-        # in the current year; beyond it Early when I own the pick (I would be
-        # the sender) and Late when this owner is someone else (I would be the
-        # receiver). The league tab's wealth totals stay on `v`.
-        "v_me": round(p.p_me),
-        "band_me": p.band_me,
     }
-    if p.year == league.current_year and p.p != p.mv:
-        d["concrete"] = round(p.p)  # rookie-board slot value (== v_me this year)
+    # §1 my-lens price, emitted ONLY when it differs from the market — i.e. only
+    # on FUTURE picks (Early when I own it, Late when this owner is someone
+    # else). v7.4 gave current-year picks a single KTC price, so there is
+    # nothing to show twice. The league tab's wealth totals stay on `v`.
+    if p.p_me != p.mv:
+        d["v_me"] = round(p.p_me)
+        d["band_me"] = p.band_me
     return d
 
 

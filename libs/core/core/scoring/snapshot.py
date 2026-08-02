@@ -29,6 +29,14 @@ class Snapshot:
     transactions: Sequence[Mapping[str, Any]] = ()
     # Optional: display_name -> "BUYER"|"SELLER"|"NEUTRAL" user override (§4; override wins).
     posture_overrides: Mapping[str, str] = field(default_factory=dict)
+    # §1 v7.4 — KTC's two calculator globals, `{league_year_phase, draft_year}`,
+    # scraped by `core.ktc.fetch_calculator_globals()`. They decide whether the
+    # site is generating numbered current-year picks at all and for which year,
+    # and they live in `site.min.js` rather than in `playersArray`, so they must
+    # be carried alongside the values. EMPTY means "unknown": current-year picks
+    # then have no price and `build_league` says so rather than quietly falling
+    # back to the generic tranche.
+    ktc_calculator: Mapping[str, int] = field(default_factory=dict)
 
     @property
     def offseason(self) -> bool:

@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from core.scoring import ktc_link as kl
+from core.scoring import ktc_picks as kp
 from core.scoring import trades as tr
 
 REPO = Path(__file__).resolve().parents[4]
@@ -114,17 +115,20 @@ def test_s1_trade_resolves_exactly(league, ids, names):
 
     assert link.complete
     assert link.dropped == ()
-    assert link.one == (299, 1527, 1703)
+    # v7.4: the 2026 1.01 links at KTC's NUMBERED id, because that is the price
+    # the gate now uses. A future pick still links its tranche — that IS its
+    # price, KTC publishes nothing finer.
+    assert link.one == (299, 202611, 1703)
     assert link.two == (1770, 1447, 1883)
-    assert [names[i] for i in link.one] == [
-        "Chris Godwin", "2026 Early 1st", "2027 Mid 1st",
-    ]
+    assert names[link.one[0]] == "Chris Godwin"
+    assert link.one[1] == kp.numbered_pick_id(2026, 1, 1)  # "2026 Pick 1.01"
+    assert names[link.one[2]] == "2027 Mid 1st"
     assert [names[i] for i in link.two] == [
         "Luther Burden", "Rashee Rice", "2028 Mid 1st",
     ]
     assert link.url == (
         "https://keeptradecut.com/trade-calculator"
-        "?var=5&pickVal=0&teamOne=299%7C1527%7C1703&teamTwo=1770%7C1447%7C1883"
+        "?var=5&pickVal=0&teamOne=299%7C202611%7C1703&teamTwo=1770%7C1447%7C1883"
         "&format=1&isStartup=0&tep=0"
     )
 
@@ -144,14 +148,29 @@ def test_link_side_totals_match_the_gate(league, ids, names):
     ]
     link = kl.tc_link(give, get, ids, current_year=league.current_year)
 
-    by_id = {int(a["playerID"]): a for a in league.snapshot.ktc_assets}
-    one_sum = sum(float(by_id[i]["oneQBValues"]["value"]) for i in link.one)
-    two_sum = sum(float(by_id[i]["oneQBValues"]["value"]) for i in link.two)
+    # v7.4: the page's own value for every linked id — scraped records for
+    # players and future picks, KTC's generated table for the numbered ones.
+    # This is the assertion that actually matters: it says the number on the
+    # counterparty's screen is the number our gate priced, id for id.
+    by_id = {int(a["playerID"]): float(a["oneQBValues"]["value"])
+             for a in league.snapshot.ktc_assets}
+    for (rnd, slot), v in kp.numbered_pick_values(
+        league.snapshot.ktc_assets, draft_year=league.current_year, phase=2,
+        site_draft_year=league.current_year,
+    ).items():
+        by_id[kp.numbered_pick_id(league.current_year, rnd, slot)] = v
+    one_sum = sum(by_id[i] for i in link.one)
+    two_sum = sum(by_id[i] for i in link.two)
 
     # raw (pre-adjustment) sums, as multisets of the engine's own face values
     assert one_sum == pytest.approx(sum(a.v for a in give))
     assert two_sum == pytest.approx(sum(a.v for a in get))
-    assert one_sum < two_sum  # we receive more raw face on this leg
+    # v7.4 FLIPPED this leg's direction, which is the change in one number: the
+    # 1.01 went 6,243 (a generic "Early 1st") to 7,994.86 (KTC's own price for
+    # that exact slot), so we are now sending MORE raw face than we receive on a
+    # trade the old pricing read the other way round.
+    assert one_sum > two_sum
+    assert one_sum - two_sum == pytest.approx(737.86, abs=0.01)
 
 
 # --------------------------------------------------------- league-wide round trip
@@ -161,6 +180,13 @@ def test_every_rostered_asset_round_trips(league, ids, names):
     """EVERY tradeable asset in all 12 teams resolves to a KTC record of the right
     identity. Counts asserted exactly and split by kind — see module docstring."""
     by_id = {int(a["playerID"]): a for a in league.snapshot.ktc_assets}
+    numbered = {
+        kp.numbered_pick_id(league.current_year, rnd, slot): (rnd, slot, v)
+        for (rnd, slot), v in kp.numbered_pick_values(
+            league.snapshot.ktc_assets, draft_year=league.current_year, phase=2,
+            site_draft_year=league.current_year,
+        ).items()
+    }
     word = {1: "1st", 2: "2nd", 3: "3rd", 4: "4th"}
 
     players = picks = unresolved = 0
@@ -170,6 +196,12 @@ def test_every_rostered_asset_round_trips(league, ids, names):
             if kid is None:
                 assert asset.unvalued, f"{asset.name} unresolved but not unvalued"
                 unresolved += 1
+                continue
+            if kid in numbered:  # v7.4 current-year pick: KTC's generated entry
+                picks += 1
+                rnd, slot, v = numbered[kid]
+                assert asset.name == f"{league.current_year} {rnd}.{slot:02d}"
+                assert float(v) == pytest.approx(asset.v)
                 continue
             rec = by_id[kid]
             if asset.kind == "player":
@@ -239,12 +271,23 @@ def test_side_emptied_by_drops_yields_no_url(league, ids):
     assert link.dropped == ("Darren Waller",)
 
 
-def test_duplicate_tranche_ids_are_emitted_twice(league, ids):
-    """Two picks in the same tranche are two calculator entries, not deduped."""
+def test_two_picks_in_one_tranche_are_two_entries(league, ids):
+    """Two entries, never deduped. v7.4 makes the current-year case stronger:
+    1.07 and 1.08 used to collapse to the same tranche id (1528, "2026 Mid 1st")
+    and now carry their own distinct numbered ids and their own distinct
+    prices — which is the whole point of the change."""
     assets = tr.team_assets(league, league.teams["trdouglas"])
     a, b = assets["2026 1.07"], assets["2026 1.08"]
+    assert a.pick.band == b.pick.band == "Mid"  # same tranche, different picks
+    assert a.v != b.v
     link = kl.tc_link([a, b], [_asset(league, "NoahMoell", "Rashee Rice")], ids)
-    assert link.one == (1528, 1528)
+    assert link.one == (202617, 202618)
+
+    # a FUTURE pair in one tranche still collapses — KTC publishes nothing finer
+    fut = [p for p in league.teams["millj"].picks if p.year == 2027 and p.round == 4]
+    assert len(fut) >= 2
+    ids_fut = {kl.ktc_id_of(tr.pick_asset(league, p), ids) for p in fut}
+    assert len(ids_fut) < len(fut)
 
 
 def test_asset_cap_is_counted_on_inputs_and_ids(league, ids):
@@ -276,23 +319,18 @@ def test_numbered_pick_id_encoding():
     assert kl.numbered_pick_id(2026, 4, 3) == 202643
 
 
-def test_current_year_pick_discloses_its_numbered_entry(league, ids):
-    """We link the tranche (gate-consistent) but must surface that KTC also
-    carries the numbered pick at a different price."""
+def test_there_is_nothing_left_to_disclose(league, ids):
+    """Through v7.3 a current-year pick was linked at its tranche while KTC also
+    carried a numbered entry at a different price, so the link shipped a
+    `numbered_url` alternative and a note. v7.4 prices the numbered entry, links
+    it, and the gap closes: one price, one link, no disclosure."""
     give = [_asset(league, league.me, "2026 1.01")]
     get = [_asset(league, "NoahMoell", "Rashee Rice")]
     link = kl.tc_link(give, get, ids, current_year=league.current_year)
 
-    assert len(link.numbered) == 1
-    note = link.numbered[0]
-    assert note.name == "2026 1.01"
-    assert note.tranche_id == 1527
-    assert note.numbered_id == 202611
-    assert note.tranche_v == pytest.approx(give[0].v)
-
-    assert "202611" in (link.numbered_url or "")
-    assert "1527" not in (link.numbered_url or "")
-    assert "1527" in (link.url or "")
+    assert link.numbered == () and link.numbered_url is None
+    assert "202611" in (link.url or "")  # the numbered id IS the primary link
+    assert "1527" not in (link.url or "")  # the tranche is gone from the trade
 
 
 def test_tranche_only_picks_have_no_numbered_entry(league, ids):

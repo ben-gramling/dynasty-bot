@@ -1,20 +1,19 @@
-"""§3.2 pick pricing: concrete 2026 board truth, tranche perception, my lens.
+"""§3.2 pick pricing: KTC's real number this year, a pessimistic tranche beyond.
 
-v7 adds a SECOND lens. `mv` stays the market number — the generic KTC tranche
-every league-mate sees in the calculator, and the only pick price the fairness
-gate may use, because KTC ships no numbered per-pick asset (36 RDP tranche
-records, `docs/keeptradecut.md`). `p_me` is MY lens, and it runs on TWO
-different rules with two different justifications — do not describe it as
-uniformly conservative:
+`mv` is the market number — what the counterparty's own calculator charges.
+`p_me` is MY lens. They run on two different rules by YEAR, and the split only
+ever bites in one of them:
 
-- **Current year — EXACTNESS, not pessimism.** The draft order is known, so the
-  slot is known: price the pick at its exact board rank,
-  `board_value(12·(rnd−1) + slot)`. This is board-vs-tranche error and it points
-  BOTH ways — on the committed fixture my 1.01 books 7,762 against a 6,243
-  tranche while my 2.09 books 3,236 against 3,504. Acquiring an underpriced
-  current-year pick can therefore book ΔF the market does not offer. That is the
-  intended reading of "we can calculate it from the actual draft order", but it
-  is not a safety property.
+- **Current year — KTC'S OWN NUMBER, one price for everything.** The draft
+  order is known, so the slot is known, and KTC publishes a price for that exact
+  slot: "2026 Pick 4.01", generated client-side by the trade calculator and
+  ported in `ktc_picks`. `p`, `mv` and `p_me` are all that number. There is no
+  lens split here and nothing to be pessimistic about — it is the same figure
+  the counterparty reads off their own screen, so my book and the market agree
+  by construction. **v7.0 got this wrong**: believing KTC published no per-pick
+  price, it used the rookie board's n-th-player value as a stand-in, which
+  missed in both directions (7,762 vs KTC's 7,897 on a 1.01; 2,927 vs 2,821 on a
+  3.03) and let the engine manufacture ΔF on picks that happened to proxy high.
 - **Future years — PESSIMISM.** The slot is unknown and KTC only publishes
   Early/Mid/Late. Assume the bad end of that range in whichever direction I
   would trade it: a pick I OWN is one I would send, so it is priced **Early**
@@ -26,7 +25,9 @@ uniformly conservative:
 `p_me` is a single per-asset price vector fixed at snapshot build — every asset
 has exactly one of them, whoever is looking. So ΔF is still exactly conserved
 across a leg's parties WITHIN this lens; the cards simply choose to report my
-side through it and the counterparty's through `mv` (§11.1b).
+side through it and the counterparty's through `mv` (§11.1b). Current-year picks
+have `p == mv == p_me`, so the two lenses only ever differ on FUTURE picks —
+which is exactly where the uncertainty the pessimism prices actually lives.
 
 The next-year `rank_L` projection survives as the MARKET band on `mv` — it is
 what the league prices the pick at; it just no longer sets what I am willing to
@@ -62,13 +63,14 @@ class Pick:
     slot: int | None  # 2026 only (order known)
     n: int | None  # overall pick number, 2026 only
     p: float  # truth value — Score/RV/A/F
-    mv: float  # market-visible (tranche) value — fairness/anchoring layer
+    mv: float  # market value: KTC's numbered pick this year, the tranche beyond
     band: str
     band_reason: str
     label: str
-    # §1 v7 MY lens: exact board price in the current year, pessimistic tranche
-    # beyond it (Early when I own the pick, Late when the counterparty does).
-    # This is the ΔF input; `mv` remains the gate's input.
+    # §1 MY lens and the ΔF input. Identical to `mv` for a current-year pick
+    # (v7.4 — KTC prices that slot, so there is nothing to disagree about); the
+    # pessimistic tranche beyond it (Early when I own the pick, Late when the
+    # counterparty does), where the slot is genuinely unknown.
     p_me: float
     band_me: str
     mine: bool
@@ -150,33 +152,40 @@ def price_pick(
     owner_name: str,
     current_year: int,
     slot_of_roster: Mapping[int, int],
-    board: Mapping[int, BoardEntry],
     tranches: Mapping[tuple[int, str, int], float],
     rank_l: Mapping[str, int],
     my_rid: int,
+    numbered: Mapping[tuple[int, int], float] | None,
 ) -> Pick:
     own = " (own)" if origin_rid == owner_rid else f" (from {origin_name})"
     mine = owner_rid == my_rid
     if year == current_year:
         slot = slot_of_roster[origin_rid]
         n = 12 * (rnd - 1) + slot
-        # v7: rounded because this value now enters ΔF, and three separate
-        # arguments (XTOL's reachable-tie rationale, the integer k5 walk key,
-        # and §11.13f's no-tolerance bound) rest on the coordinates being
-        # integral. `board_value` interpolates between missing ranks and can
-        # return a fraction — today the board is gapless over 1..48, so this is
-        # a no-op that keeps a snapshot accident from becoming a premise.
-        p = float(round(board_value(board, n).value))
-        band = band_of_slot(slot)
-        mv = tranches[(year, band, rnd)]
-        # v7: the order is known, so MY lens is the exact board price — no
-        # pessimism where there is no uncertainty, in either direction.
+        if numbered is None or (rnd, slot) not in numbered:
+            raise ValueError(
+                f"no KTC price for {year} {rnd}.{slot:02d}: the numbered-pick "
+                "table is unavailable (LEAGUEYEARPHASE / DRAFTYEAR unknown, or "
+                "the site is not generating numbered picks). Current-year picks "
+                "have no price without it — see core.scoring.ktc_picks."
+            )
+        # §1 v7.4: ONE number, and it is KTC's own. The draft order is known, so
+        # the slot is known, and the calculator publishes a price for that exact
+        # slot — the same number the counterparty sees when they type "2026 Pick
+        # 4.01" into their side. No proxy, no lens split: `p`, `mv` and `p_me`
+        # are all this, because there is nothing here for a lens to disagree
+        # about. (v7.0 used the rookie board's n-th player value as a stand-in,
+        # on the mistaken belief that KTC published no per-pick price. It does —
+        # the calculator generates the 48 client-side — and the stand-in missed
+        # in BOTH directions: 7,762 vs 7,897 on the 1.01, 2,927 vs 2,821 on a
+        # 3.03. A proxy for a number we can read is just an error.)
+        v = float(numbered[(rnd, slot)])
         return Pick(
             year=year, round=rnd, origin_rid=origin_rid, origin_name=origin_name,
-            owner_rid=owner_rid, slot=slot, n=n, p=p, mv=mv,
-            band=band, band_reason=f"slot {slot}",
+            owner_rid=owner_rid, slot=slot, n=n, p=v, mv=v,
+            band=band_of_slot(slot), band_reason=f"slot {slot}",
             label=f"{year} {rnd}.{slot:02d}",
-            p_me=p, band_me=f"exact slot {slot}", mine=mine,
+            p_me=v, band_me=f"KTC {year} Pick {rnd}.{slot:02d}", mine=mine,
         )
     if year == current_year + 1:
         rl = rank_l[origin_name]

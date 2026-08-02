@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from typing import Iterable, Mapping, Sequence
 
+from core.scoring import ktc_picks as kp
 from core.scoring import picks as pk
 from core.scoring import posture as ps
 from core.scoring.lineup import BIG, GROUPS, Lineup, PlayerV, solve
@@ -249,14 +250,39 @@ def build_league(snapshot: Snapshot, params: Params) -> LeagueState:
     # pick ownership + pricing (current-year picks cease to exist once the draft completes)
     rid2name = {t.rid: n for n, t in teams.items()}
     slot_of_roster = {int(rid): int(slot) for slot, rid in snapshot.draft["slot_to_roster_id"].items()}
+    # §1 v7.4: KTC's own numbered current-year picks. The site generates these
+    # client-side, so they are absent from the scraped payload and have to be
+    # regenerated (`ktc_picks`) — and only when the two calculator globals say
+    # the site is actually producing them, for this year. Missing globals means
+    # NO current-year price: `price_pick` raises rather than quietly reverting
+    # to the generic tranche, which is the failure that made our gate disagree
+    # with the counterparty's screen in the first place.
+    calc = snapshot.ktc_calculator or {}
+    numbered = None
+    if calc.get("league_year_phase") is not None and draft_pre:
+        try:
+            numbered = kp.numbered_pick_values(
+                snapshot.ktc_assets,
+                draft_year=current_year,
+                phase=int(calc["league_year_phase"]),
+                site_draft_year=calc.get("draft_year"),
+            )
+        except (ValueError, NotImplementedError) as exc:
+            alerts.append(f"no KTC numbered picks for {current_year}: {exc}")
+    elif draft_pre:
+        alerts.append(
+            "KTC calculator globals missing from the snapshot — current-year "
+            "picks cannot be priced (see core.ktc.fetch_calculator_globals)"
+        )
+
     years = [y for y in (current_year, current_year + 1, current_year + 2) if draft_pre or y != current_year]
     owner = pk.pick_ownership(list(rid2name), snapshot.traded_picks, years)
     for (year, rnd, origin_rid), owner_rid in sorted(owner.items()):
         p = pk.price_pick(
             year=year, rnd=rnd, origin_rid=origin_rid, origin_name=rid2name[origin_rid],
             owner_rid=owner_rid, owner_name=rid2name[owner_rid], current_year=current_year,
-            slot_of_roster=slot_of_roster, board=board, tranches=tranches, rank_l=rank_l,
-            my_rid=int(snapshot.my_roster_id),
+            slot_of_roster=slot_of_roster, tranches=tranches, rank_l=rank_l,
+            my_rid=int(snapshot.my_roster_id), numbered=numbered,
         )
         teams[rid2name[owner_rid]].picks.append(p)
 

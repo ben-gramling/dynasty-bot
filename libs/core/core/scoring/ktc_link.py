@@ -8,13 +8,14 @@ in `docs/keeptradecut.md` § "trade-calculator URL contract".
 
 Two facts drive the design:
 
-- **Picks link at their TRANCHE id.** `Asset.v` for a pick is `Pick.mv`, the tranche
-  value, and that is what `Package.vals` feeds the gate. Linking the tranche is what
-  makes the page total equal `adj_give`/`adj_get`. Current-year picks ALSO exist on
-  KTC as numbered entries ("2026 Pick 1.01", id 202611) priced ABOVE the tranche, and
-  a counterparty's own search box offers both. We deliberately link the tranche and
-  DISCLOSE the alternative via `numbered_url` rather than silently pricing a pick two
-  ways — see `NumberedNote`.
+- **Picks link at whatever the gate priced, which is the point.** `Asset.v` is
+  `Pick.mv`, and since v7.4 that is KTC's NUMBERED entry for a current-year pick
+  ("2026 Pick 1.01", id 202611) and the generic tranche for a future one. So a
+  current-year pick links numbered, a future pick links its tranche, and either
+  way the page total equals `adj_give`/`adj_get`. Through v7.3 this linked the
+  tranche for everything and disclosed the numbered id as an alternative — that
+  was backwards, and it is exactly why our gate read 9,415/10,069 against a page
+  showing 9,421/10,198.
 - **A pick's band follows its ORIGIN team, not its holder.** `Pick.band` already
   encodes this (`picks.price_pick` bands off the origin's `rank_L` / draft slot). Read
   the stored field; never key on `(year, round)` alone. One holder can own two same-
@@ -173,26 +174,27 @@ def ktc_id_of(a: Any, ids: Mapping[tuple[int, str, int], int]) -> int | None:
         p = a.pick
         if p is None:
             return None
+        # §1 v7.4: a pick with a KNOWN SLOT is a current-year pick, and the gate
+        # now prices it at KTC's NUMBERED entry — so the link must carry the
+        # numbered id or the page total would not be the number we quoted. (Up
+        # to v7.3 this linked the tranche and disclosed the numbered id as an
+        # alternative; that was backwards once the numbered price became the
+        # one we score.)
+        slot = getattr(p, "slot", None)
+        if slot is not None:
+            return numbered_pick_id(int(p.year), int(p.round), int(slot))
         # band from the stored field — it encodes the ORIGIN team, not the holder.
         return ids.get((int(p.year), str(p.band), int(p.round)))
     return None
 
 
-def _numbered_note(a: Any, tranche_id: int, current_year: int | None) -> NumberedNote | None:
-    if a.kind != "pick":
-        return None
-    p = a.pick
-    slot = getattr(p, "slot", None)
-    if slot is None:
-        return None  # tranche-only pick: no numbered entry exists
-    if current_year is not None and int(p.year) != int(current_year):
-        return None
-    return NumberedNote(
-        name=a.name,
-        tranche_id=tranche_id,
-        numbered_id=numbered_pick_id(int(p.year), int(p.round), int(slot)),
-        tranche_v=float(a.v),
-    )
+def _numbered_note(a: Any, kid: int, current_year: int | None) -> NumberedNote | None:
+    """v7.4: nothing to disclose any more. The primary link carries the numbered
+    id and the gate prices the numbered value, so the page total IS what we
+    quoted — the whole reason this note existed (two prices for one pick, only
+    one of them linked) is gone. Kept as a no-op so `Link.numbered` /
+    `numbered_url` stay in the dataclass for old callers."""
+    return None
 
 
 def tc_link(

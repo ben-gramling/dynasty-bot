@@ -53,23 +53,28 @@ def test_face_transfer_conserved_per_leg(board, league):
             v, v_me = canonical[a["key"]]
             assert a["v"] == round(v), (card["id"], a["name"])
             assert a.get("v_me", a["v"]) == round(v_me), (card["id"], a["name"])
-        out_me = sum(a["v"] for a in card["give"])
-        in_me = sum(a["v"] for a in card["get"])
-        out_mine = sum(a.get("v_me", a["v"]) for a in card["give"])
-        in_mine = sum(a.get("v_me", a["v"]) for a in card["get"])
+        # The card DISPLAYS integers; the coordinates use the real numbers, and
+        # v7.4 made two of them fractional because KTC's own are (it derives
+        # 2026 1.01/1.02 off the rookie ladder and passes the unrounded figure
+        # into its adjustment). So the conservation identity is asserted against
+        # the PACKAGES the engine priced, and the displayed ints are checked
+        # separately as the rounding of those same numbers.
+        give, get = tr.card_packages(league, card)
         c = card["coords"]
         # their side: market face, still exactly conserved (§11.1)
-        assert c["them"]["dF"] == round(float(out_me - in_me), 1), card["id"]
+        assert c["them"]["dF"] == round(give.v_sum - get.v_sum, 1), card["id"]
         # my side: the v7 lens — my own face delta, picks priced my way
-        assert c["me"]["dF"] == round(float(in_mine - out_mine), 1), card["id"]
-        # the two negate iff the lenses agree, i.e. iff no pick crossed
-        lens_agrees = (out_mine, in_mine) == (out_me, in_me)
+        assert c["me"]["dF"] == round(get.v_me_sum - give.v_me_sum, 1), card["id"]
+        # the two negate iff the lenses agree, i.e. iff no FUTURE pick crossed
+        # (a current-year pick is one number on both lenses since v7.4)
+        lens_agrees = (give.v_sum, get.v_sum) == (give.v_me_sum, get.v_me_sum)
         assert (c["me"]["dF"] == -c["them"]["dF"]) == lens_agrees, card["id"]
         saw_pick_leg |= not lens_agrees
-        # and the packages the engine priced carry exactly those sums
-        give, get = tr.card_packages(league, card)
-        assert round(give.v_sum) == out_me and round(get.v_sum) == in_me
-        assert round(give.v_me_sum) == out_mine and round(get.v_me_sum) == in_mine
+        # and the display is exactly the rounding of what was priced
+        assert sum(a["v"] for a in card["give"]) == sum(
+            round(x.v) for x in give.assets
+        )
+        assert sum(a["v"] for a in card["get"]) == sum(round(x.v) for x in get.assets)
     # the split is real on this fixture, not a vacuous branch
     assert saw_pick_leg
 
@@ -159,12 +164,12 @@ def test_coordinate_levels_pinned(league, me):
     that is the one the identity is asserted against."""
     s = ln.starter_sum(tr.starter_pool(me))
     assert s == 51832.0
-    assert me.picks_mv == 39921.0
-    assert sum(p.p_me for p in me.picks) == 43972.0
+    assert me.picks_mv == 41869.86
+    assert sum(p.p_me for p in me.picks) == 44688.86
     # everything the F coordinate sees: active + taxi at face plus the picks
     assert sum(p.v for p in tr.starter_pool(me)) == 87173.0
-    assert tr.total_face(me, lens="market") == 87173.0 + 39921.0 == 127094.0
-    assert tr.total_face(me, lens="me") == 87173.0 + 43972.0 == 131145.0
+    assert tr.total_face(me, lens="market") == 87173.0 + 41869.86 == 129042.86
+    assert tr.total_face(me, lens="me") == 87173.0 + 44688.86 == 131861.86
 
 
 # ------------------------------------------------ 2. independence + import graph
@@ -246,7 +251,7 @@ def test_roster_counts_never_move_coords_but_face_is_a_coordinate(snapshot, para
             )  # he never started
             assert tr.total_face(me, lens="me") - tr.total_face(
                 me2, lens="me"
-            ) == victim.v
+            ) == pytest.approx(victim.v)  # v7.4: two pick prices carry a fraction
     # …and trading him moves exactly one coordinate: ΔS stays 0 (he never
     # started), ΔF is the face delta itself
     jake = tr.team_assets(league, league.teams["jaketoppen"])
@@ -547,8 +552,15 @@ def test_pairs_v4_contract(board, params, league):
         assert got["floor"] == pair["floor"]
         assert got["ceiling"] == pair["ceiling"]
         assert got["return_pct"] == pair["return_pct"]
-        assert got["sent"] == pair["sent"] == sum(
-            a["v"] for leg in (pair["buy"], pair["sell"]) for a in leg["give"]
+        # `sent` is Σ MARKET face actually sent, unrounded; the cards display
+        # rounded ints, so compare against the packages rather than the display
+        # (v7.4: KTC's 2026 1.01/1.02 carry a fraction and we keep it).
+        assert got["sent"] == pair["sent"] == round(
+            sum(
+                tr.card_packages(league, leg)[0].v_sum
+                for leg in (pair["buy"], pair["sell"])
+            ),
+            1,
         )
         # §4a v5: the pair's favor figures are exactly its legs' card favors
         # (each derived from the gate's own adjusted totals, §11.12(a)) and

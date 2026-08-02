@@ -74,6 +74,16 @@ def collect(dry_run: bool = False) -> dict:
             players_dump = client.players_nfl() if players_stale else None
 
         ktc_assets = ktc.scrape()
+        # §1 v7.4: LEAGUEYEARPHASE / DRAFTYEAR decide whether current-year picks
+        # have a KTC price at all. They live in site.min.js, not in the values
+        # payload, so they are a separate (cheap, browserless) fetch. A failure
+        # here is not fatal — it costs current-year pick pricing, loudly, rather
+        # than silently reverting to the generic tranche.
+        try:
+            ktc_calculator = ktc.fetch_calculator_globals()
+        except Exception as exc:  # noqa: BLE001 — never fail the run for this
+            ktc_calculator = {}
+            logger.warning("KTC calculator globals unavailable: %s", exc)
 
         sleeper_players = (
             store.player_subset(players_dump) if players_dump else store.load_players()
@@ -125,6 +135,7 @@ def collect(dry_run: bool = False) -> dict:
             draft=draft_doc,
             state=state,
             ktc_assets=ktc_assets,
+            ktc_calculator=ktc_calculator,
             crosswalk=crosswalk,
             my_roster_id=MY_ROSTER_ID,
             player_names=player_names,
@@ -160,6 +171,7 @@ def collect(dry_run: bool = False) -> dict:
                 store.refresh_players(players_dump)
                 store.set_players_last_fetched(started)
             store.replace_ktc_latest(ktc_assets)
+            store.replace_ktc_calculator(ktc_calculator)
             store.append_ktc_history(ktc_assets)
             store.replace_crosswalk(crosswalk, meta={"unresolved": unresolved})
             store.save_scoring(outputs, computed_at)
