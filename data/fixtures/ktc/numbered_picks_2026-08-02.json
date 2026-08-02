@@ -1,0 +1,430 @@
+{
+ "captured": "2026-08-02",
+ "source": "keeptradecut.com/trade-calculator, playersArray after addNumberedPicks()",
+ "draft_year": 2026,
+ "league_year_phase": 2,
+ "numbered": [
+  {
+   "id": 202611,
+   "name": "2026 Pick 1.01",
+   "oneQB": 7897.01
+  },
+  {
+   "id": 202612,
+   "name": "2026 Pick 1.02",
+   "oneQB": 6597.36
+  },
+  {
+   "id": 202613,
+   "name": "2026 Pick 1.03",
+   "oneQB": 6048
+  },
+  {
+   "id": 202614,
+   "name": "2026 Pick 1.04",
+   "oneQB": 5851
+  },
+  {
+   "id": 202615,
+   "name": "2026 Pick 1.05",
+   "oneQB": 5663
+  },
+  {
+   "id": 202616,
+   "name": "2026 Pick 1.06",
+   "oneQB": 5352
+  },
+  {
+   "id": 202617,
+   "name": "2026 Pick 1.07",
+   "oneQB": 5144
+  },
+  {
+   "id": 202618,
+   "name": "2026 Pick 1.08",
+   "oneQB": 5055
+  },
+  {
+   "id": 202619,
+   "name": "2026 Pick 1.09",
+   "oneQB": 4847
+  },
+  {
+   "id": 202621,
+   "name": "2026 Pick 2.01",
+   "oneQB": 4282
+  },
+  {
+   "id": 202622,
+   "name": "2026 Pick 2.02",
+   "oneQB": 4112
+  },
+  {
+   "id": 202623,
+   "name": "2026 Pick 2.03",
+   "oneQB": 4005
+  },
+  {
+   "id": 202624,
+   "name": "2026 Pick 2.04",
+   "oneQB": 3898
+  },
+  {
+   "id": 202625,
+   "name": "2026 Pick 2.05",
+   "oneQB": 3855
+  },
+  {
+   "id": 202626,
+   "name": "2026 Pick 2.06",
+   "oneQB": 3707
+  },
+  {
+   "id": 202627,
+   "name": "2026 Pick 2.07",
+   "oneQB": 3645
+  },
+  {
+   "id": 202628,
+   "name": "2026 Pick 2.08",
+   "oneQB": 3610
+  },
+  {
+   "id": 202629,
+   "name": "2026 Pick 2.09",
+   "oneQB": 3571
+  },
+  {
+   "id": 202631,
+   "name": "2026 Pick 3.01",
+   "oneQB": 3020
+  },
+  {
+   "id": 202632,
+   "name": "2026 Pick 3.02",
+   "oneQB": 2912
+  },
+  {
+   "id": 202633,
+   "name": "2026 Pick 3.03",
+   "oneQB": 2821
+  },
+  {
+   "id": 202634,
+   "name": "2026 Pick 3.04",
+   "oneQB": 2761
+  },
+  {
+   "id": 202635,
+   "name": "2026 Pick 3.05",
+   "oneQB": 2721
+  },
+  {
+   "id": 202636,
+   "name": "2026 Pick 3.06",
+   "oneQB": 2624
+  },
+  {
+   "id": 202637,
+   "name": "2026 Pick 3.07",
+   "oneQB": 2592
+  },
+  {
+   "id": 202638,
+   "name": "2026 Pick 3.08",
+   "oneQB": 2564
+  },
+  {
+   "id": 202639,
+   "name": "2026 Pick 3.09",
+   "oneQB": 2531
+  },
+  {
+   "id": 202641,
+   "name": "2026 Pick 4.01",
+   "oneQB": 2181
+  },
+  {
+   "id": 202642,
+   "name": "2026 Pick 4.02",
+   "oneQB": 2089
+  },
+  {
+   "id": 202643,
+   "name": "2026 Pick 4.03",
+   "oneQB": 2014
+  },
+  {
+   "id": 202644,
+   "name": "2026 Pick 4.04",
+   "oneQB": 1980
+  },
+  {
+   "id": 202645,
+   "name": "2026 Pick 4.05",
+   "oneQB": 1955
+  },
+  {
+   "id": 202646,
+   "name": "2026 Pick 4.06",
+   "oneQB": 1894
+  },
+  {
+   "id": 202647,
+   "name": "2026 Pick 4.07",
+   "oneQB": 1871
+  },
+  {
+   "id": 202648,
+   "name": "2026 Pick 4.08",
+   "oneQB": 1844
+  },
+  {
+   "id": 202649,
+   "name": "2026 Pick 4.09",
+   "oneQB": 1832
+  },
+  {
+   "id": 2026110,
+   "name": "2026 Pick 1.10",
+   "oneQB": 4679
+  },
+  {
+   "id": 2026111,
+   "name": "2026 Pick 1.11",
+   "oneQB": 4603
+  },
+  {
+   "id": 2026112,
+   "name": "2026 Pick 1.12",
+   "oneQB": 4350
+  },
+  {
+   "id": 2026210,
+   "name": "2026 Pick 2.10",
+   "oneQB": 3517
+  },
+  {
+   "id": 2026211,
+   "name": "2026 Pick 2.11",
+   "oneQB": 3471
+  },
+  {
+   "id": 2026212,
+   "name": "2026 Pick 2.12",
+   "oneQB": 3269
+  },
+  {
+   "id": 2026310,
+   "name": "2026 Pick 3.10",
+   "oneQB": 2489
+  },
+  {
+   "id": 2026311,
+   "name": "2026 Pick 3.11",
+   "oneQB": 2463
+  },
+  {
+   "id": 2026312,
+   "name": "2026 Pick 3.12",
+   "oneQB": 2283
+  },
+  {
+   "id": 2026410,
+   "name": "2026 Pick 4.10",
+   "oneQB": 1788
+  },
+  {
+   "id": 2026411,
+   "name": "2026 Pick 4.11",
+   "oneQB": 1769
+  },
+  {
+   "id": 2026412,
+   "name": "2026 Pick 4.12",
+   "oneQB": 1743
+  }
+ ],
+ "tranches": [
+  {
+   "id": 1527,
+   "name": "2026 Early 1st",
+   "oneQB": 6198
+  },
+  {
+   "id": 1528,
+   "name": "2026 Mid 1st",
+   "oneQB": 5278
+  },
+  {
+   "id": 1529,
+   "name": "2026 Late 1st",
+   "oneQB": 4620
+  },
+  {
+   "id": 1530,
+   "name": "2026 Early 2nd",
+   "oneQB": 4052
+  },
+  {
+   "id": 1531,
+   "name": "2026 Mid 2nd",
+   "oneQB": 3677
+  },
+  {
+   "id": 1532,
+   "name": "2026 Late 2nd",
+   "oneQB": 3499
+  },
+  {
+   "id": 1533,
+   "name": "2026 Early 3rd",
+   "oneQB": 2839
+  },
+  {
+   "id": 1534,
+   "name": "2026 Mid 3rd",
+   "oneQB": 2618
+  },
+  {
+   "id": 1535,
+   "name": "2026 Late 3rd",
+   "oneQB": 2474
+  },
+  {
+   "id": 1536,
+   "name": "2026 Early 4th",
+   "oneQB": 2031
+  },
+  {
+   "id": 1537,
+   "name": "2026 Mid 4th",
+   "oneQB": 1887
+  },
+  {
+   "id": 1538,
+   "name": "2026 Late 4th",
+   "oneQB": 1782
+  },
+  {
+   "id": 1702,
+   "name": "2027 Early 1st",
+   "oneQB": 7376
+  },
+  {
+   "id": 1703,
+   "name": "2027 Mid 1st",
+   "oneQB": 6174
+  },
+  {
+   "id": 1704,
+   "name": "2027 Late 1st",
+   "oneQB": 5496
+  },
+  {
+   "id": 1705,
+   "name": "2027 Early 2nd",
+   "oneQB": 4542
+  },
+  {
+   "id": 1706,
+   "name": "2027 Mid 2nd",
+   "oneQB": 4152
+  },
+  {
+   "id": 1707,
+   "name": "2027 Late 2nd",
+   "oneQB": 3835
+  },
+  {
+   "id": 1708,
+   "name": "2027 Early 3rd",
+   "oneQB": 3111
+  },
+  {
+   "id": 1709,
+   "name": "2027 Mid 3rd",
+   "oneQB": 2895
+  },
+  {
+   "id": 1710,
+   "name": "2027 Late 3rd",
+   "oneQB": 2704
+  },
+  {
+   "id": 1711,
+   "name": "2027 Early 4th",
+   "oneQB": 2173
+  },
+  {
+   "id": 1712,
+   "name": "2027 Mid 4th",
+   "oneQB": 2052
+  },
+  {
+   "id": 1713,
+   "name": "2027 Late 4th",
+   "oneQB": 1925
+  },
+  {
+   "id": 1882,
+   "name": "2028 Early 1st",
+   "oneQB": 5622
+  },
+  {
+   "id": 1883,
+   "name": "2028 Mid 1st",
+   "oneQB": 5261
+  },
+  {
+   "id": 1884,
+   "name": "2028 Late 1st",
+   "oneQB": 4767
+  },
+  {
+   "id": 1885,
+   "name": "2028 Early 2nd",
+   "oneQB": 3833
+  },
+  {
+   "id": 1886,
+   "name": "2028 Mid 2nd",
+   "oneQB": 3576
+  },
+  {
+   "id": 1887,
+   "name": "2028 Late 2nd",
+   "oneQB": 3383
+  },
+  {
+   "id": 1888,
+   "name": "2028 Early 3rd",
+   "oneQB": 2607
+  },
+  {
+   "id": 1889,
+   "name": "2028 Mid 3rd",
+   "oneQB": 2463
+  },
+  {
+   "id": 1890,
+   "name": "2028 Late 3rd",
+   "oneQB": 2320
+  },
+  {
+   "id": 1891,
+   "name": "2028 Early 4th",
+   "oneQB": 1927
+  },
+  {
+   "id": 1892,
+   "name": "2028 Mid 4th",
+   "oneQB": 1772
+  },
+  {
+   "id": 1893,
+   "name": "2028 Late 4th",
+   "oneQB": 1466
+  }
+ ]
+}

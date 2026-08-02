@@ -10,6 +10,9 @@ import re
 import httpx
 
 URL = "https://keeptradecut.com/dynasty-rankings"
+# The two page globals `core.scoring.ktc_picks` needs live on the CALCULATOR
+# page, not the rankings page (verified: the rankings HTML carries neither).
+TC_URL = "https://keeptradecut.com/trade-calculator"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -20,6 +23,59 @@ EXPECTED_RDP = 36
 VALUE_MIN, VALUE_MAX = 0, 9999
 
 _ARRAY_RE = re.compile(r"var playersArray\s*=\s*(\[.*?\]);", re.DOTALL)
+
+# `LEAGUEYEARPHASE` selects which generator the calculator runs (2 = rookie
+# season, the only one we port); `DRAFTYEAR` names the year those picks belong
+# to. Cheap insurance against exactly the silent-wrong-number failure the
+# numbered-pick work exists to remove.
+_PHASE_RE = re.compile(r"\bLEAGUEYEARPHASE\s*=\s*(\d+)")
+_DRAFTYEAR_RE = re.compile(r"\bDRAFTYEAR\s*=\s*(\d{4})")
+
+
+_SITE_JS_RE = re.compile(r'src="(/js/site\.min\.js\?v=[^"]+)"')
+
+
+def fetch_calculator_globals(
+    *, timeout: float = 60.0, transport: httpx.BaseTransport | None = None
+) -> dict[str, int]:
+    """`{league_year_phase, draft_year}`, or {} if either is unreadable.
+
+    Two GETs, no browser. The constants are NOT in the calculator page's HTML —
+    verified — they are top-level assignments in `site.min.js`, whose URL
+    carries a cache-busting hash that only the page knows. So: fetch the page,
+    read the script src off it, fetch that. ~2 MB, once per collect, and it
+    turns "we assume KTC is in rookie-draft phase" into a scraped fact."""
+    with httpx.Client(
+        headers={"User-Agent": USER_AGENT},
+        timeout=timeout,
+        follow_redirects=True,
+        transport=transport,
+    ) as client:
+        page = client.get(TC_URL)
+        page.raise_for_status()
+        m = _SITE_JS_RE.search(page.text)
+        if not m:
+            return {}
+        js = client.get(f"https://keeptradecut.com{m.group(1)}")
+        js.raise_for_status()
+        return extract_calculator_globals(js.text)
+
+
+def extract_calculator_globals(html: str) -> dict[str, int]:
+    """`{league_year_phase, draft_year}` out of `site.min.js`'s text, or {}
+    when absent.
+
+    Absent is not an error here — the rankings page is the contract for VALUES
+    and these two are a bonus. The caller decides what a missing phase means;
+    `ktc_picks` refuses to price without one rather than assuming."""
+    out: dict[str, int] = {}
+    m = _PHASE_RE.search(html)
+    if m:
+        out["league_year_phase"] = int(m.group(1))
+    m = _DRAFTYEAR_RE.search(html)
+    if m:
+        out["draft_year"] = int(m.group(1))
+    return out
 
 
 class KtcError(Exception):

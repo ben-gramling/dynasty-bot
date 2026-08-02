@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import urlencode
 
+from core.scoring import ktc_picks as pk_ids
 from core.scoring import picks as pk
 
 TC_BASE = "https://keeptradecut.com/trade-calculator"
@@ -151,10 +152,9 @@ def ktc_names(league: Any) -> dict[int, str]:
     return out
 
 
-def numbered_pick_id(year: int, rnd: int, slot: int) -> int:
-    """KTC's numbered-pick id for a current-year pick: parseInt(year + round + pick),
-    slot UNPADDED. 2026 1.01 -> 202611, 2026 1.12 -> 2026112."""
-    return int(f"{year}{rnd}{slot}")
+# One implementation of the id rule, two names. The whole deep-link contract
+# rests on it, so a second copy would be a drift hazard (§ ktc_picks).
+numbered_pick_id = pk_ids.numbered_pick_id
 
 
 def ktc_id_of(a: Any, ids: Mapping[tuple[int, str, int], int]) -> int | None:
