@@ -252,7 +252,11 @@ searches, cached views.**
   absence at the DB's edges (measured live: (−1, −1) is EMPTY — no fair
   gate-clean 3-for-1 onto our side exists league-wide), and the favor
   window binds the HEDGE legs only (v8.0.1) — an already-received offer's
-  own favor is disclosed, never a filter, so generous offers still hedge;
+  own favor is disclosed, never a filter, so generous offers still hedge —
+  and offers re-verdict on the RECEIVED basis (v8.0.2): band/fleece
+  violations waive exactly when their excess flows to us, stay FAIL when
+  we'd overpay, legality never waives, the original verdict + waived list
+  ride the card as disclosure;
   (h) legality is a
   persistent tri-state column, discovered by walks, max-merged across
   processes.

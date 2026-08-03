@@ -206,7 +206,16 @@ board file) so the published artifact URL stays stable all session.
    a generous offer's favor poisoned the pair minimum and silently emptied
    the hedge list.
 4. Gate-FAIL offers: hedges still computed, labeled ("if you took it anyway"),
-   with `--alternatives` counters alongside. [OPEN DIAL 3]
+   with `--alternatives` counters alongside. [DIAL 3: decided shown-but-labeled]
+   **v8.0.2 — the RECEIVED-OFFER basis:** the band and the fleece cap exist
+   so WE never fire insulting offers; applied verbatim to an offer the
+   counterparty already made they veto exactly the trades most worth taking.
+   `offer` re-verdicts the card: each violation is waived precisely when its
+   excess flows TO us (band: adjusted skew in our favor; fleece: the raw
+   excess arrives on our side), kept when we'd overpay, and legality never
+   waives. Verdict reads "PASS (received basis — waived: …)"; the original
+   verdict + waived list stay on the card (`gate.origin_verdict`,
+   `gate.waived`). `score` keeps the strict basis for trades we draft.
 5. Board regenerated: counterparty focused first, offer card pinned with the
    gate verdict loud.
 

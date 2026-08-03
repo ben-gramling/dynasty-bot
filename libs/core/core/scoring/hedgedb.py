@@ -1104,6 +1104,51 @@ class HedgeDB:
         league = self.league
         card = tr.propose_by_names(league, opp_name, give_names, get_names)
         give, get = tr.card_packages(league, card)
+
+        # §12(g) v8.0.2: the RECEIVED-OFFER gate basis. The fairness band and
+        # the fleece cap are politeness filters on trades WE originate — they
+        # stop us firing insulting offers at league-mates. Applied verbatim to
+        # an offer the counterparty ALREADY MADE, they veto exactly the trades
+        # most worth taking ("fleece ratio 1.46" = they offered us 46% more
+        # raw value). So each violation is WAIVED precisely when its excess
+        # flows TO us — their choice, nothing to protect — and KEPT when it
+        # runs against us (we'd overpay on their own calculator / we'd send
+        # the raw-heavy side). Legality is roster physics and never waives.
+        # The original verdict and the waived list stay on the card as
+        # disclosure; `score` keeps the strict basis for trades we draft.
+        g = card["gate"]
+        if g["verdict"].startswith("FAIL"):
+            reasons: list[str] = []
+            waived: list[str] = []
+            if not g["legal"]:
+                reasons.append("post-trade roster illegal (positional minima / size)")
+            if not g["band_ok"]:
+                if g["adj_get"] >= g["adj_give"]:
+                    waived.append(
+                        f"fairness band (gap {g['gap_pct']}% in your favor)"
+                    )
+                else:
+                    reasons.append(
+                        f"outside fairness band against you (gap {g['gap_pct']}% > band)"
+                    )
+            if not g["ratio_ok"]:
+                if get.v_sum >= give.v_sum:
+                    waived.append(
+                        f"fleece cap (raw ratio {g['raw_ratio']} — the excess flows to you)"
+                    )
+                else:
+                    reasons.append(
+                        f"fleece ratio {g['raw_ratio']} > cap {g['cap']} against you"
+                    )
+            g["origin_verdict"] = g["verdict"]
+            g["waived"] = waived
+            if reasons:
+                g["verdict"] = "FAIL: " + "; ".join(reasons) + (
+                    " (waived: " + "; ".join(waived) + ")" if waived else ""
+                )
+            else:
+                g["verdict"] = "PASS (received basis — waived: " + "; ".join(waived) + ")"
+
         np_off = get.n_players - give.n_players
         nk_off = get.n_picks - give.n_picks
         result: dict = {"offer": card, "hedges": [], "counts": None, "exact": True}

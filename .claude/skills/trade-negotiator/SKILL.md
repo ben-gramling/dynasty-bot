@@ -430,7 +430,11 @@ uv run python scripts/score_trade.py find \
   coords, then the hedges — or the proven absence: an empty complement
   signature is a THEOREM about the fair band ("no fair gate-clean 3-for-1
   onto our side exists league-wide"), quote it as one. A count-neutral offer
-  says so and stands alone. Gate-FAIL offers still show hedges labeled "if
+  says so and stands alone. Offers re-verdict on the RECEIVED basis
+  (v8.0.2): "PASS (received basis — waived: …)" means the only gate
+  violations run in YOUR favor — the trade books, quote the waived list as
+  their generosity; a remaining FAIL means you'd overpay on their own
+  calculator (or the roster is illegal) and still shows hedges labeled "if
   you took it anyway" — the counter usually lives there: fix the failing
   rule via `score --alternatives`, keeping shapes consistent with X's
   revealed wants; present accept / counter / decline with numbers.
@@ -464,8 +468,13 @@ uv run python scripts/score_trade.py find \
 - Coordinate honesty: their (dS, dF) is their OWN arithmetic, not minus ours
   — quote both sides' verdicts, and when both are good say so, it closes
   trades. Never collapse the interval to one number: "guaranteed +X, up to
-  +Y". A gate-FAIL is dead no matter the numbers: the gate IS their KTC
-  calculator. Anchor at +8%, settle inside the band.
+  +Y". A gate-FAIL is dead no matter the numbers **for legs WE originate**:
+  the gate IS their KTC calculator, and it exists so we never fire an
+  insulting offer. RECEIVED offers re-verdict on the received basis
+  (v8.0.2): band/fleece violations waive exactly when their excess flows to
+  us — they proposed it, there is nothing to protect — and stay FAIL when
+  we'd overpay; legality never waives. Anchor at +8%, settle inside the
+  band.
 - Count honesty (v5.1), one rule: say **"none exist"** only when the engine
   itself reported the count exact — a `find` whose crossing completed
   (`exact: true`), or an unsaturated `bands` bucket — and say it as "none

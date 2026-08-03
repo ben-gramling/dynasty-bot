@@ -276,6 +276,39 @@ def test_offer_favor_window_binds_hedge_legs_only(db):
         assert h["favor"]["min"] == round(min(favor_off, h["favor"]["hedge"]), 2)
 
 
+def test_offer_received_basis_verdicts(db):
+    """§12(g) v8.0.2: band/fleece violations waive exactly when their excess
+    flows TO us (they proposed it), and stay FAIL when we'd be the ones
+    overpaying. Both directions pinned with 1-for-1 player offers (count-
+    neutral — the verdict rewrite applies before the standalone return)."""
+    league = db.league
+    import core.scoring.trades as tr
+
+    me = league.teams[league.me]
+    opp_name = sorted(n for n in league.teams if n != league.me)[0]
+    mine = sorted(
+        (a for a in tr.team_assets(league, me).values()
+         if a.kind == "player" and a.v > 0),
+        key=lambda a: a.v,
+    )
+    theirs = sorted(
+        (a for a in tr.team_assets(league, league.teams[opp_name]).values()
+         if a.kind == "player" and a.v > 0),
+        key=lambda a: a.v,
+    )
+    # generous: my cheapest valued player for their most valuable one
+    gen = db.offer(opp_name, [mine[0].name], [theirs[-1].name], query=_SLIDERS, intel=())
+    gg = gen["offer"]["gate"]
+    assert gg["origin_verdict"].startswith("FAIL"), "fixture precondition"
+    assert gg["verdict"].startswith("PASS (received basis"), gg["verdict"]
+    assert gg["waived"], "the waived list is the disclosure"
+    # overpay: my most valuable give-able player for their cheapest one
+    over = db.offer(opp_name, [mine[-1].name], [theirs[0].name], query=_SLIDERS, intel=())
+    og = over["offer"]["gate"]
+    assert og["verdict"].startswith("FAIL"), og["verdict"]
+    assert "against you" in og["verdict"]
+
+
 def test_query_fingerprint_moves_with_intel(db):
     """§12(h): intel compiles into constraints, so a WANT arriving must MISS
     the cache — the fingerprint covers compiled constraints, not just flags."""
