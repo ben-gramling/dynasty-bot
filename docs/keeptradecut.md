@@ -219,15 +219,15 @@ query string). The calculator holds at most **12 assets across both sides combin
 - **Picks, future years** — the generic RDP tranche id for `(year, Pick.band, round)`,
   derived from the snapshot at runtime. Never hardcode the table: §7 warns the pick
   asset list rolls forward during the season.
-- **A future pick's band follows its TRADE DIRECTION (v7.5), never a forecast.**
-  `Pick.band` encodes the §3.2 pessimism: a pick Ben owns links **Early** (he would be
-  the sender — the dear end of the round), anyone else's links **Late** (he would be
-  receiving — the cheap end). On the 2026-07-26 snapshot `millj`'s three 2027 R4s all
-  resolve to **1713** ("2027 Late 4th") while Ben's own 2027 R4 resolves to **1711**
-  (Early). Keying on `(year, round)` alone is still a bug — read the stored field.
-  (Through v7.4 the band followed the ORIGIN team's projected finish — `rank_L` next
-  year, flat Mid two out. That was an estimate of where the pick lands, and v7.5
-  retired it everywhere: gate, links, board.)
+- **A future pick's band is flat Mid (v7.6), never a forecast.** `Pick.band` encodes
+  the §3.2 rule: every future pick links its round's **Mid** tranche — on the
+  2026-07-26 snapshot every 2027 R4 in the league, Ben's included, resolves to
+  **1712** ("2027 Mid 4th"). Still read the stored field rather than keying on
+  `(year, round)`: the current year is numbered, not banded. (History: through v7.4
+  the band followed the ORIGIN team's projected finish — `rank_L` next year, flat Mid
+  two out — an estimate of where the pick lands; v7.5 briefly replaced it with
+  directional pessimism, Early when Ben sends / Late when he receives; v7.6 settled
+  on the neutral midpoint everywhere: gate, links, board.)
 - **Picks, current year (v7.4)** — KTC's NUMBERED entry. When `LEAGUEYEARPHASE=2` the
   site's `calcPicksRookies()` injects 48 numbered records into `playersArray` —
   `"2026 Pick 1.01"` with `playerID = parseInt(year+round+pick)`, i.e. **202611**.

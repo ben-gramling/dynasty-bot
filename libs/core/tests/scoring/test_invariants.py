@@ -155,19 +155,18 @@ def test_coordinate_levels_pinned(league, me):
     trade-by-trade in test_trades §11.8b(c)).
 
     v7 gave the F level a LENS, still a required argument; v7.5 made the two
-    lenses one price (every future pick I hold books Early, because I would be
-    the one sending it — and that IS the price now, not an annotation on a
-    rank_L projection), so `market` and `me` agree at 131,861.86. ΔF is
-    computed in the `me` lens, so that is the one the identity is asserted
-    against."""
+    lenses one price and v7.6 made that price flat Mid for future picks (the
+    slot is never estimated, whoever owns it), so `market` and `me` agree at
+    129,042.86. ΔF is computed in the `me` lens, so that is the one the
+    identity is asserted against."""
     s = ln.starter_sum(tr.starter_pool(me))
     assert s == 51832.0
-    assert me.picks_mv == 44688.86
-    assert sum(p.p_me for p in me.picks) == 44688.86
+    assert me.picks_mv == 41869.86
+    assert sum(p.p_me for p in me.picks) == 41869.86
     # everything the F coordinate sees: active + taxi at face plus the picks
     assert sum(p.v for p in tr.starter_pool(me)) == 87173.0
-    assert tr.total_face(me, lens="market") == 87173.0 + 44688.86 == 131861.86
-    assert tr.total_face(me, lens="me") == 87173.0 + 44688.86 == 131861.86
+    assert tr.total_face(me, lens="market") == 87173.0 + 41869.86 == 129042.86
+    assert tr.total_face(me, lens="me") == 87173.0 + 41869.86 == 129042.86
 
 
 # ------------------------------------------------ 2. independence + import graph
@@ -196,8 +195,8 @@ def test_lineup_perturbations_never_move_coords(snapshot, league):
     replacement; and no other parameter exists in the score at all, v4)."""
     base = _coords_ex1(league)
     assert base == {
-        "me": {"dS": -64.0, "dF": -786.0},
-        "them": {"dS": 1216.0, "dF": 786.0},
+        "me": {"dS": -64.0, "dF": 78.0},
+        "them": {"dS": 1216.0, "dF": -78.0},
     }
     for params in PERTURBED:
         league2 = md.build_league(snapshot, params)
@@ -258,9 +257,9 @@ def test_roster_counts_never_move_coords_but_face_is_a_coordinate(snapshot, para
         league, "jaketoppen", [mine[my_bench.name]], [jake["2028 R4 (own)"]]
     )
     assert card["coords"]["me"]["dS"] == 0.0  # he never started
-    # v7.5: the pick's ONE price is Late 1,451 (jaketoppen owns it, so I would
-    # be receiving it) — the 1,759 flat-Mid market tranche is retired
-    assert jake["2028 R4 (own)"].v == jake["2028 R4 (own)"].v_me == 1451.0
+    # v7.6: the pick's ONE price is the flat Mid tranche 1,759, whoever owns
+    # it — the slot is never estimated
+    assert jake["2028 R4 (own)"].v == jake["2028 R4 (own)"].v_me == 1759.0
     assert card["coords"]["me"]["dF"] == pytest.approx(
         jake["2028 R4 (own)"].v_me - my_bench.v, abs=0.05
     )
@@ -590,18 +589,19 @@ def test_pair_coords_are_combined_not_the_leg_sum(board, league):
     sell = tr.propose_by_names(
         league, "jaketoppen", ["Kenneth Walker III"], ["2027 R1 (from vishan)"]
     )
-    # v7 moves both ΔFs (I send my own 2027 1st at Early 7,398 and receive
-    # vishan's at Late 5,562) and leaves every ΔS untouched — picks never enter
-    # the lineup, which is exactly what this test is about
-    assert buy["coords"]["me"] == {"dS": 0.0, "dF": -2545.0}
-    assert sell["coords"]["me"] == {"dS": -2220.0, "dF": -719.0}
+    # v7.6 moves both ΔFs (my own 2027 1st and vishan's both price at the flat
+    # Mid 6,118 — the swap of the two 1sts nets exactly 0 face, a symmetry
+    # pin) and leaves every ΔS untouched — picks never enter the lineup,
+    # which is exactly what this test is about
+    assert buy["coords"]["me"] == {"dS": 0.0, "dF": -1265.0}
+    assert sell["coords"]["me"] == {"dS": -2220.0, "dF": -163.0}
     pair = tr.pair_coords(league, buy, sell)
     assert pair["dS"] == -1428.0  # combined ≠ leg sum (−2,220)
     ds_sum = buy["coords"]["me"]["dS"] + sell["coords"]["me"]["dS"]
     assert pair["dS"] - ds_sum == 792.0  # the lineup interaction, raw
     # ΔF is exactly additive across legs — no interaction exists in face, and
-    # the v7 lens is a static per-asset price so additivity is untouched
-    assert pair["dF"] == buy["coords"]["me"]["dF"] + sell["coords"]["me"]["dF"] == -3264.0
+    # the one price is a static per-asset scalar so additivity is untouched
+    assert pair["dF"] == buy["coords"]["me"]["dF"] + sell["coords"]["me"]["dF"] == -1428.0
     # superadditivity guarantee (§2): combined ΔS is never BELOW the leg sum
     assert pair["dS"] >= ds_sum
     # §11.8b(d): verdict-false — and absent from the stored board

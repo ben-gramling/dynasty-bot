@@ -16,10 +16,9 @@ def _rank(values: dict[str, float], name: str) -> int:
 def _pick_detail(league: md.LeagueState, p) -> dict:
     d = {
         "label": p.label,
-        # §1 the one price (v7.5): KTC's numbered price for a current-year pick
-        # (v7.4), the pessimistic tranche for a future one — Early when I own
-        # it, Late when this owner is someone else; the rank_L projection is
-        # retired and no forecast band exists to show
+        # §1 the one price (v7.6): KTC's numbered price for a current-year pick
+        # (v7.4), the flat Mid tranche for a future one — the slot is never
+        # estimated, and the price is the same whoever owns the pick
         "v": round(p.mv),
         "band": p.band,
         "band_reason": p.band_reason,

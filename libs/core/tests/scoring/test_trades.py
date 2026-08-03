@@ -66,10 +66,10 @@ def test_gate_is_the_exact_ktc_calculator(league):
         league, [theirs["2027 R1 (from vishan)"], theirs["2028 R4 (own)"]]
     )
     g = tr.gate_info(league, give, get)
-    # v7.5: the pick side enters at the pessimistic tranche (Late — I would be
-    # receiving both), because that IS their price now
+    # v7.6: the pick side enters at the flat Mid tranche — the slot is never
+    # estimated, and that IS their price for every consumer
     direct = ka.ktc_adjustment(
-        [4125.0, 3674.0], [5562.0, 1451.0], top_value=league.top_ktc_value
+        [4125.0, 3674.0], [6118.0, 1759.0], top_value=league.top_ktc_value
     )
     assert (g["adj_give"], g["adj_get"]) == (
         float(direct["adj_total1"]),
@@ -82,20 +82,18 @@ def test_gate_is_the_exact_ktc_calculator(league):
 
 def test_worked_example_1_sell_leg(league):
     """§10.1: Evans + Sutton → jaketoppen for vishan's 2027 1st + his 2028 4th.
-    v4 reports the two coordinates and no blend; **v7.5 prices the two picks I
-    would RECEIVE at the cheap end of their rounds, for EVERY consumer**
-    (Late 5,562 and 1,451 — the old market lens read 7,398 Early off vishan's
-    rank_L and 1,759 flat Mid). My side is (ΔS −64, ΔF −786): not a preference
-    trade at all, but bad at EVERY rational preference — no breakeven exists.
-    This is the headline case for the pessimism rule: buying future picks at a
-    market-fair price is not a gain once you stop assuming they land early.
-    Their side is (+1,216, +786) — one price vector, so the two ΔFs negate
-    exactly again — and their verdict is TRUE: shipping future picks for
-    starters is objectively good for them under the same pessimism.
-    THE GATE MOVED (v7.5): it prices the get side at the same Late tranches,
-    so the old 36.8% REJECT (7,399 top-up on a concentrated Early 1st) becomes
-    a 12.1% PASS. Gate-fair and still floor-negative for me is exactly why the
-    §2 verdict is a separate hard constraint."""
+    v4 reports the two coordinates and no blend; **v7.6 prices both picks at
+    the flat Mid tranche for EVERY consumer** (6,118 and 1,759 — the retired
+    rank_L lens read vishan's 1st Early 7,398; v7.5's pessimism read it Late
+    5,562; the midpoint splits the difference). My side is (ΔS −64, ΔF +78): a
+    PREFERENCE trade — good only for δ beyond δ* ≈ 0.4507 — and no longer the
+    guaranteed loss v7.5's Late pricing certified (−786) nor the +1,358 gift
+    the Early projection once claimed. Their side is (+1,216, −78) — one
+    symmetric price vector, so the two ΔFs negate exactly. THE GATE MOVED
+    AGAIN: at Mid prices it reads 7,799 against 10,262, a 24.0% gap ⇒ REJECT
+    (v7.4's Early projection said 36.8%, v7.5's Late pessimism said 12.1%
+    PASS) — the concentrated 6,118 pick still earns a top-up two mid WRs do
+    not."""
     card = tr.propose_by_names(
         league, "jaketoppen",
         ["Mike Evans", "Courtland Sutton"],
@@ -104,37 +102,38 @@ def test_worked_example_1_sell_leg(league):
     give = {a["name"]: a["v"] for a in card["give"]}
     get = {a["name"]: a["v"] for a in card["get"]}
     assert give == {"Mike Evans": 4125, "Courtland Sutton": 3674}
-    assert get == {"2027 R1 (from vishan)": 5562, "2028 R4 (own)": 1451}
+    assert get == {"2027 R1 (from vishan)": 6118, "2028 R4 (own)": 1759}
     # v7.5: one price — no second-lens annotation exists on any asset
     assert all("v_me" not in a for a in card["give"] + card["get"])
     # §2 v4 per-side coordinates; a single price vector, so ΔF negates exactly
     assert card["coords"] == {
-        "me": {"dS": -64.0, "dF": -786.0},
-        "them": {"dS": 1216.0, "dF": 786.0},
+        "me": {"dS": -64.0, "dF": 78.0},
+        "them": {"dS": 1216.0, "dF": -78.0},
     }
     assert card["coords"]["me"]["dF"] == round(
-        (5562 + 1451) - (4125 + 3674) - 0.0, 1
+        (6118 + 1759) - (4125 + 3674) - 0.0, 1
     )  # ΔF is exactly the face delta at the one price
-    assert card["verdict"] == {"me": False, "them": True}
-    assert card["floor"] == {"me": -786.0, "them": 786.0}
-    # both my coordinates negative ⇒ bad at every δ ⇒ no breakeven; their
-    # verdict-true side carries none either
-    assert card["breakeven"] == {"me": None, "them": None}
+    assert card["verdict"] == {"me": False, "them": False}
+    assert card["floor"] == {"me": -64.0, "them": -78.0}
+    # a sign split on each side ⇒ both carry breakevens: mine δ* = 64/142,
+    # theirs δ* = 1216/1294 (their win-now read of shipping picks for starters)
+    assert card["breakeven"]["me"] == round(64.0 / 142.0, 4) == 0.4507
+    assert card["breakeven"]["them"] == round(1216.0 / 1294.0, 4) == 0.9397
     assert card["coords_basis"] == "isolation"
-    # §5 v4 leg return is floor-based: −786 ÷ 7,799 sent; with one price
-    # vector the market skim is the same number
-    assert card["return_pct"] == -10.08
-    assert card["market_return_pct"] == -10.08
+    # §5 v4 leg return is floor-based: −64 ÷ 7,799 sent; the market skim reads
+    # the same one price vector
+    assert card["return_pct"] == -0.82
+    assert card["market_return_pct"] == 1.0
     g = card["gate"]
-    assert (g["adj_give"], g["adj_get"]) == (7799.0, 8868.0)
-    assert (g["gap"], g["gap_pct"], g["band"]) == (1069.0, 12.1, 1773.6)
-    assert g["band_ok"] is True
-    assert g["raw_ratio"] == 1.11 and g["ratio_ok"]
-    assert g["verdict"] == "PASS"
-    # §4a v5 favor from the SAME adjusted totals: 100·(7,799−8,868)/16,667 =
-    # −6.41 → −6.4 in the calculator's own 1-decimal quantization; negative
-    # = skewed to ME (outside their |5| FAIR window, inside the 20% band)
-    assert card["favor"] == g["favor"] == -6.4
+    assert (g["adj_give"], g["adj_get"]) == (7799.0, 10262.0)
+    assert (g["gap"], g["gap_pct"], g["band"]) == (2463.0, 24.0, 2052.4)
+    assert g["band_ok"] is False
+    assert g["raw_ratio"] == 1.01 and g["ratio_ok"]
+    assert g["verdict"] == "FAIL: outside fairness band (gap 24.0% > band)"
+    # §4a v5 favor from the SAME adjusted totals: 100·(7,799−10,262)/18,061 =
+    # −13.64 → −13.6 in the calculator's own 1-decimal quantization; negative
+    # = skewed to ME (they'd want more, which is also why the band fails)
+    assert card["favor"] == g["favor"] == -13.6
     assert card["leg_type"] == "sell"
     assert card["net_roster"] == {"me": -2, "them": 2}
     # §5 v3.2 count deltas: 2 players out, 2 picks in — a building block, not
@@ -149,7 +148,7 @@ def test_worked_example_1_sell_leg(league):
     # aimed at a visible hole: jaketoppen's WR room ranks 10th of 12
     assert card["holes"] == [{"pos": "WR", "their_rank": 10}]
     assert card["anchor_ask"]["pct"] == 8.0
-    assert card["anchor_ask"]["ask"] == round(1.08 * (5562 + 1451))
+    assert card["anchor_ask"]["ask"] == round(1.08 * (6118 + 1759))
     assert card["posture"]["shape"] == "players"
     assert card["posture"]["label"] in ("BUYER", "SELLER", "NEUTRAL")
 
@@ -157,33 +156,33 @@ def test_worked_example_1_sell_leg(league):
 def test_worked_example_2_buy_leg_face_for_face(league):
     """§10.2: buy Jauan Jennings (3,001) from millj for my 2028 3rd.
     Jennings never cracks my max-Σv lineup, so the whole move is in the face
-    coordinate. **v7.5 charges the dear end of the round for the pick I send —
-    everywhere** (Early 2,618; the old market lens read 2,468 flat Mid), so the
-    trade reads (ΔS 0, ΔF +383): objectively GOOD (one strict coordinate),
-    guaranteed floor 0, gain the interval 0 to +383. millj's side is (0, −383)
-    — one price vector, ΔF negates exactly. The gate prices my pick at the same
-    2,618 and still rejects (gap 1,110 = 29.8% against a 20% band, milder than
-    the 36.7% it read off the Mid tranche); the shape (picks → SELLER) is
-    still right."""
+    coordinate. **v7.6 prices the pick at the flat Mid tranche everywhere**
+    (2,468 — for a 2028 pick numerically the old market band again, since two
+    years out was always flat Mid; v7.5 briefly charged Early 2,618 because I
+    was the sender), so the trade reads (ΔS 0, ΔF +533): objectively GOOD
+    (one strict coordinate), guaranteed floor 0, gain the interval 0 to +533.
+    millj's side is (0, −533) — one symmetric price vector, ΔF negates
+    exactly. The gate rejects (gap 1,430 = 36.7% against a 20% band); the
+    shape (picks → SELLER) is still right."""
     card = tr.propose_by_names(league, "millj", ["2028 R3 (own)"], ["Jauan Jennings"])
-    assert sum(a["v"] for a in card["give"]) == 2618
+    assert sum(a["v"] for a in card["give"]) == 2468
     assert sum(a["v"] for a in card["get"]) == 3001
     assert card["coords"] == {
-        "me": {"dS": 0.0, "dF": 383.0},
-        "them": {"dS": 0.0, "dF": -383.0},
+        "me": {"dS": 0.0, "dF": 533.0},
+        "them": {"dS": 0.0, "dF": -533.0},
     }
     assert card["verdict"] == {"me": True, "them": False}
-    assert card["floor"] == {"me": 0.0, "them": -383.0}
+    assert card["floor"] == {"me": 0.0, "them": -533.0}
     # verdict-true ⇒ no breakeven; both-coordinates-≤0 ⇒ no breakeven either
     assert card["breakeven"] == {"me": None, "them": None}
     assert card["return_pct"] == 0.0  # floor-based: guaranteed nothing
-    # market skim off the same one price: (3,001 − 2,618) ÷ 2,618
-    assert card["market_return_pct"] == 14.63
+    # market skim off the same one price: (3,001 − 2,468) ÷ 2,468
+    assert card["market_return_pct"] == 21.6
     g = card["gate"]
-    assert (g["adj_give"], g["adj_get"]) == (2618.0, 3728.0)
-    assert (g["gap"], g["gap_pct"], g["band"]) == (1110.0, 29.8, 745.6)
+    assert (g["adj_give"], g["adj_get"]) == (2468.0, 3898.0)
+    assert (g["gap"], g["gap_pct"], g["band"]) == (1430.0, 36.7, 779.6)
     assert g["band_ok"] is False
-    assert g["raw_ratio"] == 1.15 and g["ratio_ok"] is True
+    assert g["raw_ratio"] == 1.22 and g["ratio_ok"] is True
     assert g["verdict"].startswith("FAIL")
     assert card["leg_type"] == "buy"
     assert card["posture"]["label"] == "SELLER"  # millj: 3 sells on record
@@ -334,36 +333,36 @@ def test_stored_conversion_floor_zero(league):
 
 def test_hunter_for_a_2027_second_conversion_earns_no_floor(league, board):
     """§11.8b(b) pinned on the COMMITTED fixtures. Travis Hunter (4,061) is on
-    my bench; selling him for ronakpatel32's 2027 2nd used to be (ΔS 0, ΔF +78)
-    — verdict true, floor 0, return 0.00%, below the 1% stored universe.
-    **v7.5 prices the pick I receive at Late 3,855 for every consumer** (the
-    retired market lens said Mid 4,139 off ronak's rank_L 8), so the naked
-    conversion is (ΔS 0, ΔF −206): verdict FALSE, a strict loss at every
-    preference. The reclassification exploit v3.4 killed (it paid the pick's
-    entire face) is not merely dead but negative — turning a bench body into an
-    unknown-slot future pick costs you, parameter-free — and since v7.5 the
-    market skim SAYS so too (one price, so `market_return_pct` matches).
+    my bench; selling him for ronakpatel32's 2027 2nd at the flat Mid 4,139
+    (v7.6 — the slot never estimated, one price for every consumer) is
+    (ΔS 0, ΔF +78): verdict true but floor 0, return 0.00%, below the 1%
+    stored universe. The v3.4 reclassification exploit — a bench body
+    laundered into a pick at full face used to claim the pick's entire value
+    as gain — stays dead with no parameter: the FLOOR is what ranks, and a
+    non-starter conversion's floor is ~0. (v7.5's Late pricing briefly made
+    this conversion a certified −206 loss; the midpoint restores the honest
+    "worthless, not harmful" reading.)
 
-    v5's per-bucket dF-top union may still store a PAIR carrying this leg, and
-    the floor arithmetic is now strictly friendlier: combined ΔS ≤ the
-    partner's ΔS (Hunter only back-fills) and combined ΔF = partner ΔF − 206,
-    so the pair's floor can never EXCEED the partner's own."""
+    v5's per-bucket dF-top union may still store a PAIR carrying this leg;
+    the floor arithmetic bounds it: combined ΔS ≤ the partner's ΔS (Hunter
+    only back-fills a hole the partner opened) and combined ΔF = partner ΔF
+    + 78, so the pair's floor can exceed the partner's own by at most 78."""
     mine = tr.team_assets(league, league.teams[league.me])
     ron = tr.team_assets(league, league.teams["ronakpatel32"])
     hunter, second = mine["Travis Hunter"], ron["2027 R2 (own)"]
-    assert (hunter.v, second.v) == (4061.0, 3855.0)
+    assert (hunter.v, second.v) == (4061.0, 4139.0)
     starters = {p.sid for grp in ln.starters(tr.starter_pool(league.teams[league.me])).values() for p in grp}
     assert hunter.player.sid not in starters  # bench: ΔS = 0 either way
 
     card = tr.propose(league, "ronakpatel32", [hunter], [second])
     assert card["gate"]["verdict"] == "PASS"  # it was always gate-clean
-    assert second.v_me == second.v == 3855.0  # Late: theirs, I'd be receiving
-    assert card["coords"]["me"] == {"dS": 0.0, "dF": -206.0}
-    assert card["verdict"]["me"] is False and card["floor"]["me"] == -206.0
-    assert card["return_pct"] == -5.07  # floor-based, on the 4,061 sent
-    # one price vector: the market skim agrees with the coordinate now
-    assert card["market_return_pct"] == -5.07
-    # any stored pair carrying the conversion leg owes its floor to the partner
+    assert second.v_me == second.v == 4139.0  # flat Mid, whoever owns it
+    assert card["coords"]["me"] == {"dS": 0.0, "dF": 78.0}
+    assert card["verdict"]["me"] is True and card["floor"]["me"] == 0.0
+    assert card["return_pct"] == 0.0  # floor-based: guaranteed nothing
+    assert card["market_return_pct"] == 1.92
+    # any stored pair carrying the conversion leg owes its floor to the
+    # partner, up to the conversion's own +78 face edge
     conv = ({hunter.key}, {second.key})
     for pair in board["pairs"]:
         for tag, other in (("buy", "sell"), ("sell", "buy")):
@@ -372,9 +371,7 @@ def test_hunter_for_a_2027_second_conversion_earns_no_floor(league, board):
             if legk != conv:
                 continue
             assert pair["verdict"] is True and pair["return_pct"] >= 1.0
-            # v7: the conversion's own ΔF edge is NEGATIVE (−206), so it can
-            # only drag the pair's floor down — never lift it above the partner's
-            assert pair["floor"] <= pair[other]["floor"]["me"] + 1e-6, pair["id"]
+            assert pair["floor"] <= pair[other]["floor"]["me"] + 78.0 + 1e-6, pair["id"]
 
 
 def test_interval_endpoints_are_the_delta_extremes(league):
@@ -692,39 +689,38 @@ def test_pair_count_deltas_both_currencies(league):
 
 def test_pair_coords_math_pinned(league):
     """§5 v4 coordinate arithmetic pinned to the fixtures, re-pinned for
-    v7.5's one price. The buy leg swaps my own 2028 4th (Early 1,916 — MINE, I
-    send it; the 1,759 flat-Mid market tranche is retired, so 1,916 is also the
-    face the card and the denominator show) for a 1,876 non-starter: (0, −40)
-    — verdict FALSE, floor −40.
+    v7.6's flat Mid. The buy leg swaps my own 2028 4th (Mid 1,759, whoever
+    owns it) for a 1,876 non-starter: (0, +117) — verdict TRUE, floor 0, an
+    honest nothing (v7.5's Early send price read it (0, −40)).
 
     The sell leg ships Joe Burrow plus my 2026 4.01 for Jukinski's 2026 1.12
-    and his 2028 1st (a future pick I receive ⇒ Late 4,768, every consumer).
-    (−1,312, +1,197): ΔS cannot move — picks never enter the lineup, so the
+    and his 2028 1st (Mid 5,207, every consumer — v7.5 said Late 4,768).
+    (−1,312, +1,636): ΔS cannot move — picks never enter the lineup, so the
     coordinate is Burrow's slot dent and nothing else.
 
-    The PAIR combines: ΔS one re-solve (−1,312), ΔF additive (+1,157); verdict
-    FALSE, floor −1,312, breakeven δ* 0.5314. Floor-based return −13.51% →
-    −13.3% under v7.5 — the numerator is the untouched ΔS floor, so the whole
-    move is in the denominator: sent 9,708 → 9,865, my 2028 4th now entering
-    at its Early price (+157)."""
+    The PAIR combines: ΔS one re-solve (−1,312), ΔF additive (+1,753);
+    verdict FALSE, floor −1,312, breakeven δ* 0.4281. Floor-based return
+    −13.51% — numerically the v7.4 figure again, because the numerator is the
+    untouched ΔS floor and my sent 2028 4th re-enters the denominator at its
+    Mid price (sent back to 9,708)."""
     buy, sell = _fixture_pair_legs(league)
-    assert buy["coords"]["me"] == {"dS": 0.0, "dF": -40.0}
-    assert (buy["floor"]["me"], sum(a["v"] for a in buy["give"])) == (-40.0, 1916)
-    assert buy["verdict"]["me"] is False and buy["return_pct"] == -2.09
-    assert sell["coords"]["me"] == {"dS": -1312.0, "dF": 1197.0}
+    assert buy["coords"]["me"] == {"dS": 0.0, "dF": 117.0}
+    assert (buy["floor"]["me"], sum(a["v"] for a in buy["give"])) == (0.0, 1759)
+    assert buy["verdict"]["me"] is True and buy["return_pct"] == 0.0
+    assert sell["coords"]["me"] == {"dS": -1312.0, "dF": 1636.0}
     assert (sell["floor"]["me"], sum(a["v"] for a in sell["give"])) == (-1312.0, 7949)
     assert sell["verdict"]["me"] is False
-    assert sell["breakeven"]["me"] == round(-1312.0 / (-1312.0 - 1197.0), 4) == 0.5229
+    assert sell["breakeven"]["me"] == round(-1312.0 / (-1312.0 - 1636.0), 4) == 0.445
     pair = tr.pair_coords(league, buy, sell)
     assert pair == {
         "dS": -1312.0,
-        "dF": 1157.0,
+        "dF": 1753.0,
         "verdict": False,
         "floor": -1312.0,
-        "ceiling": 1157.0,
-        "breakeven": 0.5314,
-        "sent": 9865.0,
-        "return_pct": -13.3,
+        "ceiling": 1753.0,
+        "breakeven": 0.4281,
+        "sent": 9708.0,
+        "return_pct": -13.51,
     }
     # ΔF is additive across legs; ΔS is NOT assembled from the legs
     assert pair["dF"] == buy["coords"]["me"]["dF"] + sell["coords"]["me"]["dF"]
@@ -740,19 +736,18 @@ def test_exhaustiveness_spot_check(league, pool):
     keeps only `variants_per_signature` (2) get-packages per (give,
     count-signature), ranked by isolation floor, and each re-pricing has
     re-ordered that shortlist: at the give {Joe Burrow, 2026 4.01} the
-    (−1P,+1pk) slots under v7.5 go to {2026 1.06, 2026 1.12} and
-    {2026 2.04, 2027 R1 (own)} — Jukinski's own 2027 R1 arriving at Late 5,562
-    is cheap enough to make the cut — displacing {2026 1.12, 2028 R1 (own)}
-    (dropped by v7.4) AND v7.4's own {2026 1.06, 2027 R2 (from millj)}. All
-    tie on isolation floor at Burrow's −1,312 slot dent, so the shortlist
-    turns entirely on the ΔF tie-break — exactly the coordinate every
-    re-pricing moves.
+    (−1P,+1pk) slots under v7.6 go to {2026 1.06, 2026 1.12} and
+    {2026 1.06, 2027 R2 (from millj)} — the same two v7.4 kept, restored by
+    the symmetric price after v7.5 briefly swapped the second for
+    {2026 2.04, 2027 R1 (own)} — displacing {2026 1.12, 2028 R1 (own)}
+    (dropped by v7.4, still out). All tie on isolation floor at Burrow's
+    −1,312 slot dent, so the shortlist turns entirely on the ΔF tie-break —
+    exactly the coordinate every re-pricing moves.
 
     The surviving {1.06, 1.12} variant demonstrates the property with the same
     counterparty, give and signature, and its combined return is the pair's
-    own −13.3% (v7.5: my 2028 4th enters the denominator at its Early price)
-    because a pair's floor here is ΔS and its denominator the face SENT,
-    neither of which depends on which get-package came back."""
+    own −13.51% because a pair's floor here is ΔS and its denominator the
+    face SENT, neither of which depends on which get-package came back."""
     buy, _displaced = _fixture_pair_legs(league)
     sell = tr.propose_by_names(
         league, "Jukinski", ["Joe Burrow", "2026 4.01"], ["2026 1.06", "2026 1.12"]
@@ -775,7 +770,7 @@ def test_exhaustiveness_spot_check(league, pool):
     ) is None
     ret = tr.pair_in_space(league, pool, bi, si)
     assert ret is not None
-    assert round(100 * ret, 2) == -13.3 == tr.pair_coords(league, buy, sell)["return_pct"]
+    assert round(100 * ret, 2) == -13.51 == tr.pair_coords(league, buy, sell)["return_pct"]
 
 
 def test_pinned_negative_count_signature_mismatch(league, pool):
@@ -845,33 +840,35 @@ def test_posture_is_a_hard_pair_pool_constraint(league, pool, board):
 
 
 def test_board_pairs_verdict_true_and_honest_on_fixture(board, params):
-    """§5 v7.5 / §11.12(g) on the committed fixture. Storage is stratified by
-    FAVOR bucket (pair favor = min(f_buy, f_sell)): 1,184 pairs survive as the
+    """§5 v7.6 / §11.12(g) on the committed fixture. Storage is stratified by
+    FAVOR bucket (pair favor = min(f_buy, f_sell)): 1,200 pairs survive as the
     per-bucket unions of tops by robust return / dS / dF.
 
     The bucket history, each move measured: v5 stored [300,300,296,282,0] and
     reasoned the high-favor end could not exist; v6 fixed the search
-    ([0,+5) 0 → 282); v7's pessimistic ΔF lens contracted the board 1,178 → 925
-    ([0,+5) → 89); v7.4's numbered current-year picks blew it open, 925 → 1,372
-    with [+5,∞) non-empty (184) for the first time.
+    ([0,+5) 0 → 282); v7's pessimistic ΔF lens contracted the board
+    1,178 → 925 ([0,+5) → 89); v7.4's numbered current-year picks blew it
+    open, 925 → 1,372 with [+5,∞) non-empty (184) for the first time; v7.5's
+    everywhere-pessimism handed the frontier straight back (1,184,
+    [0,+5) 284, [+5,∞) 0).
 
-    **v7.5 prices future picks pessimistically for EVERY consumer — the gate
-    included — and the two favor-friendly buckets pay for it:** board 1,372 →
-    1,184, [0,+5) 288 → 284, and [+5,∞) 184 → 0, empty again. The mechanism
-    runs through BOTH sides of the gate: my future picks enter the
-    counterparty's calculator at Early (they'd have to pay more adjusted value
-    for a package I ship) while theirs enter at Late (what they hand me reads
-    cheaper) — so the stored intersection of "their calculator scores it a
-    clear win for them" and "my guaranteed floor clears 1%" vanishes at the
-    [+5,∞) end. That emptiness is a PRICE of the no-forecast rule, chosen with
-    eyes open (the user's ruling), not a search defect: every count below is a
-    verified floor over the same walks that filled the bucket in v7.4.
+    **v7.6 (flat Mid) lands between its neighbours: 1,200 stored, [0,+5)
+    SATURATED at 300 for the first time — and [+5,∞) still 0.** The
+    symmetric price restores the counterparty-friendly window v7.5's
+    Early-out pricing had squeezed, but the far bucket stays empty: v7.4's
+    184 pairs there rode the rank_L asymmetries (Early-projected picks
+    bought at their cheap tranche while the gate charged the counterparty's
+    calculator more), and a symmetric vector offers no such wedge. Every
+    count below is a verified floor over the same walks that filled the
+    bucket in v7.4.
 
-    The headline pair moved wholesale again — new counterparties on both legs
-    (NoahMoell buy, jaketoppen sell) — the honest signal that a re-pricing
-    re-orders the book instead of shifting it. Its numbers are integral this
-    time: no current-year pick rides in it, so the 1.01's fraction (still
-    pinned in §11.13 and test_picks) simply is not aboard.
+    The headline pair is v7.4's, RESTORED number for number (its only pick is
+    the current-year 1.01, which every lens priced identically — see
+    test_sound_bound.test_board_headline_pair_survives_v5_1 for the round
+    trip). Its ΔF is FRACTIONAL (+4,439.1) because the 1.01 is
+    7,994.860000000001 — KTC derives the top two slots off the rookie ladder
+    unrounded, and we carry it rather than rounding the engine to make a pin
+    tidy.
 
     Every count remains a saturated verified floor: the walk orders legs by a
     per-leg key while pairs are priced by exact combined coordinates, so no
@@ -881,27 +878,26 @@ def test_board_pairs_verdict_true_and_honest_on_fixture(board, params):
     assert doc["presets"] == [1.0, 2.5, 5.0, 10.0, 20.0]
     assert doc["favor_presets"] == [-10.0, -5.0, 0.0, 2.5, 5.0]
     # fixture pin: the global top pair is a genuine both-coordinates gain —
-    # guaranteed +3,492, at best +3,855 — and both legs sit outside their
+    # guaranteed +4,291, at best +4,439.1 — and both legs sit outside their
     # counterparties' FAIR window in MY favor. It buys DeVonta Smith + Luther
-    # Burden off NoahMoell for my 2027 R1 + 2027 R4 (both priced Early — I am
-    # the sender — and STILL the buy clears at −9.2 favor), and sells Stefon
-    # Diggs + Joe Flacco to jaketoppen for his 2026 3.12 + 2028 R3 (the 2028
-    # R3 arriving at Late 2,338).
+    # Burden + Rashee Rice off NoahMoell for Jordan Addison + Joe Flacco + my
+    # 2026 1.01, and sells Stefon Diggs to josbaski for his 2026 3.05.
     top = doc["pairs"][0]
-    assert top["return_pct"] == 26.61
-    assert top["coords"] == {"dS": 3492.0, "dF": 3855.0}
-    assert (top["floor"], top["ceiling"]) == (3492.0, 3855.0)
+    assert top["return_pct"] == 26.32
+    assert top["coords"] == {"dS": 4291.0, "dF": 4439.1}
+    assert (top["floor"], top["ceiling"]) == (4291.0, 4439.1)
     assert top["verdict"] is True
-    assert top["favor"] == {"buy": -9.2, "sell": -10.6, "min": -10.6}
-    assert top["sent"] == 13121.0  # integral: no current-year pick aboard
-    # v7.5 re-pin, 1,372 → 1,184 (925 → 1,372 in v7.4).
-    # Three of the five buckets are saturated at the 3-heap union bound.
-    assert len(doc["pairs"]) == sum(b["stored"] for b in bands) == 1184
+    assert top["favor"] == {"buy": -10.4, "sell": -5.8, "min": -10.4}
+    assert top["sent"] == 16300.9  # fractional: the 1.01 rides in the buy leg
+    # v7.6 re-pin, 1,184 → 1,200 (1,372 in v7.4, 925 in v7).
+    # Four of the five buckets are saturated at the 3-heap union bound.
+    assert len(doc["pairs"]) == sum(b["stored"] for b in bands) == 1200
     # the counterparty-favorable end: [0,+5) — trades their OWN calculator
     # scores as even-or-better for them — 0 (v5.1) → 282 (v6) → 89 (v7) → 288
-    # (v7.4) → 284 (v7.5), and [+5,∞) — a clear win for them — 0 → 184 (v7.4)
-    # → 0 (v7.5): the no-forecast gate empties it again, measured and accepted.
-    assert [b["stored"] for b in bands] == [300, 300, 300, 284, 0]
+    # (v7.4) → 284 (v7.5) → 300 SATURATED (v7.6), and [+5,∞) — a clear win
+    # for them — 0 → 184 (v7.4) → 0 (v7.5) → 0 (v7.6): the symmetric price
+    # offers no wedge to populate it, measured and accepted.
+    assert [b["stored"] for b in bands] == [300, 300, 300, 300, 0]
     for b in bands:
         # v5 union storage: at most 3 top-quota heaps' worth per bucket
         assert b["stored"] <= 3 * params.pairs_per_band
@@ -921,8 +917,8 @@ def test_board_pairs_verdict_true_and_honest_on_fixture(board, params):
         assert tr.pair_count_deltas(pair["buy"], pair["sell"]) == (0, 0)
         assert pair["return_pct"] >= doc["presets"][0]
     t = doc["truncated"]
-    assert t is not None and t["stored"] == 1184
-    assert t["total"] >= 1184 and t["total_saturated"] is True
+    assert t is not None and t["stored"] == 1200
+    assert t["total"] >= 1200 and t["total_saturated"] is True
     for card in doc["recommendations"]:
         assert card["leg_type"] in ("sell", "neutral")
         if card["standalone"]:
@@ -957,7 +953,7 @@ def test_return_bands_and_favor_bucket_math():
     ]
     assert tr.bucket_index(buckets, -22.5) == 0  # §10.1's leg, my way entirely
     assert tr.bucket_index(buckets, -10.8) == 0
-    assert tr.bucket_index(buckets, -10.6) == 0  # v7.5 fixture top-pair favor min
+    assert tr.bucket_index(buckets, -10.4) == 0  # v7.6 fixture top-pair favor min
     assert tr.bucket_index(buckets, -10.0) == 1  # half-open at the edge
     assert tr.bucket_index(buckets, -5.01) == 1
     assert tr.bucket_index(buckets, -5.0) == 2

@@ -5,8 +5,8 @@ Unlike the pair board (which enumerates from the engine's give-lists
 owned pick by name and scores the exact package with the v4 card: TWO objective
 coordinates per side — ΔS (change in starter value: the max-Σv legal lineup at
 raw KTC over active + taxi) and ΔF (change in total face owned: players at KTC
-face; picks at YOUR v7 price — exact board slot this year, dear end of the round
-when you send / cheap end when you receive beyond it) — with the derived verdict (objectively good ⟺ both ≥ 0, one
+face; picks at ONE price — KTC's exact numbered slot this year, the flat Mid
+tranche beyond, the slot never estimated, v7.6) — with the derived verdict (objectively good ⟺ both ≥ 0, one
 strict), the guaranteed interval [floor, ceiling] = [min, max], and, on
 preference trades, the breakeven δ* = ΔS/(ΔS − ΔF) (§2). Plus the exact
 KTC-calculator fairness gate (§3), posture shape (§4) and sequencing (§5).
@@ -416,8 +416,8 @@ def fmt_legline(card: dict) -> str:
 def fmt_asset(a: dict) -> str:
     tag = f"{a['name']} ({a['v']}"
     if a.get("v_me") is not None:
-        # §1 v7.5: unreachable — one price per pick (the pessimistic tranche).
-        # Tripwire: a re-diverged lens is disclosed, never hidden.
+        # §1 v7.5: unreachable — one price per pick (flat Mid beyond this
+        # year, v7.6). Tripwire: a re-diverged lens is disclosed, never hidden.
         tag += f" market / {a['v_me']} yours"
     if a.get("unvalued"):
         tag += "; UNVALUED"

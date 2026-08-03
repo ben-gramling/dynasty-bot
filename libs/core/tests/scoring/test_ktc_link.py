@@ -116,20 +116,19 @@ def test_s1_trade_resolves_exactly(league, ids, names):
     assert link.complete
     assert link.dropped == ()
     # v7.4: the 2026 1.01 links at KTC's NUMBERED id, because that is the price
-    # the gate now uses. v7.5: a future pick links the tranche of its
-    # PESSIMISTIC band — mine Early (I send it), theirs Late (I receive it) —
-    # because that is what the gate priced.
-    assert link.one == (299, 202611, 1702)
-    assert link.two == (1770, 1447, 1884)
+    # the gate now uses. v7.6: a future pick links its round's MID tranche —
+    # the slot is never estimated — because that is what the gate priced.
+    assert link.one == (299, 202611, 1703)
+    assert link.two == (1770, 1447, 1883)
     assert names[link.one[0]] == "Chris Godwin"
     assert link.one[1] == kp.numbered_pick_id(2026, 1, 1)  # "2026 Pick 1.01"
-    assert names[link.one[2]] == "2027 Early 1st"
+    assert names[link.one[2]] == "2027 Mid 1st"
     assert [names[i] for i in link.two] == [
-        "Luther Burden", "Rashee Rice", "2028 Late 1st",
+        "Luther Burden", "Rashee Rice", "2028 Mid 1st",
     ]
     assert link.url == (
         "https://keeptradecut.com/trade-calculator"
-        "?var=5&pickVal=0&teamOne=299%7C202611%7C1702&teamTwo=1770%7C1447%7C1884"
+        "?var=5&pickVal=0&teamOne=299%7C202611%7C1703&teamTwo=1770%7C1447%7C1883"
         "&format=1&isStartup=0&tep=0"
     )
 
@@ -167,11 +166,12 @@ def test_link_side_totals_match_the_gate(league, ids, names):
     assert one_sum == pytest.approx(sum(a.v for a in give))
     assert two_sum == pytest.approx(sum(a.v for a in get))
     # v7.4 flipped this leg's direction (the 1.01 went 6,243 → 7,994.86, KTC's
-    # own price for the exact slot); v7.5 widens it from both ends — my 2027 R1
-    # sends Early (6,118 → 7,398) while NoahMoell's 2028 R1 arrives Late
-    # (5,207 → 4,768): 737.86 + 1,280 + 439 = 2,456.86 more raw face out than in.
+    # own price for the exact slot). v7.6's flat Mid restores this trade's
+    # v7.4 numbers exactly — my 2027 R1 was already Mid under rank_L 5 and
+    # NoahMoell's 2028 R1 was already flat Mid two years out — which pins the
+    # symmetry: neither v7.5 direction premium survives anywhere in the link.
     assert one_sum > two_sum
-    assert one_sum - two_sum == pytest.approx(2456.86, abs=0.01)
+    assert one_sum - two_sum == pytest.approx(737.86, abs=0.01)
 
 
 # --------------------------------------------------------- league-wide round trip
@@ -226,20 +226,21 @@ def test_every_rostered_asset_round_trips(league, ids, names):
 # --------------------------------------------------------------------- edge cases
 
 
-def test_band_follows_direction_not_origin(league, ids):
-    """v7.5: millj holds three 2027 R4s of three different origins and they ALL
-    link "2027 Late 4th" — the holder is not me, so every one is a pick I would
-    RECEIVE, priced and linked at the cheap end. My own 2027 R4 links Early.
-    (Through v7.4 the id followed the ORIGIN team's rank_L, so vishan's pick in
-    millj's hands linked Early — a forecast on the counterparty's screen.)"""
+def test_band_is_flat_mid_for_every_future_pick(league, ids):
+    """v7.6: millj's three 2027 R4s — three different origins — and my own all
+    link "2027 Mid 4th": one id per (year, round), whoever owns the pick and
+    however its origin team projects. (Through v7.4 the id followed the ORIGIN
+    team's rank_L — vishan's pick in millj's hands linked Early, a forecast on
+    the counterparty's screen; v7.5 keyed it on trade direction — mine Early,
+    theirs Late, a seat asymmetry. Both retired.)"""
     assets = tr.team_assets(league, league.teams["millj"])
     trio = {n: a for n, a in assets.items() if n.startswith("2027 R4")}
     assert len(trio) == 3, sorted(trio)
 
     resolved = {n: kl.ktc_id_of(a, ids) for n, a in trio.items()}
-    assert set(resolved.values()) == {1713}  # 2027 Late 4th, all three
+    assert set(resolved.values()) == {1712}  # 2027 Mid 4th, all three
     mine = tr.team_assets(league, league.teams[league.me])["2027 R4 (own)"]
-    assert kl.ktc_id_of(mine, ids) == 1711  # 2027 Early 4th
+    assert kl.ktc_id_of(mine, ids) == 1712  # ...and mine is the same id
 
 
 def test_unvalued_player_is_dropped_and_disclosed(league, ids):

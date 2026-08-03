@@ -14,8 +14,8 @@ What the score IS (§2, v4):
   `ΔS` = change in STARTER value (the max-Σv legal lineup at raw KTC solved
   over ACTIVE + TAXI — taxi is promote-anytime, §8; IR and empty slots are 0)
   and `ΔF` = change in TOTAL FACE owned (Σ v in − Σ v out, players and picks
-  alike; players at KTC v, picks at the §3.2 price — exact slot this year, the
-  pessimistic tranche beyond, v7.5). Any single-number ledger is
+  alike; players at KTC v, picks at the §3.2 price — exact slot this year,
+  flat Mid beyond, v7.6). Any single-number ledger is
   `ΔW(δ) = ΔS + δ·(ΔF − ΔS)` for some stored-value preference δ ∈ [0, 1] — a
   time preference, not a measurable fact — so v4 reports the endpoints
   themselves and blends nothing.
@@ -26,17 +26,16 @@ What the score IS (§2, v4):
   failing one coordinate is a PREFERENCE trade and carries the derived
   breakeven `δ* = ΔS / (ΔS − ΔF)` — labeled, never recommended.
 - Both coordinates are PER SIDE. §1 v7.5: `v` and `v_me` COINCIDE for every
-  asset — the v7 lens split collapsed when the pessimistic tranche became THE
-  price of a future pick (a pick I own prices Early, anyone else's Late; no
-  forecast band survives for the gate to read). The two fields remain (`v_me`
-  drives ΔF, `v` the gate) so the v7 plumbing is untouched, but they can no
-  longer disagree. The price vector is single and global, so ΔF is exactly
-  CONSERVED across a leg's parties and exactly ADDITIVE across legs — which is
-  all any bound in this module uses. It is NOT symmetric between seats: my
-  sends price dear and my receives cheap by construction, which reads as
-  caution only from my seat (§11.1b). `ΔS` never negated anyway — deployment
-  differs by roster, which is why both sides of a good spread can genuinely
-  gain.
+  asset — the v7 lens split collapsed when the one §3.2 price became a future
+  pick's only number (v7.6: flat Mid — no forecast band survives for the gate
+  to read, and no direction either). The two fields remain (`v_me` drives ΔF,
+  `v` the gate) so the v7 plumbing is untouched, but they can no longer
+  disagree. The price vector is single, global and (v7.6) symmetric between
+  seats — same (year, round) prices the same whoever holds it — so ΔF is
+  exactly CONSERVED across a leg's parties and exactly ADDITIVE across legs,
+  which is all any bound in this module uses. `ΔS` never negated anyway —
+  deployment differs by roster, which is why both sides of a good spread can
+  genuinely gain.
 - A pair's coordinates are COMBINED (both legs applied together): ΔS via one
   combined starter re-solve — the legs interact through the lineup — and ΔF
   additive across legs. Leg cards carry their isolation coordinates, labeled;
@@ -115,9 +114,9 @@ class Asset:
     kind: str  # "player" | "pick"
     key: str
     name: str
-    v: float  # player KTC v; pick §3.2 price (v7.5: pessimistic) — the gate's input
+    v: float  # player KTC v; pick §3.2 price (v7.6: flat Mid beyond this year) — the gate's input
     # §1 v7.5: identical to `v` for EVERY asset — the lens split collapsed when
-    # the pessimistic tranche became a future pick's only price. Still the ΔF
+    # the §3.2 one price became a future pick's only number. Still the ΔF
     # coordinate's input, and only that; kept distinct so the v7 plumbing
     # (conservation identity, card note) needs no rewiring.
     v_me: float
@@ -262,17 +261,15 @@ def total_face(t: md.TeamCtx, *, lens: str) -> float:
     wrong number (on the counterparty's roster the my-lens answer comes back
     as `−ΔF(me)`, which looks exactly like conservation "proving" itself).
     `"me"` reads `Pick.p_me`, `"market"` reads `mv` — since v7.5 the same
-    number (the pessimistic tranche is THE price); the switch survives so the
-    identity stays checkable per lens.
+    number (one §3.2 price; v7.6 makes it flat Mid for future picks); the
+    switch survives so the identity stays checkable per lens.
 
     The identity holds because `p_me` is minted once at snapshot pricing time
-    and `model.apply_tx` carries it across unchanged — a pick I receive keeps
-    its Late price on arrival instead of re-pricing to Early. Note this is a
-    within-snapshot property: the next daily build re-prices that pick to Early
-    because I now own it. That is correct for a decision rule (at every instant
-    I price what I would send dear and what I would receive cheap) but it does
-    mean `total_face` is not a state function across snapshots, and nothing in
-    the engine treats it as one — it is a test oracle, not a reported level."""
+    and `model.apply_tx` carries it across unchanged. Since v7.6 the price is
+    also OWNER-INDEPENDENT (flat Mid whoever holds the pick), so `total_face`
+    is a state function within AND across snapshots barring market movement —
+    but nothing in the engine relies on the across-snapshot half; this is a
+    test oracle, not a reported level."""
     if lens == "me":
         picks = sum(p.p_me for p in t.picks)
     elif lens == "market":
@@ -319,8 +316,8 @@ def coords_delta(
     the counterparty.
 
     §1 v7 — `mine` selects the FACE LENS, not the side: `v_me_sum` for my seat,
-    `v_sum` for theirs. Since v7.5 the two coincide (the pessimistic tranche is
-    a future pick's only price), so the printed ΔFs negate again; the switch
+    `v_sum` for theirs. Since v7.5 the two coincide (one §3.2 price — flat Mid
+    for future picks, v7.6), so the printed ΔFs negate again; the switch
     survives unchanged in case the lenses ever re-diverge.
 
     No stored-value bookkeeping exists: what a starter loses to the bench (or
@@ -594,8 +591,8 @@ def _asset_dict(a: Asset) -> dict:
         d["unvalued"] = True
     if a.v_me != a.v:
         # §1 v7.5: unreachable — `v` and `v_me` coincide for every asset now
-        # that the pessimistic tranche is a future pick's only price. Kept as
-        # a tripwire: if the lenses ever re-diverge, the card discloses it.
+        # that a future pick has one §3.2 price (flat Mid, v7.6). Kept as a
+        # tripwire: if the lenses ever re-diverge, the card discloses it.
         d["v_me"] = round(a.v_me)
         p = a.pick
         d["note"] = (
@@ -2425,14 +2422,13 @@ def trade_board(league: md.LeagueState) -> dict:
         "favor selects WITHIN it",
         "the score is two objective coordinates (§2 v4): dS = change in starter "
         "value (max-Σv lineup at raw KTC over active+taxi) and dF = change in "
-        "total face owned (players at KTC, picks at YOUR v7 price: exact board "
-        "slot this year, dear end of the round when you send / cheap end when you "
-        "receive beyond it) — no blend, no parameter. "
+        "total face owned (players at KTC, picks at ONE price: KTC's exact "
+        "numbered slot this year, the flat Mid tranche beyond — the slot is "
+        "never estimated, v7.6) — no blend, no parameter. "
         "Every stored pair is objectively good: dS > 0 AND dF > 0, so the gain is "
         "guaranteed between the floor and the ceiling for every rational "
-        "stored-value preference. Coordinates are PER SIDE (your dF prices picks "
-        "your way, theirs is market face, so the two need not negate; "
-        "dS not): a good pair can be good for both parties. A pair's coordinates "
+        "stored-value preference. Coordinates are PER SIDE (dF negates exactly; "
+        "dS does not): a good pair can be good for both parties. A pair's coordinates "
         "are the two legs applied TOGETHER; each leg card carries its isolation "
         "coords, and a buy leg alone can still be floor-negative",
         f"stratified storage (v5): per FAVOR bucket (min(f_buy, f_sell) over the "

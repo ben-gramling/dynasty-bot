@@ -1,6 +1,6 @@
-"""§3.2 pick pricing: KTC's real number this year, a pessimistic tranche beyond.
+"""§3.2 pick pricing: KTC's real number this year, the flat Mid tranche beyond.
 
-ONE price per pick (v7.5). Two rules by YEAR, neither of them a forecast:
+ONE price per pick (v7.5), and no forecast anywhere. Two rules by YEAR:
 
 - **Current year — KTC'S OWN NUMBER.** The draft order is known, so the slot is
   known, and KTC publishes a price for that exact slot: "2026 Pick 4.01",
@@ -11,27 +11,22 @@ ONE price per pick (v7.5). Two rules by YEAR, neither of them a forecast:
   price, it used the rookie board's n-th-player value as a stand-in, which
   missed in both directions (7,762 vs KTC's 7,897 on a 1.01; 2,927 vs 2,821 on a
   3.03) and let the engine manufacture ΔF on picks that happened to proxy high.
-- **Future years — PESSIMISM.** The slot is unknown and KTC only publishes
-  Early/Mid/Late. Assume the bad end of that range in whichever direction I
-  would trade it: a pick I OWN is one I would send, so it is priced **Early**
-  (the dear end); a pick the counterparty owns is one I would receive, so it is
-  priced **Late** (the cheap end). Ownership fixes the direction because every
-  leg is me ↔ one counterparty and the owner is always the sender. **v7.5: this
-  is the ONLY price.** Through v7.4 the pessimism lived on a second lens (`p_me`)
-  while `mv` carried a projection band — next-year from the origin team's
-  `rank_L`, two-years-out flat Mid — that fed the gate, the deep links and every
-  display. The user's ruling kills the projection outright: NEVER estimate where
-  a future pick lands within its round; the pessimistic band is what the gate
-  prices, what the links carry, and what the board shows.
+- **Future years — FLAT MID (v7.6).** The slot is unknown and KTC only
+  publishes Early/Mid/Late; NEVER estimate where inside the round a pick will
+  land. Every future pick prices at its round's **Mid** tranche, whoever owns
+  it and wherever its origin team is projected to finish. This replaced two
+  earlier answers to slot-uncertainty in turn: the `rank_L` projection (v7's
+  market band — a forecast, killed by the no-estimates ruling) and v7.5's
+  directional pessimism (Early when I send / Late when I receive — no
+  forecast, but seat-asymmetric; the user chose the neutral midpoint instead).
+  Flat Mid makes the price vector SYMMETRIC: my 2028 2nd and yours are the
+  same number, and a same-year same-round swap is exactly ΔF 0.
 
 `p`, `mv` and `p_me` are therefore ONE per-asset price vector fixed at snapshot
-build — every asset has exactly one price, whoever is looking. The `p_me` /
-`band_me` fields survive so v7 consumers (ΔF, the card lens note, `total_face`'s
-lens switch) keep working, but they can no longer disagree with `mv`. Fixed at
-snapshot build also means fixed per OWNER-of-record: the daily rebuild re-prices
-a pick that changed hands (Early once I hold it, Late once they do), which is
-correct for a decision rule — at every instant I price what I would send dear
-and what I would receive cheap.
+build — every asset has exactly one price, whoever is looking, and (unlike
+v7.5) the same price in either direction. The `p_me` / `band_me` fields survive
+so v7 consumers (ΔF, the card lens note, `total_face`'s lens switch) keep
+working, but they can no longer disagree with `mv`.
 """
 
 from __future__ import annotations
@@ -63,14 +58,14 @@ class Pick:
     slot: int | None  # 2026 only (order known)
     n: int | None  # overall pick number, 2026 only
     p: float  # truth value — Score/RV/A/F
-    mv: float  # KTC's numbered pick this year; the PESSIMISTIC tranche beyond (v7.5)
+    mv: float  # KTC's numbered pick this year; the flat Mid tranche beyond (v7.6)
     band: str
     band_reason: str
     label: str
     # §1 v7.5: identical to `p`/`mv` for every pick — the lens split is gone
-    # (current year: KTC prices the exact slot; future: the pessimistic tranche
-    # IS the price, all consumers). Fields kept for v7 consumers (ΔF, the card
-    # note, `total_face`'s lens switch).
+    # (current year: KTC prices the exact slot; future: flat Mid IS the price,
+    # all consumers, v7.6). Fields kept for v7 consumers (ΔF, the card note,
+    # `total_face`'s lens switch).
     p_me: float
     band_me: str
     mine: bool
@@ -128,15 +123,11 @@ def band_of_slot(slot: int) -> str:
     return "Early" if slot <= 4 else "Mid" if slot <= 8 else "Late"
 
 
-def pessimistic_band(mine: bool) -> str:
-    """§3.2 v7.5: THE band an unknown-slot pick prices at — every consumer, not
-    just my lens. A pick I own is one I would be sending, so assume it lands
-    Early (the dear end of the round); a pick the counterparty owns is one I
-    would be receiving, so assume it lands Late. Never a forecast — a deliberate
-    worst case in the direction the asset would travel. (The `rank_L` finish
-    projection banded `mv` through v7.4; v7.5 retired it — never estimate where
-    a future pick lands within its round.)"""
-    return "Early" if mine else "Late"
+# §3.2 v7.6: THE band every unknown-slot pick prices at, for every consumer and
+# in both directions. Not a forecast (the rank_L projection died in v7.5) and
+# not a worst case (v7.5's Early-out/Late-in pessimism was seat-asymmetric; the
+# user chose the neutral midpoint instead): simply the middle of the round.
+FUTURE_BAND = "Mid"
 
 
 def price_pick(
@@ -183,12 +174,11 @@ def price_pick(
             label=f"{year} {rnd}.{slot:02d}",
             p_me=v, band_me=f"KTC {year} Pick {rnd}.{slot:02d}", mine=mine,
         )
-    # §3.2 v7.5: the slot is unknown, so EVERY consumer takes the bad end of
-    # the round in the direction this asset would travel (`pessimistic_band`).
-    # No projection: the rank_L band (next year) and flat Mid (two out) are
-    # retired — the gate, the deep links and the board all price this number.
-    band = pessimistic_band(mine)
-    reason = "pessimism: own pick sends Early" if mine else "pessimism: their pick arrives Late"
+    # §3.2 v7.6: the slot is unknown and never estimated — every future pick
+    # prices at the middle of its round, whoever owns it. The gate, the deep
+    # links, ΔF and the board all price this same number.
+    band = FUTURE_BAND
+    reason = "future year: flat Mid — slot never estimated"
     v = tranches[(year, band, rnd)]
     return Pick(
         year=year, round=rnd, origin_rid=origin_rid, origin_name=origin_name,

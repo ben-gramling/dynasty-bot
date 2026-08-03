@@ -72,11 +72,13 @@ class Params:
     # the floor objective) crossings — on the measured market query the 2M walk
     # returned best 13.18% and none of the exhaustive top-20, where the same
     # query crossed COMPLETELY at 10.3M (best 16.25%, exact=True, 34.5s).
-    # v7.5 raised 16M → 20M: pessimistic pick pricing broadened the §3 fair
-    # band, and the largest per-counterparty dashboard crossing measured
-    # 16,110,117 on the fixtures (jaketoppen — 16M truncated it by 0.7%, the
-    # only non-exact team on the board). 20M covers it with ~24% headroom at
-    # ~576k crossings/s (worst case ~35 s); unconstrained queries (space 4.6e9)
+    # v7.5 raised 16M → 20M: its pessimistic pricing broadened the §3 fair
+    # band and the largest per-counterparty dashboard crossing measured
+    # 16,110,117 on the fixtures (jaketoppen — 16M truncated it by 0.7%).
+    # v7.6's flat Mid shrank that max back to 10,358,086, but the 20M ceiling
+    # stays: a budget only bites on queries that would saturate anyway, and
+    # the headroom is what keeps the per-counterparty board exhaustive across
+    # re-pricings. ~576k crossings/s; unconstrained queries (space 4.6e9)
     # stay truncated honest floors either way. The finder is the interactive
     # CLI/skill path — it never runs on the collector Lambda, so this does not
     # touch the §11.10 board budget (§9, v5.1).

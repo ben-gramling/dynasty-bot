@@ -104,10 +104,9 @@ export interface PositionGroup {
 export interface PickDetail {
   label: string;
   /**
-   * §1 v7.5 the ONE price: KTC's numbered value at the exact slot in the
-   * current year, and beyond it the pessimistic tranche — Early when Ben owns
-   * the pick (he would be the sender), Late when this owner is someone else.
-   * No forecast band exists any more.
+   * §1 v7.6 the ONE price: KTC's numbered value at the exact slot in the
+   * current year, and beyond it the flat Mid tranche — the slot is never
+   * estimated, and the price is the same whoever owns the pick.
    */
   v: number;
   band?: string;

@@ -17,8 +17,8 @@ Division of labor (spec v5, `docs/scoring-system.md`):
   (QB/2RB/3WR/TE/2FLEX) solved over ACTIVE + TAXI (taxi counts,
   promote-anytime; IR never does) — and `ΔF` = change in TOTAL FACE owned
   (players at KTC face; picks at their §3.2 one price — the exact numbered
-  slot this year, the pessimistic tranche beyond: Early when we send, Late
-  when we receive, NEVER a forecast, v7.5). Any single number would need a stored-value
+  slot this year, the flat Mid tranche beyond: the slot is NEVER estimated,
+  v7.6). Any single number would need a stored-value
   preference δ ∈ [0, 1], which is a time preference, not a fact — so the desk
   reports the endpoints themselves. What the desk must internalise:
   - **The VERDICT is objective.** A spread is objectively good ⟺ ΔS ≥ 0 AND
@@ -428,11 +428,11 @@ uv run python scripts/score_trade.py find \
 - Distinguish your two knowledge types explicitly: *priced* (engine arithmetic)
   vs *read* (posture/intel). "The math says +552; your intel says millj wants
   picks, which is why this shape clears."
-- Picks carry ONE price inside `dF`, exactly like any player's face (v7.5):
-  KTC's numbered value at the known slot this year, and the pessimistic
-  tranche beyond — a future pick we send prices Early, one we receive prices
-  Late, and no forecast of where it lands exists anywhere (gate, links and
-  board all read the same number). Unvalued players (Waller) add 0 to both coordinates and get flagged —
+- Picks carry ONE price inside `dF`, exactly like any player's face (v7.6):
+  KTC's numbered value at the known slot this year, and the flat Mid tranche
+  beyond — the slot is never estimated, the price is the same whoever owns
+  the pick, and the gate, links and board all read that same number.
+  Unvalued players (Waller) add 0 to both coordinates and get flagged —
   never treat the 0 as truth. A player who cannot crack our starting lineup
   moves only the face coordinate: say that out loud when a proposed buy has
   floor ~0, it is usually the whole explanation.

@@ -411,8 +411,8 @@ def _assets_table(title: str, assets: Sequence[Mapping]) -> str:
     for a in assets:
         lens = ""
         if a.get("v_me") is not None:
-            # §1 v7.5: unreachable — one price per pick now (the pessimistic
-            # tranche). Tripwire: a re-diverged lens shows both, never hides.
+            # §1 v7.5: unreachable — one price per pick now (flat Mid beyond
+            # this year, v7.6). Tripwire: a re-diverged lens shows both.
             lens = f'<div class="lens">yours {_num(a["v_me"])}</div>'
         flag = ' <span class="lens">unvalued</span>' if a.get("unvalued") else ""
         rows.append(
@@ -645,10 +645,10 @@ def render_html(payload: Mapping) -> str:
 <footer>
   <p>{_esc(honesty)} Coordinates are per side: <strong>starters</strong> is the change in
   your max-Σv legal lineup at raw KTC, <strong>face</strong> the change in total value you
-  own. Future picks are never forecast into a round — they price pessimistic everywhere:
-  KTC's exact number in the current year, and beyond it the dear end of the round on picks
-  you send, the cheap end on picks you receive. The gate on each leg runs KTC's own
-  calculator over exactly those prices, and its links carry them.</p>
+  own. A pick's slot is never forecast: current-year picks price at KTC's exact number
+  for their known slot, and every future pick at the middle of its round — the same
+  price whoever holds it. The gate on each leg runs KTC's own calculator over exactly
+  those prices, and its links carry them.</p>
   <p>Guaranteed floor is min(starters, face) and the ceiling is the max — the gain lies
   between them at every rational preference, so quote the floor and never a blend.
   Favor is the signed skew toward the counterparty in KTC's own variance units;
@@ -656,6 +656,6 @@ def render_html(payload: Mapping) -> str:
   <p>The only links on this page open keeptradecut.com's trade calculator, pinned to
   the settings the gate ports (variance 5, 1QB, no pick scaling) so a leg's page total
   is exactly its <em>you</em> / <em>them</em> figures above. Current-year picks link at
-  KTC's numbered entry for their exact slot; future picks link at the pessimistic tranche
-  the gate priced.{gen}</p>
+  KTC's numbered entry for their exact slot; future picks link at the Mid tranche the
+  gate priced.{gen}</p>
 </footer>"""
