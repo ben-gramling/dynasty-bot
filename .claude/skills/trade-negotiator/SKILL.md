@@ -434,6 +434,10 @@ uv run python scripts/score_trade.py find \
   you took it anyway" — the counter usually lives there: fix the failing
   rule via `score --alternatives`, keeping shapes consistent with X's
   revealed wants; present accept / counter / decline with numbers.
+  **Generous offers hedge too (v8.0.1):** the favor window binds only the
+  HEDGE legs — an offer's own favor, however lopsided toward us, never
+  filters the hedge search (they already made it; politeness filters exist
+  for legs WE propose). Each hedge still discloses favor.offer/min.
 - **"Score this trade"** → run it; report OUR verdict first (objectively
   good with the guaranteed interval "between +X and +Y" / preference trade
   with its δ* and direction / bad at every preference), our coordinates

@@ -233,6 +233,49 @@ def test_offer_hedges_are_exact_complements(db):
         assert h["favor"]["min"] >= _SLIDERS["favor_min"]
 
 
+def test_offer_favor_window_binds_hedge_legs_only(db):
+    """§12(g) v8.0.1: an offer TOO FAVORABLE TO US (its own favor below the
+    window floor) must still hedge — the favor window is a politeness filter
+    on legs WE propose, and the counterparty already proposed this one. The
+    pre-fix behavior folded the offer's favor into the pair minimum and
+    silently emptied the hedge list for every generous offer."""
+    league = db.league
+    import core.scoring.trades as tr
+
+    buckets = db.buckets()
+    sig = (1, -1) if (1, -1) in buckets else sorted(buckets)[0]
+    li = int(buckets[sig][0])
+    give = db.package(int(db._cols["give_pid"][li]))
+    get = db.package(int(db._cols["get_pid"][li]))
+    opp_name = db.opp_names[int(db._cols["opp"][li])]
+    # same count shape as the stored leg's get, but THEIR most valuable
+    # assets — a deal skewed hard toward us, far outside the fair window
+    theirs = sorted(
+        tr.team_assets(league, league.teams[opp_name]).values(),
+        key=lambda a: -a.v,
+    )
+    rich_get = [a for a in theirs if a.kind == "player"][: get.n_players] + [
+        a for a in theirs if a.kind == "pick"
+    ][: get.n_picks]
+    res = db.offer(
+        opp_name,
+        [a.name for a in give.assets],
+        [a.name for a in rich_get],
+        query={**_SLIDERS, "top": 10},
+        intel=(),
+    )
+    favor_off = res["offer"]["gate"]["favor"]
+    assert favor_off < _SLIDERS["favor_min"], (
+        "fixture precondition: the skewed offer must read below the favor "
+        f"floor on their calculator (got {favor_off})"
+    )
+    assert res["hedges"], "a generous offer must still find hedges"
+    for h in res["hedges"]:
+        assert _SLIDERS["favor_min"] <= h["favor"]["hedge"] <= _SLIDERS["favor_max"]
+        assert h["favor"]["offer"] == favor_off
+        assert h["favor"]["min"] == round(min(favor_off, h["favor"]["hedge"]), 2)
+
+
 def test_query_fingerprint_moves_with_intel(db):
     """§12(h): intel compiles into constraints, so a WANT arriving must MISS
     the cache — the fingerprint covers compiled constraints, not just flags."""

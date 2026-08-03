@@ -199,6 +199,12 @@ board file) so the published artifact URL stays stable all session.
    coords → verdict-good hedges ranked maximin. The ≤2-assets-out heuristic
    from `score --hedge` is DROPPED (a (+1,+1) offer like Jukinski's needs
    3-asset gives by arithmetic). Latency budget ≤ ~30 s.
+   **The favor window binds the HEDGE legs only (v8.0.1)**: favor is a
+   politeness filter on legs WE propose — an offer the counterparty already
+   made is never filtered by its own favor, however lopsided toward us; it
+   is disclosed on every hedge (favor.offer / favor.min) instead. Pre-fix,
+   a generous offer's favor poisoned the pair minimum and silently emptied
+   the hedge list.
 4. Gate-FAIL offers: hedges still computed, labeled ("if you took it anyway"),
    with `--alternatives` counters alongside. [OPEN DIAL 3]
 5. Board regenerated: counterparty focused first, offer card pinned with the

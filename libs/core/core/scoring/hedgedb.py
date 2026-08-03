@@ -1210,12 +1210,18 @@ class HedgeDB:
             ceil = d_f if d_s < d_f else d_s
             sent = sent_off + float(sent_arr[si])
             ret = floor / sent if sent else 0.0
+            # §12(g) v8.0.1: the favor window binds the HEDGE leg ONLY. Favor
+            # is a politeness filter on legs WE would propose — an offer the
+            # counterparty ALREADY MADE needs none, and folding its favor into
+            # the pair check silently emptied the hedge list for every offer
+            # too favorable to us (favor_off < favor_min poisons every pair).
+            # The offer's favor is still reported on each hedge (favor.offer /
+            # favor.min) — disclosure, never a filter. Belt-and-braces only:
+            # eligible legs already passed the window in _eligible_mask.
             fl = float(favor_arr[si])
-            fmin = favor_off if favor_off < fl else fl
-            fmax = favor_off if favor_off > fl else fl
-            if favor_min is not None and fmin < favor_min:
+            if favor_min is not None and fl < favor_min:
                 continue
-            if favor_max is not None and fmax > favor_max:
+            if favor_max is not None and fl > favor_max:
                 continue
             if not tr.verdict_of(d_s, d_f):
                 continue

@@ -250,7 +250,10 @@ searches, cached views.**
   the offer's signature exactly, exclude its counterparty, and the old ≤2
   -asset heuristic is gone — an empty complement signature is proof of
   absence at the DB's edges (measured live: (−1, −1) is EMPTY — no fair
-  gate-clean 3-for-1 onto our side exists league-wide); (h) legality is a
+  gate-clean 3-for-1 onto our side exists league-wide), and the favor
+  window binds the HEDGE legs only (v8.0.1) — an already-received offer's
+  own favor is disclosed, never a filter, so generous offers still hedge;
+  (h) legality is a
   persistent tri-state column, discovered by walks, max-merged across
   processes.
 - **Honesty:** v5.1 language survives verbatim — `exact` ⟺ the walk
