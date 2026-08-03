@@ -194,6 +194,9 @@ def test_offer_count_neutral_stands_alone(db):
     assert res["hedges"] == []
     assert "count-neutral" in res["note"]
     assert res["offer"]["gate"]["verdict"]  # scored regardless
+    # v8.1: the by_team shape holds even when the crossing never ran
+    assert set(res["by_team"]) == {n for n in db.opp_names if n != opp_name}
+    assert all(hs == [] for hs in res["by_team"].values())
 
 
 def test_offer_hedges_are_exact_complements(db):
@@ -231,6 +234,56 @@ def test_offer_hedges_are_exact_complements(db):
         assert h["verdict"] is True
         assert h["return_robust"] >= _SLIDERS["min_return"] - 1e-9
         assert h["favor"]["min"] >= _SLIDERS["favor_min"]
+
+
+def test_offer_hedges_group_by_counterparty(db):
+    """§12(g) v8.1 (pinned-offer mode): `by_team` partitions the flat maximin
+    list per counterparty — every non-offerer team present, per-team lists
+    maximin-sorted top-K, teams ordered by best guaranteed pair floor with
+    hedge-less teams trailing — and `counts.matched_by_team` carries the
+    crossing's full per-team tallies, summing to `matched`."""
+    buckets = db.buckets()
+    sig = (1, -1) if (1, -1) in buckets else sorted(buckets)[0]
+    li = int(buckets[sig][0])
+    give = db.package(int(db._cols["give_pid"][li]))
+    get = db.package(int(db._cols["get_pid"][li]))
+    opp_name = db.opp_names[int(db._cols["opp"][li])]
+    res = db.offer(
+        opp_name,
+        [a.name for a in give.assets],
+        [a.name for a in get.assets],
+        query={**_SLIDERS, "top": 10},
+        intel=(),
+    )
+    flat = res["hedges"]
+    by = res["by_team"]
+    mb = res["counts"]["matched_by_team"]
+    assert flat, "fixture precondition: a pool leg's offer must cross at 1%"
+    assert set(by) == {n for n in db.opp_names if n != opp_name}
+    assert set(mb) == set(by)
+    assert sum(mb.values()) == res["counts"]["matched"]
+    # partition: the same entries, nothing duplicated or dropped
+    assert sorted(h["id"] for h in flat) == sorted(
+        h["id"] for hs in by.values() for h in hs
+    )
+    keys = [(-h["return_view"], -h["ceiling"]) for h in flat]
+    assert keys == sorted(keys)  # global maximin order
+    for name, hs in by.items():
+        assert len(hs) <= 10  # per-team top-K
+        assert len(hs) <= mb[name]
+        assert [(-h["return_view"], -h["ceiling"]) for h in hs] == sorted(
+            (-h["return_view"], -h["ceiling"]) for h in hs
+        )  # per-team maximin order
+        for h in hs:
+            assert h["hedge"]["counterparty"] == name
+    # team order: first appearance in the flat list (best pair floor first),
+    # hedge-less teams after every team with inventory
+    ids_flat = [h["id"] for h in flat]
+    nonempty = [n for n, hs in by.items() if hs]
+    firsts = [ids_flat.index(by[n][0]["id"]) for n in nonempty]
+    assert firsts == sorted(firsts)
+    assert list(by)[: len(nonempty)] == nonempty
+    assert by[nonempty[0]][0]["id"] == "H1"
 
 
 def test_offer_favor_window_binds_hedge_legs_only(db):

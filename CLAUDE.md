@@ -31,14 +31,20 @@ are the test suite, pinned to the committed `data/` fixtures.
 ## Skills
 
 - `/trade-negotiator` — interactive trade advisor backed by the scoring engine;
-  scores arbitrary proposals two-sided via `scripts/score_trade.py` (which also
-  works standalone: `teams`, `list-assets`, `score --alternatives`, `pairs`,
-  `find`, `dashboard`). It opens a session by generating the **hedge board** —
-  `just hedges` / `score_trade.py dashboard` runs the finder once per
-  counterparty and writes a self-contained HTML page (`core/dashboard.py`) that
-  the skill publishes as an artifact. Takes minutes: eleven exhaustive searches.
-  Every hedge carries KTC trade-calculator deep links (`core/scoring/ktc_link.py`)
-  per leg and for the whole spread.
+  scores arbitrary proposals two-sided via `scripts/score_trade.py` (standalone:
+  `teams`, `list-assets`, `score --alternatives`, `pairs`, `find`, `dashboard`,
+  `hedgedb build|board|offer|status`). Since v8 a session opens on the **hedge
+  database**: `hedgedb build` (idempotent per content fingerprint; ~15 min on
+  real changes) then `hedgedb board` writes the per-counterparty **hedge board**
+  (`core/dashboard.py`, cached exact searches — seconds warm) that the skill
+  publishes as an artifact. `just hedges` / `score_trade.py dashboard` is the
+  legacy off-database board (one exhaustive finder run per counterparty —
+  minutes). Received offers run the **pinned-offer workflow** (v8.1): verdict
+  first, and an accept-worthy offer pins onto its own second artifact
+  (`hedgedb offer` → `hedge-offer.html`) listing every other counterparty's
+  exact hedges against it, narrowed interactively via intel/flags. Every hedge
+  carries KTC trade-calculator deep links (`core/scoring/ktc_link.py`) per leg
+  and for the whole spread/pair.
 
 ## League managers (real name ↔ Sleeper username)
 

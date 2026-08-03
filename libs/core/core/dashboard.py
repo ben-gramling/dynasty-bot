@@ -240,7 +240,6 @@ def db_payload(
     *,
     sliders: Mapping | None,
     focus: str | None = None,
-    offer: Mapping | None = None,
     generated_at: str | None = None,
     mongo_newer: bool = False,
     data_age: str | None = None,
@@ -265,10 +264,12 @@ def db_payload(
       bar_raised_any};
     - `constraints_in_effect`: applied/shed/ignored with provenance, deduped
       across the team searches (they compile identically per search);
-    - `focus` and, when given, `offer`: a raw `HedgeDB.offer` result pinned
-      onto the focused team's card, links attached per leg;
+    - `focus`: that team's card first;
     - `mongo_newer`: the live collect moved past the DB — its own red banner,
       distinct from the snapshot-age axis.
+
+    Offers no longer pin onto this board (v8.1): a scored offer gets its OWN
+    page — `offer_payload` below — so the board artifact stays offer-free.
     """
     league = db.league
     query = {**_SLIDER_DEFAULTS, **(sliders or {})}
@@ -357,19 +358,111 @@ def db_payload(
             "ignored_intel": ignored,
         },
     }
-    if offer is not None:
-        payload["offer"] = {
-            "card": offer["offer"],
-            "link": _leg_link(league, offer["offer"], ids),
-            "hedges": [
-                {**h, "links": {"hedge": _leg_link(league, h["hedge"], ids)}}
-                for h in (offer.get("hedges") or [])[: show or None]
-            ],
-            "note": offer.get("note"),
-            "counts": offer.get("counts"),
-            "exact": offer.get("exact", True),
-        }
     return payload
+
+
+def _offer_links(league, offer_card: Mapping, hedge_card: Mapping, ids: Mapping) -> dict:
+    """Calculator links for one pinned-offer hedge: the hedge leg itself, plus
+    the offer+hedge PAIR rolled into a single hypothetical trade — the same
+    what-if (and the same 12-asset cap) as the board's spread link."""
+    out = {"hedge": _leg_link(league, hedge_card, ids)}
+    o_give, o_get = tr.card_packages(league, offer_card)
+    h_give, h_get = tr.card_packages(league, hedge_card)
+    try:
+        combined = kl.tc_link(
+            list(o_give.assets) + list(h_give.assets),
+            list(o_get.assets) + list(h_get.assets),
+            ids,
+            current_year=league.current_year,
+        )
+    except ValueError as exc:  # KTC holds at most 12 assets across both sides
+        out["pair"] = {"url": None, "numbered_url": None, "dropped": [],
+                       "numbered": [], "blocked": str(exc)}
+    else:
+        out["pair"] = _link_dict(combined)
+    return out
+
+
+def offer_payload(
+    db,
+    offer_result: Mapping,
+    *,
+    sliders: Mapping | None,
+    generated_at: str | None = None,
+    mongo_newer: bool = False,
+    data_age: str | None = None,
+    data_age_hours: float | None = None,
+) -> dict:
+    """The v8.1 PINNED-OFFER page: the offer at the top of the PAGE, then one
+    card per remaining counterparty with its exact hedge set against that
+    offer. Built from the `HedgeDB.offer` result alone — no per-team searches;
+    the one crossing already visited every eligible stored leg — under the
+    same stored-snapshot contract as `db_payload` (everything renders from
+    `db.league`, so the page can never disagree with its coordinates).
+
+    Teams follow `by_team` order: best pair floor return first, hedge-less
+    teams last, the offer's counterparty absent (their trade IS the pin).
+    Per-team `counts.matched` is the crossing's full tally for that team;
+    `hedges` is the display slice, each row carrying a hedge-leg link and a
+    whole-pair link. An offer that never crossed (count-neutral, or an empty
+    complement bucket) has no team cards — its `note` says why."""
+    league = db.league
+    query = {**_SLIDER_DEFAULTS, **(sliders or {})}
+    show = query.get("top")
+    ids = kl.rdp_ids(league)
+    card = offer_result["offer"]
+    counts = offer_result.get("counts")
+    matched_by = (counts or {}).get("matched_by_team") or {}
+    exact = bool(offer_result.get("exact", True))
+
+    teams = []
+    if counts is not None:  # the crossing ran — count-neutral offers never do
+        for name, hs in (offer_result.get("by_team") or {}).items():
+            teams.append(
+                {
+                    "name": name,
+                    "market": lg.market_map(league, league.teams[name]),
+                    "hedges": [
+                        {**h, "links": _offer_links(league, card, h["hedge"], ids)}
+                        for h in hs[: show or None]
+                    ],
+                    "counts": {"matched": matched_by.get(name, 0)},
+                    "exact": exact,
+                }
+            )
+    return {
+        "mode": "offer",
+        "me": league.me,
+        "generated_at": generated_at,
+        "data_age": data_age,
+        "data_age_hours": data_age_hours,
+        "sliders": query,
+        "offer": {
+            "card": card,
+            "link": _leg_link(league, card, ids),
+            "note": offer_result.get("note"),
+            "counts": counts,
+            "exact": exact,
+        },
+        "teams": teams,
+        "totals": {
+            "teams": len(teams),
+            "with_hedges": sum(1 for t in teams if t["hedges"]),
+            "matched": (counts or {}).get("matched", 0),
+            "all_exact": exact,
+        },
+        "mongo_newer": bool(mongo_newer),
+        "db": {
+            "band": db.meta["band"],
+            "legs": db.meta["legs"],
+            "content_fingerprint16": db.meta["content_fingerprint"][:16],
+        },
+        "constraints_in_effect": {
+            "applied": list(offer_result.get("applied_constraints") or []),
+            "shed": list(offer_result.get("shed_constraints") or []),
+            "ignored_intel": list(offer_result.get("ignored_intel") or []),
+        },
+    }
 
 
 # ---------------------------------------------------------------------- HTML
@@ -529,6 +622,8 @@ details.constraints>summary:hover{background:var(--chip)}
 .constraints-body ul{margin:4px 0;padding-left:18px}
 .constraints-body li{margin:2px 0}
 .offer{border-bottom:1px solid var(--line);padding:13px 16px;background:var(--chip)}
+/* v8.1: the pin is its own top-of-page card, not a section inside a team card */
+.offer-pin .offer{border-bottom:none}
 .offer-head{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:baseline;margin-bottom:8px}
 .offer-head h3{font-size:18px}
 .verdict{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:13px;
@@ -824,6 +919,19 @@ def _offer_hedge(h: Mapping, rank: int) -> str:
         + _leg_block(hc, role=f"Hedge leg ({hedge_side} side)", is_theirs=False,
                      link=links.get("hedge"))
         + "</div>"
+        + (
+            '<div class="spread-link">'
+            + _ktc_links(
+                links["pair"],
+                label="Open the WHOLE pair in KTC as one trade",
+                aside="a what-if, not the trade: the offer and this hedge go "
+                "to different managers, and KTC's adjustment does not cancel "
+                "across a pair, so this reads differently from either leg",
+            )
+            + "</div>"
+            if links.get("pair")
+            else ""
+        )
         + f'<p class="note">Pair figures are the offer and this hedge applied '
         f'together — your offer is the {_esc(h.get("offer_side"))} side. '
         f'{_esc(hc["sequencing"])}.</p>'
@@ -831,10 +939,11 @@ def _offer_hedge(h: Mapping, rank: int) -> str:
     return f'<details class="hedge offer-hedge">{summary}{audit}</details>'
 
 
-def _offer_block(offer: Mapping) -> str:
-    """The pinned offer at the top of the focused team's section (v8 §5): the
-    REAL gate verdict loud — PASS in the pass hue, FAIL in red with its
-    reasons — then the offer's own leg card, then its exact hedge set."""
+def _offer_pin(offer: Mapping) -> str:
+    """The v8.1 pinned offer as its own top-of-page card: the REAL gate
+    verdict loud — PASS in the pass hue, FAIL in red with its reasons — the
+    offer's leg card, and the crossing's honesty line. The hedges themselves
+    live in the per-counterparty cards below, never in the pin."""
     card = offer["card"]
     verdict = str(card["gate"].get("verdict") or "")
     ok = verdict.startswith("PASS")
@@ -852,40 +961,39 @@ def _offer_block(offer: Mapping) -> str:
     note = (
         f'<p class="note">{_esc(offer["note"])}</p>' if offer.get("note") else ""
     )
-    hedges = offer.get("hedges") or []
-    if hedges:
-        label = (
-            "Exact hedges — pair coordinates, both legs applied together"
-            if ok
-            else "Exact hedges — if you took it anyway (this offer FAILS the gate)"
+    fail_note = (
+        '<p class="note">Every hedge on this page assumes you executed the '
+        "offer regardless — as scored, it FAILS the gate.</p>"
+        if not ok
+        else ""
+    )
+    counts = offer.get("counts")
+    tally = ""
+    if counts:
+        honesty = (
+            "the crossing completed over every eligible stored leg, so the "
+            "per-team tallies below are exact — a team at zero has NO "
+            "qualifying hedge among its stored legs"
+            if offer.get("exact", True)
+            else "the crossing hit its search budget, so the per-team tallies "
+            "below are verified floors, never proof of absence"
         )
-        hedge_html = (
-            f'<div class="offer-hedges-label">{_esc(label)}</div>'
-            + "".join(_offer_hedge(h, i) for i, h in enumerate(hedges, 1))
+        tally = (
+            f'<p class="note">Hedge crossing: {counts["candidates"]:,} stored '
+            f'complement legs · {counts["matched"]:,} matched — {honesty}.</p>'
         )
-    elif offer.get("note"):
-        hedge_html = ""
-    else:
-        hedge_html = (
-            '<p class="note">No stored hedge clears the sliders against this '
-            "offer.</p>"
-        )
-    return f'<div class="offer">{head}{body}{note}{hedge_html}</div>'
+    return (
+        f'<section class="card offer-pin"><div class="offer">'
+        f"{head}{body}{note}{fail_note}{tally}</div></section>"
+    )
 
 
-def _team_card(team: Mapping, offer: Mapping | None = None) -> str:
-    m = team["market"]
+def _card_head(name: str, m: Mapping, tally: str) -> str:
+    """The team-card head both boards share: identity, posture, holes, and the
+    market chips, with the hedge tally already formatted by the caller."""
     holes = ", ".join(f'{h["pos"]} (their rank {h["rank"]})' for h in m["holes"])
-    counts = team["counts"]
-    # v8 count honesty: a raised warm bar makes `matched` a verified floor even
-    # when the walk completed, so it reads "≥ N"; a budget-truncated walk keeps
-    # the v5.1 trailing "+"
-    if team.get("bar_raised"):
-        tally = "≥ " + _num(counts["matched"])
-    else:
-        tally = _num(counts["matched"]) + ("" if team["exact"] else "+")
-    head = (
-        f'<div class="card-head"><h2>{_esc(team["name"])}</h2>'
+    return (
+        f'<div class="card-head"><h2>{_esc(name)}</h2>'
         f'<span class="posture">{_esc(m["posture"])}</span>'
         + (f'<span class="holes">holes: {_esc(holes)}</span>' if holes else "")
         + '<span class="right">'
@@ -899,6 +1007,18 @@ def _team_card(team: Mapping, offer: Mapping | None = None) -> str:
         f'<span class="chip-v">{_esc(tally)}</span></span>'
         + "</span></div>"
     )
+
+
+def _team_card(team: Mapping) -> str:
+    counts = team["counts"]
+    # v8 count honesty: a raised warm bar makes `matched` a verified floor even
+    # when the walk completed, so it reads "≥ N"; a budget-truncated walk keeps
+    # the v5.1 trailing "+"
+    if team.get("bar_raised"):
+        tally = "≥ " + _num(counts["matched"])
+    else:
+        tally = _num(counts["matched"]) + ("" if team["exact"] else "+")
+    head = _card_head(team["name"], team["market"], tally)
     if not team["spreads"]:
         body = (
             '<p class="empty">No hedge clears the sliders with this team. '
@@ -912,8 +1032,32 @@ def _team_card(team: Mapping, offer: Mapping | None = None) -> str:
         )
     else:
         body = "".join(_hedge(sp, i) for i, sp in enumerate(team["spreads"], 1))
-    pin = _offer_block(offer) if offer is not None else ""
-    return f'<section class="card">{head}{pin}{body}</section>'
+    return f'<section class="card">{head}{body}</section>'
+
+
+def _offer_team_card(team: Mapping) -> str:
+    """One counterparty's exact hedge set against the pinned offer — the
+    v8.1 offer page's unit. Same head as the board card; rows are pair
+    disclosures (`_offer_hedge`), and the empty state keeps the count-honesty
+    language keyed to the crossing's exactness."""
+    counts = team["counts"]
+    tally = _num(counts["matched"]) + ("" if team["exact"] else "+")
+    head = _card_head(team["name"], team["market"], tally)
+    if not team["hedges"]:
+        body = (
+            '<p class="empty">No stored hedge against this offer clears the '
+            "sliders with this team. "
+            + (
+                "The crossing was exhaustive, so that is a real answer about "
+                "the stored legs — not a budget artefact."
+                if team["exact"]
+                else "The crossing hit its budget, so read this as “none found”, not “none exists”."
+            )
+            + "</p>"
+        )
+    else:
+        body = "".join(_offer_hedge(h, i) for i, h in enumerate(team["hedges"], 1))
+    return f'<section class="card">{head}{body}</section>'
 
 
 def render_html(payload: Mapping) -> str:
@@ -956,9 +1100,14 @@ def render_html(payload: Mapping) -> str:
             if cc
             else ""
         )
+        mid = (
+            "one offer crossing · "
+            if payload.get("mode") == "offer"
+            else "exact per-team searches · "
+        )
         prov = (
             f'<div class="sub">complete ±{dbp["band"]:g} leg database · '
-            f'{dbp["legs"]:,} legs · exact per-team searches · '
+            f'{dbp["legs"]:,} legs · {mid}'
             f'db <span class="mono">{_esc(dbp["content_fingerprint16"])}</span>'
             f"{served}</div>"
         )
@@ -978,10 +1127,6 @@ def render_html(payload: Mapping) -> str:
         if payload.get("constraints_in_effect") is not None
         else ""
     )
-    offer = payload.get("offer")
-    pin_team = payload.get("focus") or (
-        offer["card"]["counterparty"] if offer else None
-    )
     stale = ""
     hrs = payload.get("data_age_hours")
     if hrs is None:
@@ -998,39 +1143,85 @@ def render_html(payload: Mapping) -> str:
             "your counterparty sees. Run <span class=\'mono\'>just collect</span> and "
             "regenerate before you quote any of it.</div>"
         )
-    cards = newer + stale + cons + "".join(
-        _team_card(
-            x,
-            offer=offer if (offer is not None and x["name"] == pin_team) else None,
+    # v8.1: two page modes off one chrome — the session hedge board, and the
+    # pinned-offer page (the offer atop per-counterparty hedge sets)
+    if payload.get("mode") == "offer":
+        offer = payload["offer"]
+        cards = (
+            newer + stale + _offer_pin(offer) + cons
+            + "".join(_offer_team_card(x) for x in payload["teams"])
         )
-        for x in payload["teams"]
-    )
-    honesty = (
-        "Every counterparty's crossing ran to completion, so the hedge tallies are "
-        "exact counts over the pooled legs."
-        if t["all_exact"]
-        else "Some crossings hit the budget; their tallies carry a trailing + and are "
-        "verified floors, never estimates."
-    )
+        title = "Pinned offer"
+        sub = (
+            f'{_esc(payload["me"])} · exact hedges per counterparty for the '
+            f'offer from {_esc(offer["card"]["counterparty"])}'
+        )
+        intro = (
+            "Each row is one <strong>hedge leg</strong>: execute it alongside the "
+            "pinned offer and the pair nets 0 players and 0 picks for your side. "
+            "Chips are the PAIR — the offer and that hedge applied together (one "
+            "combined lineup solve; face adds across legs). Open a row for the "
+            "hedge's package, its own KTC-calculator gate, and a link rolling the "
+            "whole pair. The offer's counterparty has no card — their trade is "
+            "the pin. Ranking is maximin: best pair floor return first, best "
+            f"team first. Dial: {_esc(dial)}."
+        )
+        if offer.get("counts") is None:
+            # the crossing never ran (count-neutral offer, or no complement
+            # signature exists) — claiming an exhaustive crossing here would
+            # violate the count-honesty contract
+            honesty = (
+                "No hedge crossing ran for this offer — the pinned card's note "
+                "says why (a count-neutral offer stands alone; an empty "
+                "complement signature is proof of absence at the DB's edges)."
+            )
+        elif t["all_exact"]:
+            honesty = (
+                "The crossing visited every eligible stored complement leg, so "
+                "the per-team tallies are exact counts — a team at zero has no "
+                "qualifying hedge among its stored legs."
+            )
+        else:
+            honesty = (
+                "The crossing hit its search budget; tallies carry a trailing + "
+                "and are verified floors — never estimates, never proof of absence."
+            )
+    else:
+        cards = newer + stale + cons + "".join(
+            _team_card(x) for x in payload["teams"]
+        )
+        title = "Hedge board"
+        sub = f'{_esc(payload["me"])} · best spreads per counterparty'
+        intro = (
+            "Each row is a count-neutral <strong>hedge</strong>: a buy leg and a "
+            "sell leg that together net 0 players and 0 picks. A hedge touches "
+            "two teams — it is listed under both, with that team's leg outlined. "
+            "Open a row for the packages, the KTC-calculator gate on each leg, "
+            "and the sequencing. Ranking is maximin: best guaranteed floor "
+            f"first. Dial: {_esc(dial)}."
+        )
+        honesty = (
+            "Every counterparty's crossing ran to completion, so the hedge tallies are "
+            "exact counts over the pooled legs."
+            if t["all_exact"]
+            else "Some crossings hit the budget; their tallies carry a trailing + and are "
+            "verified floors, never estimates."
+        )
     gen = f' · generated {_esc(payload["generated_at"])}' if payload.get("generated_at") else ""
     return f"""<style>{_CSS}</style>
 <div class="band"></div>
 <header class="mast"><div class="mast-in">
   <div class="wordmark">
     <div class="stars">{_STAR}{_STAR}{_STAR}{_STAR}</div>
-    <h1>Hedge board</h1>
-    <div class="sub">{_esc(payload["me"])} · best spreads per counterparty</div>
+    <h1>{title}</h1>
+    <div class="sub">{sub}</div>
     {prov}
   </div>
   <div class="mast-meta">{''.join(meta_bits)}</div>
 </div></header>
 <main>
   <p class="note" style="padding:0 0 14px">
-    Each row is a count-neutral <strong>hedge</strong>: a buy leg and a sell leg that
-    together net 0 players and 0 picks. A hedge touches two teams — it is listed under
-    both, with that team's leg outlined. Open a row for the packages, the KTC-calculator
-    gate on each leg, and the sequencing. Ranking is maximin: best guaranteed floor
-    first. Dial: {_esc(dial)}.
+    {intro}
   </p>
   {cards}
 </main>

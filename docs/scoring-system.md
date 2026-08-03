@@ -256,7 +256,15 @@ searches, cached views.**
   and offers re-verdict on the RECEIVED basis (v8.0.2): band/fleece
   violations waive exactly when their excess flows to us, stay FAIL when
   we'd overpay, legality never waives, the original verdict + waived list
-  ride the card as disclosure;
+  ride the card as disclosure — and the offer VIEW is its own page
+  (v8.1 pinned-offer mode): hedges come back grouped per counterparty
+  (`by_team` — every non-offerer team present, top-K each, best pair
+  floor return first, hedge-less teams trailing; `counts.matched_by_team`
+  the crossing's full per-team tallies; the flat maximin list rides
+  alongside, a superset of the old global top-K), rendered as the pinned-offer
+  dashboard — the offer atop one card per remaining counterparty — at its
+  own canonical out path beside the board's, which offer mode no longer
+  touches;
   (h) legality is a
   persistent tri-state column, discovered by walks, max-merged across
   processes.
