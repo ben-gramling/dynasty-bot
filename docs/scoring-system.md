@@ -216,7 +216,59 @@ Nothing else. Posture labels are user-overridable; every parameter above is re-d
 14. **v6 `ktc_fast` identity:** the memoized gate agrees with the pinned port BIT FOR BIT, compared by `repr()` and never `approx` — (a) the §11.11 live-calculator trades replayed through the fast path at variance 5; (b) `side_raw_adj` / `raw_adj_total` per package at both its own max and a dominating max; (c) real (my give, their get) package geometry; (d) a fuzz built to REACH the fallback arms, which the fleece bracket hides in normal operation and which the memo tables deliberately do not cover — the test asserts the fallback was actually exercised, else it proves nothing; (e) a cap change re-initialises the tables (`_RA` / `_ASSET` are keyed WITHOUT the cap for hot-path cost, so `_ensure` is what keeps that safe — the port's fallback arm genuinely runs at cap 10099 while a snapshot's top-up cap is `top_value + 80`, so two caps coexist in one process); (f) the M5 hoist precondition — `Package.v_sum` IS the float `sum(vals)` and `vals` ARE v-descending, for every package; (g) the whole leg pool is byte-identical, digest over every field of every leg.
 12. **v5 finder pins:** (a) `favor` derives from the SAME adjusted totals as the gate (one source of truth) and `|f| ≤ 5 ⟺` the port's `check_equality` at variance 5; (b) constraint soundness — no returned spread violates any require/exclude, pinned on the §4 example compilation (ronak/joey/Diggs/Burrow/Henderson) against fixtures; (c) δ-view identities — ranking by `return(δ)` at δ=0 and δ=1 equals ranking by ΔS-return and ΔF-return; robust mode reproduces v4 maximin exactly; (d) finder determinism — warm-cache and cold-cache results byte-identical; identical query → identical results; (e) honest coverage — exhaustively-crossed queries report exact counts, budget-saturated ones report floors, never estimates; (f) posture-compiled defaults reproduce v3.3 `posture_allows` behavior when no intel/query constraint names the team; (g) board buckets are favor_min bands and every stored pair still passes the §2 verdict.
 
-## 12. Changelog
+## 12. The hedge database (v8)
+
+Full design + decision record: `docs/hedge-db-v8-spec.md` (adversarially
+reviewed, measured on the live snapshot before implementation). The CLI-only
+(`core.scoring.hedgedb`, `core[hedgedb]` numpy extra — never the collector)
+session engine behind the trade-negotiator skill: **complete legs, exact
+searches, cached views.**
+
+- **Why legs, not pairs:** the complete |favor| ≤ 5 pool measured 13,490,657
+  legs on the live snapshot, and its ≥1%-floor crossing region ~2.5e12 pairs
+  at a ~53% qualifying rate — the pair universe is not materializable at any
+  dial. Every hedge is a pair of legs; the DB persists ALL of them, columnar
+  (one `.npy` per column, package descriptors in asset order, ~2 GB), plus
+  the FULL Snapshot it was priced from. Boards and offers rebuild their
+  league from that stored snapshot — never live Mongo — so a page can never
+  disagree with its own stored coordinates (the §11.8-style contract carried
+  over). The v5 sampling caps do not exist on this path (drain mode).
+- **Fingerprint:** content-normalized (Mongo `_id`/`fetched_at` stripped,
+  lists content-sorted) and INCLUDES `ktc_calculator` — the DB persists
+  priced values, so every pricing input keys it; `value_history_max` is
+  excluded (dip notes only). Unchanged content ⇒ the build is a no-op.
+- **Invariants (pinned in `test_hedgedb.py` at reduced params, brute-parity
+  against the finder):** (a) `search` ≡ `find_spreads(favor_band)`
+  bit-for-bit — spreads, counts, exact — on identical scopes, robust AND
+  numeric-δ, including identical truncation at equal budgets; (b) cache hits
+  byte-identical, keyed by COMPILED constraints + sliders (intel changes
+  miss exactly when they should); (c) fingerprint invariance/motion; (d)
+  stored-snapshot league prices identically to the live-built league; (e)
+  per-team favor windows (`favor_for`) bind that team's legs only, and
+  out-of-band values raise with the rebuild hint (never silently empty);
+  (f) count-neutral offers stand alone, disclosed; (g) offer hedges offset
+  the offer's signature exactly, exclude its counterparty, and the old ≤2
+  -asset heuristic is gone — an empty complement signature is proof of
+  absence at the DB's edges (measured live: (−1, −1) is EMPTY — no fair
+  gate-clean 3-for-1 onto our side exists league-wide); (h) legality is a
+  persistent tri-state column, discovered by walks, max-merged across
+  processes.
+- **Honesty:** v5.1 language survives verbatim — `exact` ⟺ the walk
+  completed (counts are tallies; empty means none exists inside the DB's
+  edges), else verified floors; the warm-bar seed makes `matched` a floor
+  (`bar_raised`) with the result list still exactly top-K. The DB's edges
+  are §1's: band ±5, packages ≤ 3, top-2 protected, no taxi/unvalued gives,
+  fleece bracket, (0,0) never pairs.
+- **Measured (2026-08-03 live):** cold build ~14.5 min (pool 113 s,
+  serialize ~3 min, 11-search bake ~9.5 min at 4 workers); cache hits
+  0.03 s; 8/11 teams provably-exact top-50 (two teams provably ZERO fair
+  hedges ≥ 1% — real answers), 3 saturate the 40M-visit budget (honest
+  floors). League-wide favor-tightened novel queries are the slow shape
+  (the geometry: tightening kills the edge-hugging top, the exact bar
+  drops, the provable region explodes) — minutes, once per filter state,
+  then cached.
+
+## 13. Changelog
 
 - **v7.6 (2026-08-02):** future picks price at **FLAT MID everywhere** — no forecast (v7.5's rule stands) and no direction premium (v7.5's rule retired, same session). User: *"i still think that we shouldnt be trying to estimate where future year picks are going to land inside the round, but instead of being pessimistic, lets assume that every pick will be in the middle of the round."*
   - **What changed vs v7.5:** `pessimistic_band` (Early when I send / Late when I receive) is deleted; every future pick prices at its round's Mid tranche whoever owns it — gate, ΔF, deep links, league tab, hedge board, all the same number. The price vector becomes SYMMETRIC between seats: a same-year same-round pick swap is exactly ΔF 0 again (v7.5 certified it a loss), the league tab's F column is a neutral survey again, and the §11.1b seat-asymmetry note inverts into a symmetry pin.

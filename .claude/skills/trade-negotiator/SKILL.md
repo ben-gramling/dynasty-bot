@@ -126,20 +126,26 @@ The user will feed you color like: *"trdouglas is hunting draft capital"* ·
 2026 picks"* · *"jake rejected Evans+Sutton for his 2027 1st"*. Protocol:
 
 1. **Classify** it: `WANT` (asset type/position they're chasing) · `DONT_WANT`
-   (hard exclusion) · `OFFERED` (an offer the user received — record both sides)
-   · `REJECTED` (a dead price point) · `NOTE` (anything else).
+   (hard exclusion on what they RECEIVE) · `KEEPS` (v8 — what they will NOT
+   give up: hard exclusion on their SENDS side; "Jake won't trade Lamar") ·
+   `SHOPPING` (v8 — what they're willing to move: soft ★ prefer on their
+   sends) · `OFFERED` (an offer the user received — record both sides) ·
+   `REJECTED` (a dead price point) · `NOTE` (anything else).
 2. **Persist immediately** to the `market-intel` collection (survives sessions):
    ```
    uv run python -c "from dotenv import load_dotenv; load_dotenv(); from core.db import get_db; from datetime import datetime, timezone; get_db()['market-intel'].insert_one({'team': 'trdouglas', 'kind': 'WANT', 'note': 'picks', 'reported': datetime.now(timezone.utc), 'active': True})"
    ```
    Retractions/staleness: set `active: False` (never delete — dead intel is
-   history). **v5: active intel auto-compiles into `find` constraints** when
-   the subject (`note`) is machine-parseable — an exact rostered asset name,
-   `picks`/`players`, or a position (`RB`, `a running back`). Log the
-   parseable core as the `note` and keep the color in the conversation: log
-   `'picks'`, not `'hunting draft capital'` — the second lands in the
-   finder's "ignored" list (reported with a reason, never guessed at) and
-   then only YOU apply it, qualitatively.
+   history). **Active intel auto-compiles into `hedgedb board`/`offer` AND
+   `find` constraints** when the subject is machine-parseable — v8 grammar:
+   an asset name (unique substring resolves; ambiguity is reported, never
+   guessed), `picks`/`players`, a position (`RB`), a year/round-scoped pick
+   class (`2027 picks`, `R1 picks`), or a pipe any-of of those
+   (`Mike Evans|Travis Hunter|Javonte Williams`). Multiple WANTs for one
+   team fold to any-of (either satisfies). Log the parseable core as the
+   subject and keep the color in the conversation: log `'picks'`, not
+   `'hunting draft capital'` — free text lands in the "ignored" list
+   (reported with a reason) and then only YOU apply it, qualitatively.
 3. **Extract the second-order read and say it.** An offer received reveals both
    sides: josbaski offering AJ Brown for Javonte means he's shopping Brown AND
    chasing RB — log both, and immediately check what a *better-for-us* in-band
@@ -163,107 +169,135 @@ The user will feed you color like: *"trdouglas is hunting draft capital"* ·
    disagree. Never invent intel; the engine's data and the user's words are the
    only sources.
 
-## Session start
+## Session start (v8 — the hedge database)
 
-1. **Freshness**: tools print `[data age]`; if > 24h or the user reports roster
-   changes, run `just collect` (~30s).
-2. **Load the desk view**:
-   - `uv run python scripts/score_trade.py teams` — L/F, posture + evidence, FAAB.
-   - Active intel: `... get_db()['market-intel'].find({'active': True})` (sort by team).
-   - The pair board: `uv run python scripts/score_trade.py pairs --json`
-     (v7.1 — there is no stored `trade-recs` doc and no Trades tab any more;
-     the board is computed live from the same engine code path, so it is
-     always fresh and the shape below is unchanged. It costs ~60s.)
-     (v5: `pairs` is the stratified
-     stored pair space — count-neutral buy+sell with embedded cards, each
-     pair carrying `coords {dS, dF}` (combined), `verdict` (always true on
-     stored pairs), `floor`/`ceiling` (the guaranteed interval),
-     `return_pct` (floor-based total), `favor {buy, sell, min}` (each leg's
-     signed KTC-calculator skew + the pair min — the favor-dial keys) and
-     `sent` (Σ face sent — what the δ dial re-scores against), the whole
-     list in maximin order; leg cards carry per-side
-     `coords`/`verdict`/`floor`/`breakeven` plus `favor` (mirrored in
-     `gate.favor`; `market_return_pct` survives as information only);
-     `bands` gives per-FAVOR-BUCKET inventory {lo, hi, stored, count,
-     saturated, by_total} (v5.1: `saturated: false` means the collection walk
-     completed under the sound crossing bound and the count is an EXACT tally;
-     `saturated: true` means a verified floor — read that count as "≥ N";
-     `by_total` is the bucket's counts per total band);
-     `favor_presets` + `delta_presets` name the dial stops
-     (`leg_cap_presets` and the per-leg `leg_returns`/`max_leg_return_pct`
-     are RETIRED — a pre-v5 doc still carries them, a v5 doc does not);
-     `counts_by_threshold` keeps ≥-style depth on total return; `truncated`
-     discloses the storage cap; `recommendations` is unpaired sell/neutral
-     legs — building blocks carrying `net_players`/`net_picks`, pair before
-     executing; `watch` is blocked buys with the exit each needs; `notes`).
-3. **Generate the HEDGE BOARD and publish it.** This is the session's headline
-   artifact and the thing the user actually reads:
+The session runs on the §12 hedge DATABASE: the complete ±5-favor leg
+inventory (~13.5M legs, NOTHING sampled — v5's 0.449% sampling is gone from
+this path), persisted with the exact snapshot it was priced from, serving
+provably-exact top-K searches that are CACHED per filter state. Build once,
+filter fast, board always.
+
+1. **Freshness, then build (the cold start)**:
+   - If the last collect is stale (>6h) or the user reports roster changes:
+     `just collect` (~30s).
+   - `uv run python scripts/score_trade.py hedgedb build` — idempotent per
+     content fingerprint: if KTC/rosters didn't actually change since the
+     last build it returns in seconds; a real rebuild takes **~15 min**
+     (pool ~2 min → columnar serialize ~3 min → bake one exact search per
+     counterparty, fork-parallel). Say so before starting; this is the
+     price of every later filter being instant-to-fast. It refuses stale
+     Mongo (>6h) without `--allow-stale`.
+2. **Load the desk view**: `score_trade.py teams` + active intel
+   (`market-intel`, `active: True`) as before.
+3. **Generate the HEDGE BOARD and publish it**:
 
    ```
-   uv run python scripts/score_trade.py dashboard --out <scratch>/hedge-board.html
+   uv run python scripts/score_trade.py hedgedb board --out <scratch>/hedge-board.html
    ```
 
-   It runs the finder ONCE PER COUNTERPARTY (`with_team` pushes the scope into
-   the crossing, so every run is exhaustive rather than budget-truncated) and
-   writes a self-contained HTML page: one card per team — posture, holes, pick
-   inventory, FAAB, hedge tally — over their best count-neutral hedges, each
-   expanding to both legs' packages, the KTC-calculator gate on each leg, and
-   the sequencing. Then publish it with the **Artifact tool** so the user gets
-   a link, and say in one line what the page shows.
+   Default invocations are pure CACHE HITS off the bake (~seconds
+   end-to-end). One card per team — posture, holes, picks, FAAB — over their
+   best count-neutral hedges with both legs' packages, per-leg gate numbers,
+   KTC deep links, sequencing. Publish with the **Artifact tool**; keep ONE
+   file path all session — board and offer regenerations reuse it, so the
+   user's link stays live.
 
-   - **Collect FIRST if the data is not fresh.** KTC re-prices continuously —
-     a mid-tier WR moved 2,595 → 2,574 in six hours — so a board built off a
-     stale collect quotes numbers the counterparty's screen no longer shows,
-     asset by asset. `just collect` takes ~30s. The page prints its data age
-     and puts a red banner on anything over 6 hours; never publish a board
-     wearing that banner.
-   - **Never publish a board built from the committed `data/` fixtures.**
-     Those are the 2026-07-26 test snapshot and exist to pin the suite. A
-     fixture-rendered board looks identical to a real one and is a week wrong.
-     The `dashboard` subcommand reads Mongo, which is the live path — use it.
-   - Takes **~30s to a few minutes** (11 exhaustive searches, farmed to a
-     process pool). Say so before starting it; do not run it twice in a
-     session unless the data changed.
-   - Sliders are flags: `--top` (hedges per team, default 5), `--min-return`,
-     `--favor-min` / `--favor-max` (default the fair window −5..+5),
-     `--delta`. Re-run with different flags when the user moves a dial — a
-     dial move is a new page, not a hand-edit of the old one.
-   - The page is generated from the same `find_spreads` call the CLI makes and
-     re-derives nothing, so it can never disagree with `find`. Do NOT
-     hand-author or "improve" the HTML: fix `core/dashboard.py` instead, or the
-     next generation silently loses the change.
-   - A team with no hedge still gets a card. That is a real answer about that
-     team (the searches are exhaustive) — brief it as one, not as a gap.
-   - `--json` prints the payload instead, for when you need the numbers rather
-     than the page.
-   - Every hedge carries **KTC calculator deep links**: one per leg — pinned to
-     the settings the gate ports, so the page total IS `adj_give`/`adj_get` —
-     and one for the whole spread rolled into a single hypothetical trade.
-     Quote the LEG links when you pitch: that is the trade the manager
-     actually takes, and the number on their screen will match what you told
-     them. The spread link is a shape check for you, not a proposal; the page
-     labels it as such and so should you.
+   - The page renders from the DB's STORED snapshot, never live Mongo — its
+     cards can never disagree with its coordinates. TWO red banners exist:
+     snapshot older than 6h, and "the collector has newer data than this
+     board's database" (content fingerprints diverged). Never publish a
+     board wearing either — collect and/or `hedgedb build` first.
+   - Never publish fixture-built boards (unchanged rule).
+   - A team with zero hedges and `exact` is a PROVEN answer — on the live
+     build two teams genuinely have no fair verdict-good hedge ≥1%. Brief
+     it as a fact, not a gap.
+   - Do NOT hand-edit the HTML; fix `core/dashboard.py`.
+   - `--json` for numbers; `hedgedb status` for DB provenance/freshness.
 
-4. **Open with a desk brief**: per-team one-liners merging posture (+evidence
-   count), active intel, visible holes, pick inventory — then the hedge board's
-   headline rows and any intel-driven opportunities the search can't see.
+4. **Open with a desk brief**: per-team one-liners merging posture, intel,
+   holes, picks — then the board's headline rows.
+
+## Filtering the database (the core session loop)
+
+Every narrowing utterance maps to intel (persistent) and/or flags
+(session-scoped), then `hedgedb board` REGENERATES from the same DB —
+revisited filter states are instant (cached); novel ones run a fresh exact
+search. **Re-pass the complete current flag set on every invocation** — the
+board's "constraints in effect" block shows what applied, what intel was
+shed by your query (per team AND side), and what couldn't compile.
+
+- *"Colin wants a running back"* → log WANT intel (`pos:RB`) → regen. A
+  second WANT for the same team ("…and a TE") folds to ANY-OF — either
+  satisfies him — never a both-must-appear conjunction.
+- *"Ronak wants Kenneth Walker"* → WANT with the asset name — unique
+  substrings resolve ("Kenneth Walker" → Kenneth Walker III); ambiguity
+  errors with candidates, never guesses. If the wanted asset can't appear in
+  any leg (your top-2 cornerstones, taxi, another team's player) the compile
+  ERRORS with the reason — relay it, don't hand back an empty board.
+- *"millj wants Evans, Hunter, or Javonte"* → one WANT `Mike Evans|Travis
+  Hunter|Javonte Williams` (pipes = any-of), or `--require "millj receives
+  Mike Evans|Travis Hunter|Javonte Williams"` ad-hoc.
+- *"Jake is not willing to trade away Lamar"* → **KEEPS** intel → hard
+  exclude on his SENDS side. *"Colin is shopping his TE"* → **SHOPPING** →
+  soft ★ prefer on his sends. Both persist and auto-compile.
+- *"Colin won't give up any 2027 picks"* → KEEPS `2027 picks` — pick classes
+  scope by year and/or round ("2027 picks", "R1 picks", "2027 R1 picks"),
+  both sides, and inside any-of sets.
+- *"Trades on the Colin side should be at least −3 for him"* →
+  `--favor-for cmgaither43=-3:` — SIGN CONVENTION: favor is
+  counterparty-positive, so "at least −3 for him" = min −3 (at most 3
+  points against him on his own calculator). An inverted sign flips the
+  meaning — map the user's words, echo back the tag ("his calculator shows
+  at worst −3").
+- Sliders (`--min-return`, `--delta`, `--favor-min/max`, `--top`,
+  `--shape`) and `--focus TEAM` (their card first) as flags.
+
+**Latency honesty**: cache hits and narrowings that keep the exact-top-K bar
+high (asset/team requires, return floors) are seconds. A filter that guts
+the high-return region — league-wide favor tightening is the canonical case
+— can saturate the search budget: the result is then best-found-within-
+budget with `exact: false` and "≥ N" counts. Say which one happened (the
+payload's `exact`/`bar_raised` say it); never present a saturated search as
+proof of absence.
 
 ## Tools
 
 ```
+uv run python scripts/score_trade.py hedgedb build [--workers N] [--allow-stale]
+uv run python scripts/score_trade.py hedgedb board \
+    [--require/--exclude/--prefer "WHO receives|sends OBJECT [with TEAM]"]... \
+    [--favor-for TEAM=MIN:MAX]... [--focus TEAM] [--no-intel] [--no-posture] \
+    [--delta robust|0..1] [--min-return N] [--favor-min F] [--favor-max F] \
+    [--shape ...] [--top N] [--out FILE.html] [--json]
+uv run python scripts/score_trade.py hedgedb offer --opponent X \
+    --give "A, B" --get "C" [same filter flags] [--out FILE.html] [--json]
+uv run python scripts/score_trade.py hedgedb status
 uv run python scripts/score_trade.py teams
-uv run python scripts/score_trade.py dashboard --out FILE.html   # the hedge board (publish it)
 uv run python scripts/score_trade.py list-assets [team]          # exact asset names
 uv run python scripts/score_trade.py score --opponent X \
     --give "A, B" --get "C" [--alternatives] [--hedge] [--json]
 uv run python scripts/score_trade.py pairs --min 5 --favor-min -5 [--json]
 uv run python scripts/score_trade.py find \
-    [--require "WHO receives|sends OBJECT [with TEAM]"]... \
-    [--exclude "..."]... [--prefer "..."]... [--no-intel] [--no-posture] \
-    [--delta robust|0..1] [--min-return N] [--favor-min F] [--favor-max F] \
-    [--shape starter>team|team>starter] [--legs A+B] [--with TEAM] \
-    [--top N] [--json]
+    [--require "..."]... [--exclude "..."]... [--prefer "..."]... \
+    [--no-intel] [--no-posture] [--delta robust|0..1] [--min-return N] \
+    [--favor-min F] [--favor-max F] [--shape ...] [--legs A+B] \
+    [--with TEAM] [--top N] [--json]
 ```
+
+- **`hedgedb *` is the session's primary surface** (v8): board and offer are
+  views over the persisted complete-pool database — exact, cached,
+  deterministic. OBJECT grammar everywhere (query flags AND intel subjects):
+  exact-or-unique-substring asset names, `pos:RB`, `picks`/`players`,
+  year/round-scoped picks (`2027 picks`, `R1 picks`, `2027 R1 picks`), and
+  pipe any-of (`A|B|C`, mixable atom kinds). `--favor-for millj=-3:` floors
+  that team's LEG favor (counterparty-positive units; omit either bound).
+  Band limits: the DB serves |favor| ≤ 5 only — outside needs a rebuild at a
+  wider band, and the tools raise rather than silently emptying.
+- `find`/`score`/`pairs` remain the OFF-DATABASE tools: preference trades,
+  δ-view exploration below the board's floor, `--legs`-style structural
+  queries, and one-off scoring (`score` still runs the old `--hedge` with
+  its ≤2-asset heuristic — prefer `hedgedb offer`, which has no such cap and
+  proves absence when a complement signature is empty).
 
 - `pairs --min FLOOR --favor-min F`: the STORED board behind the dials (same
   engine code path as the nightly run) — prints the favor-bucket inventory,
@@ -385,10 +419,21 @@ uv run python scripts/score_trade.py find \
 - **"X wants/is hunting Y"** → log intel (+ posture override if directional),
   then design 2-3 gate-passing offers shaped to Y from our inventory, scored,
   best-first, each with the anchor ask (+8%) as the opening number.
-- **"X offered me A for B"** → log OFFERED with both sides; score it exactly as
-  given (their offer = our give/get); verdict with the gate math; then counters
-  via `--alternatives`, keeping only shapes consistent with X's revealed wants;
-  present accept / counter / decline with numbers.
+- **"X offered me A for B"** → log OFFERED with both sides; then
+  `hedgedb offer --opponent X --give ... --get ...` (v8): it scores the trade
+  exactly as given (REAL gate verdict — a FAIL names the rule: band, fleece
+  ratio, legality), crosses it against the stored legs of every other
+  counterparty for its exact hedge set (no asset-count cap — a +1P/+1K offer
+  needs 3-asset gives by arithmetic and the DB holds them), and regenerates
+  the board with X focused first and the offer pinned. Republish the SAME
+  artifact path. Report: gate verdict first, our verdict/interval, THEIR
+  coords, then the hedges — or the proven absence: an empty complement
+  signature is a THEOREM about the fair band ("no fair gate-clean 3-for-1
+  onto our side exists league-wide"), quote it as one. A count-neutral offer
+  says so and stands alone. Gate-FAIL offers still show hedges labeled "if
+  you took it anyway" — the counter usually lives there: fix the failing
+  rule via `score --alternatives`, keeping shapes consistent with X's
+  revealed wants; present accept / counter / decline with numbers.
 - **"Score this trade"** → run it; report OUR verdict first (objectively
   good with the guaranteed interval "between +X and +Y" / preference trade
   with its δ* and direction / bad at every preference), our coordinates
