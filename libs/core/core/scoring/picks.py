@@ -27,6 +27,11 @@ build — every asset has exactly one price, whoever is looking, and (unlike
 v7.5) the same price in either direction. The `p_me` / `band_me` fields survive
 so v7 consumers (ΔF, the card lens note, `total_face`'s lens switch) keep
 working, but they can no longer disagree with `mv`.
+
+§2 v8.2: a future pick ALSO carries the ends of KTC's published band —
+`mv_lo` (Late) and `mv_hi` (Early) — feeding the REPORTED floor/ceiling
+interval only (`trades.pick_swing`). Never a price: every consumer above
+still reads the flat Mid, and §11.17 pins that firewall.
 """
 
 from __future__ import annotations
@@ -69,6 +74,13 @@ class Pick:
     p_me: float
     band_me: str
     mine: bool
+    # §2 v8.2: the ends of KTC's PUBLISHED band for this pick — Late (cheap)
+    # and Early (dear) tranche values for a future year; both equal to `mv`
+    # when the slot is known (current year), so `mv_hi == mv_lo` ⟺ no swing.
+    # NEVER a price: the gate, ΔF, links and every ranking read `mv`/`p`/`p_me`
+    # (flat Mid) — these two feed only the REPORTED interval (trades.pick_swing).
+    mv_lo: float = 0.0
+    mv_hi: float = 0.0
 
     @property
     def key(self) -> str:
@@ -173,6 +185,7 @@ def price_pick(
             band=band_of_slot(slot), band_reason=f"slot {slot}",
             label=f"{year} {rnd}.{slot:02d}",
             p_me=v, band_me=f"KTC {year} Pick {rnd}.{slot:02d}", mine=mine,
+            mv_lo=v, mv_hi=v,  # slot known — no band, no swing (§2 v8.2)
         )
     # §3.2 v7.6: the slot is unknown and never estimated — every future pick
     # prices at the middle of its round, whoever owns it. The gate, the deep
@@ -185,6 +198,9 @@ def price_pick(
         owner_rid=owner_rid, slot=None, n=None, p=v, mv=v,
         band=band, band_reason=reason, label=f"{year} R{rnd}{own}",
         p_me=v, band_me=band, mine=mine,
+        # §2 v8.2: the ends of KTC's published band, for the REPORTED interval
+        # only — the price above stays flat Mid for every consumer.
+        mv_lo=tranches[(year, "Late", rnd)], mv_hi=tranches[(year, "Early", rnd)],
     )
 
 

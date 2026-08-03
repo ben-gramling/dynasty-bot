@@ -108,6 +108,28 @@ def test_future_picks_price_flat_mid_for_everyone(league, me):
     assert me.picks_mv == sum(p.p_me for p in me.picks) == 41869.86
 
 
+def test_band_ends_are_carried_but_never_a_price(league, me):
+    """§2 v8.2: every future pick carries the ends of KTC's PUBLISHED band —
+    `mv_lo` the Late tranche, `mv_hi` the Early — for the reported interval
+    ONLY: `p == mv == p_me` stays the flat Mid for every consumer (§11.16).
+    Current-year picks have a known slot: both ends equal the price, so
+    `mv_hi == mv_lo` ⟺ no swing, by construction."""
+    tr_ = league.tranches
+    for t in league.teams.values():
+        for p in t.picks:
+            if p.year == league.current_year:
+                assert p.mv_lo == p.mv_hi == p.mv
+                continue
+            assert p.mv_lo == tr_[(p.year, "Late", p.round)]
+            assert p.mv_hi == tr_[(p.year, "Early", p.round)]
+            assert p.mv_lo < p.mv < p.mv_hi  # KTC's band brackets its Mid
+            assert p.p == p.mv == p.p_me == tr_[(p.year, "Mid", p.round)]
+    # pinned widths on the committed snapshot: a 2027 1st swings −556/+1280
+    # around Mid 6,118 (the asymmetry is KTC's convexity, not a choice)
+    p27 = pick_of(me, 2027, 1)
+    assert (p27.mv_lo, p27.mv, p27.mv_hi) == (5562.0, 6118.0, 7398.0)
+
+
 def test_future_assets(league):
     """F: players at KTC face + picks at the §3.2 one price. v7.6 moved every
     future pick onto the flat Mid tranche, so the league tab's F column is a

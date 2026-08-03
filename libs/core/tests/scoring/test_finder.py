@@ -65,7 +65,7 @@ def test_finder_output_contract(league, cache_dir):
         assert set(s) == {
             "id", "buy", "sell", "coords", "verdict", "floor", "ceiling",
             "sent", "return_robust", "return_view", "favor", "preferred",
-            "sequencing", "net_players", "net_picks", "net_roster",
+            "sequencing", "net_players", "net_picks", "net_roster", "swing",
         }
         # §3: every leg passes the EXACT gate — recomputed, not trusted
         (bg, bt), (sg, st) = _spread_packages(league, s)
@@ -173,12 +173,20 @@ def test_delta_view_identities_11_12c(league, cache_dir):
             for a, b in zip(ratios, ratios[1:]):
                 assert a >= b - 1e-4
     # robust == v4 maximin: verdict-true throughout, floor-return ranking with
-    # ceiling desc tie-break, and view == robust figure
+    # ceiling desc tie-break — both on the NEUTRAL flat-Mid figures (§11.17:
+    # the §2 v8.2 band swing widens only the REPORTED floor/ceiling/robust
+    # return, never a ranking key), so the view figure equals the neutral
+    # maximin return and the extended robust figure can only sit at or below it
     rob = runs["robust"]
     for s in rob["spreads"]:
         assert s["verdict"] is True
-        assert s["return_view"] == s["return_robust"]
-    keys = [(-s["return_robust"], -s["ceiling"]) for s in rob["spreads"]]
+        got = tr.pair_coords(league, s["buy"], s["sell"])
+        assert s["return_view"] == got["return_mid_pct"]
+        assert s["return_robust"] <= s["return_view"]
+    keys = [
+        (-s["return_view"], -max(s["coords"]["dS"], s["coords"]["dF"]))
+        for s in rob["spreads"]
+    ]
     assert keys == sorted(keys)
     # every robust spread also appears under some δ view of the same query
     # (robust only ADDS the verdict filter — it never invents inventory)

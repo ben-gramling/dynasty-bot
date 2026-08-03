@@ -762,6 +762,33 @@ def _leg_block(leg: Mapping, *, role: str, is_theirs: bool, link: Mapping | None
     )
 
 
+def _swing_note(sw: Mapping | None, coords: Mapping) -> str:
+    """§2 v8.2 the band-swing audit line: which origins drive the widened
+    floor/ceiling, in words ('if they finish strong / crater'), plus whether
+    the §2 verdict survives the band's worst edge. Silent when no future pick
+    is at stake — the interval then IS the plain maximin one."""
+    if not sw or (not sw["down"] and not sw["up"]):
+        return ""
+    origins = "; ".join(
+        f'{o["year"]} picks from {o["origin"]}: '
+        f'{_num(o["if_strong"], signed=True)} if they finish strong, '
+        f'{_num(o["if_weak"], signed=True)} if they crater'
+        for o in sw.get("by_origin") or ()
+    )
+    survives = (
+        "the verdict survives the whole band"
+        if sw.get("verdict_worst")
+        else "at the band's worst edge this is no longer objectively good"
+    )
+    return (
+        f'<p class="note">Future picks priced at Mid could really land anywhere in '
+        f'KTC’s published Early/Late band: face {_num(coords["dF"], signed=True)} '
+        f'could resolve between {_num(sw["down"], signed=True)} and '
+        f'{_num(sw["up"], signed=True)} of that — the floor and ceiling chips fold '
+        f"this in ({survives}). One finish per origin team per year: {origins}.</p>"
+    )
+
+
 def _hedge(sp: Mapping, rank: int) -> str:
     c = sp["coords"]
     fav = sp["favor"]
@@ -802,6 +829,7 @@ def _hedge(sp: Mapping, rank: int) -> str:
             if links.get("spread")
             else ""
         )
+        + _swing_note(sp.get("swing"), c)
         + f'<p class="note">{_esc(sp["sequencing"])}. '
         f'Partner on the other leg: {_esc(sp["partner"])}. '
         f'Nets 0 players / 0 picks; active roster {_num(sp["net_roster"], signed=True)}.</p>'
@@ -932,6 +960,7 @@ def _offer_hedge(h: Mapping, rank: int) -> str:
             if links.get("pair")
             else ""
         )
+        + _swing_note(h.get("swing"), c)
         + f'<p class="note">Pair figures are the offer and this hedge applied '
         f'together — your offer is the {_esc(h.get("offer_side"))} side. '
         f'{_esc(hc["sequencing"])}.</p>'
@@ -967,6 +996,25 @@ def _offer_pin(offer: Mapping) -> str:
         if not ok
         else ""
     )
+    # §2 v8.2: the band check on the ACCEPT decision — the one surface where
+    # "is their future 1st secretly a 1.01?" is a live question
+    sw = card.get("swing")
+    swing_line = ""
+    if sw and (sw["down"] or sw["up"]):
+        cme = card["coords"]["me"]
+        survives = (
+            "your accept verdict survives the whole band"
+            if sw.get("verdict_worst")
+            else "at the band's worst edge the accept is no longer objectively good"
+        )
+        swing_line = (
+            '<p class="note">Future-pick band check: if every unknown slot '
+            "breaks against you (your sends land Early, your gets Late), face "
+            f'{_num(cme["dF"], signed=True)} becomes '
+            f'{_num(cme["dF"] + sw["down"], signed=True)} and the guaranteed '
+            f'floor is {_num(card["floor"]["me"], signed=True)} — {survives}. '
+            "That is the worst within KTC's published band, not a hard bound.</p>"
+        )
     counts = offer.get("counts")
     tally = ""
     if counts:
@@ -984,7 +1032,7 @@ def _offer_pin(offer: Mapping) -> str:
         )
     return (
         f'<section class="card offer-pin"><div class="offer">'
-        f"{head}{body}{note}{fail_note}{tally}</div></section>"
+        f"{head}{body}{note}{fail_note}{swing_line}{tally}</div></section>"
     )
 
 
@@ -1163,8 +1211,9 @@ def render_html(payload: Mapping) -> str:
             "combined lineup solve; face adds across legs). Open a row for the "
             "hedge's package, its own KTC-calculator gate, and a link rolling the "
             "whole pair. The offer's counterparty has no card — their trade is "
-            "the pin. Ranking is maximin: best pair floor return first, best "
-            f"team first. Dial: {_esc(dial)}."
+            "the pin. Ranking is maximin on the flat-Mid convention: best pair "
+            "floor return first, best team first; the shown floor/ceiling also "
+            f"fold the future-pick band (footer). Dial: {_esc(dial)}."
         )
         if offer.get("counts") is None:
             # the crossing never ran (count-neutral offer, or no complement
@@ -1197,8 +1246,9 @@ def render_html(payload: Mapping) -> str:
             "sell leg that together net 0 players and 0 picks. A hedge touches "
             "two teams — it is listed under both, with that team's leg outlined. "
             "Open a row for the packages, the KTC-calculator gate on each leg, "
-            "and the sequencing. Ranking is maximin: best guaranteed floor "
-            f"first. Dial: {_esc(dial)}."
+            "and the sequencing. Ranking is maximin on the flat-Mid convention: "
+            "best guaranteed floor first; the shown floor/ceiling also fold the "
+            f"future-pick band (footer). Dial: {_esc(dial)}."
         )
         honesty = (
             "Every counterparty's crossing ran to completion, so the hedge tallies are "
@@ -1232,10 +1282,17 @@ def render_html(payload: Mapping) -> str:
   for their known slot, and every future pick at the middle of its round — the same
   price whoever holds it. The gate on each leg runs KTC's own calculator over exactly
   those prices, and its links carry them.</p>
-  <p>Guaranteed floor is min(starters, face) and the ceiling is the max — the gain lies
-  between them at every rational preference, so quote the floor and never a blend.
-  Favor is the signed skew toward the counterparty in KTC's own variance units;
-  |favor| ≤ 5 is their calculator's FAIR window.</p>
+  <p>Guaranteed floor is min(starters, face) with every future pick additionally resolved
+  against you inside KTC's published Early/Mid/Late band — your sends landing early, your
+  gets landing late, one finish per origin team per year, so two picks riding the same
+  team's season net exactly. The ceiling is the mirror best case. The gain lies between
+  them at every rational preference and every in-band slot outcome, so quote the floor
+  and never a blend — but the band is KTC's tranche spread (an average of the round's
+  ends, not a hard bound: a true 1.01 beats it). Prices, the gate, the verdict and the
+  ranking never move off Mid — the ranking is maximin on the neutral convention, which
+  is why a row's shown interval can sit slightly out of order. Favor is the signed skew
+  toward the counterparty in KTC's own variance units; |favor| ≤ 5 is their calculator's
+  FAIR window.</p>
   <p>The only links on this page open keeptradecut.com's trade calculator, pinned to
   the settings the gate ports (variance 5, 1QB, no pick scaling) so a leg's page total
   is exactly its <em>you</em> / <em>them</em> figures above. Current-year picks link at

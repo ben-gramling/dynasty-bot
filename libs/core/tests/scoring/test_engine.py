@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 from dataclasses import replace as dc_replace
 
+import pytest
+
 from core.scoring import Snapshot, validate_snapshot
 
 from .conftest import board_legs
@@ -59,13 +61,23 @@ def test_top_level_shape(result, board):
         # exactly these fields
         assert set(pair) == {
             "id", "buy", "sell", "return_pct", "favor",
-            "coords", "verdict", "floor", "ceiling", "sent", "net_roster",
+            "coords", "verdict", "floor", "ceiling", "swing", "sent",
+            "net_roster",
             "net_players", "net_picks", "fit_summary", "sequencing", "overlaps",
         }
         assert set(pair["coords"]) == {"dS", "dF"}
         assert pair["verdict"] is True  # §11.8b(d)/§11.12(g): hard storage constraint
-        assert pair["floor"] == min(pair["coords"].values())
-        assert pair["ceiling"] == max(pair["coords"].values())
+        # §2 v8.2: the doc interval folds the pick-band swing (report only —
+        # §11.17: return_pct and the stored order stay on the neutral coords)
+        sw = pair["swing"]
+        assert sw["down"] <= 0.0 <= sw["up"]
+        assert pair["floor"] == pytest.approx(
+            min(pair["coords"]["dS"], pair["coords"]["dF"] + sw["down"]), abs=0.11
+        )
+        assert pair["ceiling"] == pytest.approx(
+            max(pair["coords"]["dS"], pair["coords"]["dF"] + sw["up"]), abs=0.11
+        )
+        assert pair["floor"] <= min(pair["coords"].values())
         assert set(pair["favor"]) == {"buy", "sell", "min"}
         assert pair["favor"]["min"] == min(pair["favor"]["buy"], pair["favor"]["sell"])
         assert pair["sent"] > 0
@@ -93,10 +105,16 @@ def test_card_schema_matches_contract(board):
         # (preference trades only) the derived breakeven δ*
         for field in ("coords", "verdict", "floor", "breakeven"):
             assert set(card[field]) == {"me", "them"}, field
+        # §2 v8.2: card floors fold the pick-band swing — mine with `down`,
+        # theirs with the exact mirror (−up); verdicts stay on the Mid coords
+        sw = card["swing"]
+        fold = {"me": sw["down"], "them": -sw["up"]}
         for side in ("me", "them"):
             c = card["coords"][side]
             assert set(c) == {"dS", "dF"}
-            assert card["floor"][side] == round(min(c["dS"], c["dF"]), 1)
+            assert card["floor"][side] == pytest.approx(
+                min(c["dS"], c["dF"] + fold[side]), abs=0.11
+            )
             assert card["verdict"][side] == (
                 c["dS"] >= 0 and c["dF"] >= 0 and (c["dS"] > 0 or c["dF"] > 0)
             )

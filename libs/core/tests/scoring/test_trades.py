@@ -10,6 +10,8 @@ prose quotes the same trades.
 
 from __future__ import annotations
 
+import pytest
+
 from core.scoring import Params
 from core.scoring import ktc_adjust as ka
 from core.scoring import lineup as ln
@@ -93,7 +95,13 @@ def test_worked_example_1_sell_leg(league):
     AGAIN: at Mid prices it reads 7,799 against 10,262, a 24.0% gap ⇒ REJECT
     (v7.4's Early projection said 36.8%, v7.5's Late pessimism said 12.1%
     PASS) — the concentrated 6,118 pick still earns a top-up two mid WRs do
-    not."""
+    not.
+
+    §2 v8.2: the REPORTED floor now folds the pick-band swing — receiving
+    vishan's 1st risks Late −556 and jaketoppen's 4th −308, so down = −864
+    and floor(me) = min(−64, 78 − 864) = −786: exactly the loss v7.5 once
+    CHARGED, demoted to a disclosure. Coordinates, verdict, breakevens, the
+    gate and every price stay flat Mid (§11.17)."""
     card = tr.propose_by_names(
         league, "jaketoppen",
         ["Mike Evans", "Courtland Sutton"],
@@ -114,15 +122,23 @@ def test_worked_example_1_sell_leg(league):
         (6118 + 1759) - (4125 + 3674) - 0.0, 1
     )  # ΔF is exactly the face delta at the one price
     assert card["verdict"] == {"me": False, "them": False}
-    assert card["floor"] == {"me": -64.0, "them": -78.0}
+    assert card["floor"] == {"me": -786.0, "them": -1515.0}
+    assert card["swing"] == {
+        "down": -864.0, "up": 1437.0,
+        "by_origin": [
+            {"year": 2027, "origin": "vishan", "if_weak": 1280.0, "if_strong": -556.0},
+            {"year": 2028, "origin": "jaketoppen", "if_weak": 157.0, "if_strong": -308.0},
+        ],
+        "verdict_worst": False,
+    }
     # a sign split on each side ⇒ both carry breakevens: mine δ* = 64/142,
     # theirs δ* = 1216/1294 (their win-now read of shipping picks for starters)
     assert card["breakeven"]["me"] == round(64.0 / 142.0, 4) == 0.4507
     assert card["breakeven"]["them"] == round(1216.0 / 1294.0, 4) == 0.9397
     assert card["coords_basis"] == "isolation"
-    # §5 v4 leg return is floor-based: −64 ÷ 7,799 sent; the market skim reads
-    # the same one price vector
-    assert card["return_pct"] == -0.82
+    # §5 v4+v8.2 leg return is floor-based on the extended floor: −786 ÷
+    # 7,799 sent; the market skim reads the same one price vector
+    assert card["return_pct"] == -10.08
     assert card["market_return_pct"] == 1.0
     g = card["gate"]
     assert (g["adj_give"], g["adj_get"]) == (7799.0, 10262.0)
@@ -160,7 +176,8 @@ def test_worked_example_2_buy_leg_face_for_face(league):
     (2,468 — for a 2028 pick numerically the old market band again, since two
     years out was always flat Mid; v7.5 briefly charged Early 2,618 because I
     was the sender), so the trade reads (ΔS 0, ΔF +533): objectively GOOD
-    (one strict coordinate), guaranteed floor 0, gain the interval 0 to +533.
+    (one strict coordinate), guaranteed floor 0, gain the interval 0 to +663
+    (§2 v8.2: the ceiling folds my pick landing Late, +130 over Mid).
     millj's side is (0, −533) — one symmetric price vector, ΔF negates
     exactly. The gate rejects (gap 1,430 = 36.7% against a 20% band); the
     shape (picks → SELLER) is still right."""
@@ -172,7 +189,17 @@ def test_worked_example_2_buy_leg_face_for_face(league):
         "them": {"dS": 0.0, "dF": -533.0},
     }
     assert card["verdict"] == {"me": True, "them": False}
-    assert card["floor"] == {"me": 0.0, "them": -533.0}
+    # §2 v8.2: my floor stays 0 (ΔS binds — sending my own 2028 3rd risks
+    # Early −150, but 533 − 150 = 383 > 0); millj's floor folds the mirror
+    # best case: −533 − 130 = −663 if my pick lands Late on their side
+    assert card["floor"] == {"me": 0.0, "them": -663.0}
+    assert card["swing"] == {
+        "down": -150.0, "up": 130.0,
+        "by_origin": [
+            {"year": 2028, "origin": "bengramling", "if_weak": -150.0, "if_strong": 130.0},
+        ],
+        "verdict_worst": True,
+    }
     # verdict-true ⇒ no breakeven; both-coordinates-≤0 ⇒ no breakeven either
     assert card["breakeven"] == {"me": None, "them": None}
     assert card["return_pct"] == 0.0  # floor-based: guaranteed nothing
@@ -335,18 +362,22 @@ def test_hunter_for_a_2027_second_conversion_earns_no_floor(league, board):
     """§11.8b(b) pinned on the COMMITTED fixtures. Travis Hunter (4,061) is on
     my bench; selling him for ronakpatel32's 2027 2nd at the flat Mid 4,139
     (v7.6 — the slot never estimated, one price for every consumer) is
-    (ΔS 0, ΔF +78): verdict true but floor 0, return 0.00%, below the 1%
-    stored universe. The v3.4 reclassification exploit — a bench body
-    laundered into a pick at full face used to claim the pick's entire value
-    as gain — stays dead with no parameter: the FLOOR is what ranks, and a
-    non-starter conversion's floor is ~0. (v7.5's Late pricing briefly made
-    this conversion a certified −206 loss; the midpoint restores the honest
-    "worthless, not harmful" reading.)
+    (ΔS 0, ΔF +78): verdict true (at Mid) with a NEUTRAL floor of 0, ranking
+    return 0.00%, below the 1% stored universe. The v3.4 reclassification
+    exploit — a bench body laundered into a pick at full face used to claim
+    the pick's entire value as gain — stays dead with no parameter: the
+    NEUTRAL floor is what ranks, and a non-starter conversion's neutral floor
+    is ~0. §2 v8.2: the REPORTED floor folds the band — receiving ron's 2027
+    2nd risks Late 3,855, so floor = min(0, 78 − 284) = −206: numerically the
+    exact loss v7.5's Late pricing once CHARGED (it is the same repricing),
+    now a disclosure beside an unchanged verdict, ranking and gate (§11.17).
 
     v5's per-bucket dF-top union may still store a PAIR carrying this leg;
-    the floor arithmetic bounds it: combined ΔS ≤ the partner's ΔS (Hunter
-    only back-fills a hole the partner opened) and combined ΔF = partner ΔF
-    + 78, so the pair's floor can exceed the partner's own by at most 78."""
+    the NEUTRAL floor arithmetic bounds it: combined ΔS ≤ the partner's ΔS
+    (Hunter only back-fills a hole the partner opened) and combined ΔF =
+    partner ΔF + 78, so the pair's neutral floor can exceed the partner's own
+    by at most 78 — checked below on the neutral coords, where the argument
+    lives."""
     mine = tr.team_assets(league, league.teams[league.me])
     ron = tr.team_assets(league, league.teams["ronakpatel32"])
     hunter, second = mine["Travis Hunter"], ron["2027 R2 (own)"]
@@ -358,12 +389,19 @@ def test_hunter_for_a_2027_second_conversion_earns_no_floor(league, board):
     assert card["gate"]["verdict"] == "PASS"  # it was always gate-clean
     assert second.v_me == second.v == 4139.0  # flat Mid, whoever owns it
     assert card["coords"]["me"] == {"dS": 0.0, "dF": 78.0}
-    assert card["verdict"]["me"] is True and card["floor"]["me"] == 0.0
-    assert card["return_pct"] == 0.0  # floor-based: guaranteed nothing
+    # §2 v8.2: verdict at Mid, floor at the band's worst edge (−206 = 78 −
+    # the 2027 2nd's Mid−Late width 284); the neutral floor min(dS, dF) = 0
+    # is what the stored universe ranked on
+    assert card["verdict"]["me"] is True and card["floor"]["me"] == -206.0
+    assert card["swing"]["down"] == -284.0 and card["swing"]["verdict_worst"] is False
+    assert min(card["coords"]["me"]["dS"], card["coords"]["me"]["dF"]) == 0.0
+    assert card["return_pct"] == -5.07  # extended-floor return; neutral is 0.00
     assert card["market_return_pct"] == 1.92
-    # any stored pair carrying the conversion leg owes its floor to the
-    # partner, up to the conversion's own +78 face edge
+    # any stored pair carrying the conversion leg owes its NEUTRAL floor to
+    # the partner, up to the conversion's own +78 face edge (the bound is an
+    # identity on the neutral coords — the band swing plays no part in it)
     conv = ({hunter.key}, {second.key})
+    neutral = lambda c: min(c["dS"], c["dF"])
     for pair in board["pairs"]:
         for tag, other in (("buy", "sell"), ("sell", "buy")):
             leg = pair[tag]
@@ -371,7 +409,83 @@ def test_hunter_for_a_2027_second_conversion_earns_no_floor(league, board):
             if legk != conv:
                 continue
             assert pair["verdict"] is True and pair["return_pct"] >= 1.0
-            assert pair["floor"] <= pair[other]["floor"]["me"] + 78.0 + 1e-6, pair["id"]
+            assert neutral(pair["coords"]) <= neutral(
+                pair[other]["coords"]["me"]
+            ) + 78.0 + 1e-6, pair["id"]
+
+
+def test_pick_swing_nets_by_origin_11_17(league):
+    """§2 v8.2 the swing's load-bearing move: picks from ONE origin-year ride
+    ONE team finish, so they net inside their group instead of compounding.
+    ron's 2027 R2 out against ron's 2027 R4 in: if ron finishes weak BOTH land
+    Early (−385 + 127 = −258), strong ⇒ both Late (+284 − 113 = +171) — the
+    worst case is −258, never the group-blind adversarial −498 that would
+    assume one season resolves both ways at once. Independent origins DO
+    compound: my 2027 1st for vishan's is ΔF exactly 0 (the §11.1b symmetry
+    pin) yet swings ±1,836 — the two seasons rotate independently. Current-year
+    picks and players contribute nothing."""
+    ron = tr.team_assets(league, league.teams["ronakpatel32"])
+    millj = tr.team_assets(league, league.teams["millj"])
+    give = tr.package_of(league, [ron["2027 R2 (own)"]])
+    # ron's 2027 R4 lives on millj's roster — the swing keys on ORIGIN, so the
+    # holder is irrelevant and the two picks still ride ron's one season
+    get = tr.package_of(league, [millj["2027 R4 (from ronakpatel32)"]])
+    sw = tr.pick_swing([(give, get)])
+    assert (sw["down"], sw["up"]) == (-258.0, 171.0)
+    assert len(sw["by_origin"]) == 1
+    assert sw["by_origin"][0] == {
+        "year": 2027, "origin": "ronakpatel32", "if_weak": -258.0, "if_strong": 171.0,
+    }
+
+    mine = tr.team_assets(league, league.teams[league.me])
+    jake = tr.team_assets(league, league.teams["jaketoppen"])
+    swap = tr.pick_swing([(
+        tr.package_of(league, [mine["2027 R1 (own)"]]),
+        tr.package_of(league, [jake["2027 R1 (from vishan)"]]),
+    )])
+    assert (swap["down"], swap["up"]) == (-1836.0, 1836.0)
+
+    players = tr.pick_swing([(
+        tr.package_of(league, [mine["Travis Hunter"]]),
+        tr.package_of(league, [ron["Zay Flowers"]]),
+    )])
+    assert (players["down"], players["up"]) == (0.0, 0.0) and players["by_origin"] == []
+
+    current = tr.pick_swing([(
+        tr.package_of(league, [mine["2026 1.01"]]),
+        tr.package_of(league, [ron["Zay Flowers"]]),
+    )])
+    assert (current["down"], current["up"]) == (0.0, 0.0)
+
+
+def test_swing_is_a_report_never_a_price_11_17(league):
+    """§11.17 THE FIREWALL, pinned: the band swing widens only the REPORTED
+    floor/ceiling. Every decision quantity on a pick-bearing card — coords,
+    verdict, breakeven, the gate's adjusted totals, favor, the anchor ask —
+    is byte-identical to the flat-Mid computation, even when the worst edge
+    of the band would flip the verdict (`verdict_worst` False beside a True
+    verdict is exactly the disclosure v7.5 could not make without poisoning
+    the frontier)."""
+    mine = tr.team_assets(league, league.teams[league.me])
+    ron = tr.team_assets(league, league.teams["ronakpatel32"])
+    hunter, second = mine["Travis Hunter"], ron["2027 R2 (own)"]
+    card = tr.propose(league, "ronakpatel32", [hunter], [second])
+    # verdict at Mid stays True while the band's worst edge says otherwise
+    assert card["verdict"]["me"] is True
+    assert card["swing"]["verdict_worst"] is False
+    assert card["floor"]["me"] == -206.0  # the report
+    # every gate/price figure is the Mid recompute, untouched by the swing
+    give = tr.package_of(league, [hunter])
+    get = tr.package_of(league, [second])
+    adj_give, adj_get = tr.adjusted_gap(league, give, get)
+    assert (card["gate"]["adj_give"], card["gate"]["adj_get"]) == (
+        round(adj_give, 1), round(adj_get, 1),
+    )
+    assert second.v == second.pick.mv == 4139.0  # the price IS Mid
+    assert card["anchor_ask"]["ask"] == round(1.08 * 4139.0)
+    assert card["breakeven"]["me"] is None  # verdict-true at Mid ⇒ no δ*
+    # their floor is the exact mirror: my best case is their worst
+    assert card["floor"]["them"] == -463.0  # min(dS_them, −78 − 385)
 
 
 def test_interval_endpoints_are_the_delta_extremes(league):
@@ -507,9 +621,13 @@ def test_board_ranking_and_ids(board):
     """§5 v4/§11.8b(e): stored pairs sort MAXIMIN — floor-based return desc,
     ceiling desc as tie-break, ids last — ALWAYS, whatever the cap filter later
     selects; the secondary sell/neutral list by isolation floor descending;
-    ids are sequential."""
+    ids are sequential. §11.17 (v8.2): both keys are the NEUTRAL flat-Mid
+    figures — return_pct is stored neutral, and the ceiling tie-break is
+    recovered from the coords because the doc's shown ceiling folds the
+    pick-band swing and is NOT an ordering key."""
     doc = board
-    keys = [(p["return_pct"], p["ceiling"]) for p in doc["pairs"]]
+    neutral_ceiling = lambda p: max(p["coords"]["dS"], p["coords"]["dF"])
+    keys = [(p["return_pct"], neutral_ceiling(p)) for p in doc["pairs"]]
     assert keys == sorted(keys, key=lambda t: (-t[0], -t[1]))
     assert [p["id"] for p in doc["pairs"]] == [f"P{i + 1}" for i in range(len(doc["pairs"]))]
     # the ceiling tie-break is exercised for real on this fixture: display
@@ -518,7 +636,7 @@ def test_board_ranking_and_ids(board):
         1 for i in range(1, len(keys)) if keys[i][0] == keys[i - 1][0]
     ) > 0
     recs = doc["recommendations"]
-    floors = [c["floor"]["me"] for c in recs]
+    floors = [min(c["coords"]["me"]["dS"], c["coords"]["me"]["dF"]) for c in recs]
     assert floors == sorted(floors, reverse=True)
     assert [c["id"] for c in recs] == [f"S{i + 1}" for i in range(len(recs))]
     assert [c["rank"] for c in recs] == list(range(1, len(recs) + 1))
@@ -689,24 +807,30 @@ def test_pair_count_deltas_both_currencies(league):
 
 def test_pair_coords_math_pinned(league):
     """§5 v4 coordinate arithmetic pinned to the fixtures, re-pinned for
-    v7.6's flat Mid. The buy leg swaps my own 2028 4th (Mid 1,759, whoever
-    owns it) for a 1,876 non-starter: (0, +117) — verdict TRUE, floor 0, an
-    honest nothing (v7.5's Early send price read it (0, −40)).
+    v7.6's flat Mid and v8.2's band-folded interval. The buy leg swaps my own
+    2028 4th (Mid 1,759, whoever owns it) for a 1,876 non-starter: (0, +117)
+    — verdict TRUE at Mid, and the v8.2 floor folds my pick landing Early:
+    min(0, 117 − 157) = −40, numerically what v7.5's Early send price once
+    CHARGED, now the report (return −2.27%).
 
     The sell leg ships Joe Burrow plus my 2026 4.01 for Jukinski's 2026 1.12
     and his 2028 1st (Mid 5,207, every consumer — v7.5 said Late 4,768).
     (−1,312, +1,636): ΔS cannot move — picks never enter the lineup, so the
-    coordinate is Burrow's slot dent and nothing else.
+    coordinate is Burrow's slot dent and nothing else; the floor stays that
+    dent (1,636 − 439 = 1,197 > −1,312 — ΔS binds through the band).
 
     The PAIR combines: ΔS one re-solve (−1,312), ΔF additive (+1,753);
-    verdict FALSE, floor −1,312, breakeven δ* 0.4281. Floor-based return
+    verdict FALSE, floor −1,312 (ΔS-binding at Mid AND at the band's worst
+    edge: 1,753 − 596 = 1,157), breakeven δ* 0.4281. Floor-based return
     −13.51% — numerically the v7.4 figure again, because the numerator is the
     untouched ΔS floor and my sent 2028 4th re-enters the denominator at its
-    Mid price (sent back to 9,708)."""
+    Mid price (sent back to 9,708). The ceiling folds the best case:
+    1,753 + 755 = 2,508."""
     buy, sell = _fixture_pair_legs(league)
     assert buy["coords"]["me"] == {"dS": 0.0, "dF": 117.0}
-    assert (buy["floor"]["me"], sum(a["v"] for a in buy["give"])) == (0.0, 1759)
-    assert buy["verdict"]["me"] is True and buy["return_pct"] == 0.0
+    assert (buy["floor"]["me"], sum(a["v"] for a in buy["give"])) == (-40.0, 1759)
+    assert buy["verdict"]["me"] is True and buy["return_pct"] == -2.27
+    assert buy["swing"]["down"] == -157.0 and buy["swing"]["up"] == 308.0
     assert sell["coords"]["me"] == {"dS": -1312.0, "dF": 1636.0}
     assert (sell["floor"]["me"], sum(a["v"] for a in sell["give"])) == (-1312.0, 7949)
     assert sell["verdict"]["me"] is False
@@ -717,10 +841,22 @@ def test_pair_coords_math_pinned(league):
         "dF": 1753.0,
         "verdict": False,
         "floor": -1312.0,
-        "ceiling": 1753.0,
+        "ceiling": 2508.0,
         "breakeven": 0.4281,
         "sent": 9708.0,
         "return_pct": -13.51,
+        "return_mid_pct": -13.51,
+        "swing": {
+            "down": -596.0,
+            "up": 755.0,
+            "by_origin": [
+                {"year": 2028, "origin": "Jukinski",
+                 "if_weak": 447.0, "if_strong": -439.0},
+                {"year": 2028, "origin": "bengramling",
+                 "if_weak": -157.0, "if_strong": 308.0},
+            ],
+            "verdict_worst": False,
+        },
     }
     # ΔF is additive across legs; ΔS is NOT assembled from the legs
     assert pair["dF"] == buy["coords"]["me"]["dF"] + sell["coords"]["me"]["dF"]
@@ -909,8 +1045,16 @@ def test_board_pairs_verdict_true_and_honest_on_fixture(board, params):
     for pair in doc["pairs"]:
         assert pair["verdict"] is True
         assert pair["coords"]["dS"] > 0 and pair["coords"]["dF"] > 0
-        assert pair["floor"] == min(pair["coords"]["dS"], pair["coords"]["dF"])
-        assert pair["ceiling"] == max(pair["coords"]["dS"], pair["coords"]["dF"])
+        # §2 v8.2: the doc interval folds the pick-band swing; the verdict and
+        # the stored return_pct stay on the neutral coords (§11.17)
+        assert pair["floor"] == pytest.approx(
+            min(pair["coords"]["dS"], pair["coords"]["dF"] + pair["swing"]["down"]),
+            abs=0.11,
+        )
+        assert pair["ceiling"] == pytest.approx(
+            max(pair["coords"]["dS"], pair["coords"]["dF"] + pair["swing"]["up"]),
+            abs=0.11,
+        )
         assert pair["favor"]["buy"] == pair["buy"]["favor"]
         assert pair["favor"]["sell"] == pair["sell"]["favor"]
         assert pair["favor"]["min"] == min(pair["favor"]["buy"], pair["favor"]["sell"])

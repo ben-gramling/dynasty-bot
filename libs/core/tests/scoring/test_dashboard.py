@@ -67,16 +67,29 @@ def test_hedges_are_count_neutral_verdict_true_and_maximin_ordered(payload):
         for sp in team["spreads"]:
             assert sp["net_players"] == 0 and sp["net_picks"] == 0
             assert sp["verdict"] is True
-            assert sp["floor"] == min(sp["coords"]["dS"], sp["coords"]["dF"])
-            assert sp["ceiling"] == max(sp["coords"]["dS"], sp["coords"]["dF"])
-            assert sp["return_robust"] >= payload["sliders"]["min_return"]
+            # §2 v8.2: the shown interval folds the future-pick band swing
+            # (down ≤ 0 ≤ up); with no future pick at stake it degenerates to
+            # the plain maximin interval on the coords
+            sw = sp["swing"]
+            assert sw["down"] <= 0.0 <= sw["up"]
+            assert sp["floor"] == pytest.approx(
+                min(sp["coords"]["dS"], sp["coords"]["dF"] + sw["down"]), abs=0.06
+            )
+            assert sp["ceiling"] == pytest.approx(
+                max(sp["coords"]["dS"], sp["coords"]["dF"] + sw["up"]), abs=0.06
+            )
+            assert sp["floor"] <= min(sp["coords"]["dS"], sp["coords"]["dF"])
+            # §11.17: selection ran on the NEUTRAL view return, never the
+            # band-extended one
+            assert sp["return_view"] >= payload["sliders"]["min_return"]
             # the favor window is the fair band on BOTH legs (v5.0.1 push-down)
             for leg in ("buy", "sell"):
                 assert -5.0 <= sp["favor"][leg] <= 5.0
-        # maximin is on the floor-based RETURN (floor ÷ Σ face sent), not the
-        # raw floor — a smaller floor on a much smaller package outranks a
-        # bigger one, which is the whole point of ranking on inventory deployed
-        rets = [s["return_robust"] for s in team["spreads"]]
+        # maximin is on the NEUTRAL floor-based RETURN (flat-Mid floor ÷ Σ face
+        # sent — §11.17: the band swing never orders anything), not the raw
+        # floor — a smaller floor on a much smaller package outranks a bigger
+        # one, which is the whole point of ranking on inventory deployed
+        rets = [s["return_view"] for s in team["spreads"]]
         assert rets == sorted(rets, reverse=True)
 
 

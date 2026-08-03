@@ -682,8 +682,10 @@ def find_spreads(
 
     # ---- docs for the kept spreads: view-return desc, ceiling desc, ids —
     # at DISPLAY precision (return 2dp, ceiling 1dp), exactly like the board
-    # (§11.8b(e)): the doc's order is the maximin/view order on the numbers
-    # the doc shows; raw-float ties inside a display cell fall to the ids
+    # (§11.8b(e)): the order runs on the NEUTRAL flat-Mid scalars; raw-float
+    # ties inside a display cell fall to the ids. §2 v8.2: the docs' shown
+    # floor/ceiling fold the pick-band swing, so they may not be monotone in
+    # this order — the swing never enters a selection or ranking key (§11.17)
     kept = sorted(
         heap,
         key=lambda e: (-round(100.0 * e[0], 2), -round(e[1], 1), -e[2], -e[3]),
@@ -710,7 +712,14 @@ def find_spreads(
         b = leg_card(bi, f"F{n}-buy")
         s = leg_card(si, f"F{n}-sell")
         fb, fs, fmin = pool.pair_favor(bi, si)
-        floor = d_s if d_s < d_f else d_f
+        # §2 v8.2: the REPORTED interval folds the future-pick band swing.
+        # Selection and order above ran on the neutral flat-Mid scalars
+        # (§11.17 firewall) — only the disclosed floor/ceiling/return widen.
+        sw = tr.pick_swing([
+            (legs[bi][tr.L_GIVE], legs[bi][tr.L_GET]),
+            (legs[si][tr.L_GIVE], legs[si][tr.L_GET]),
+        ])
+        floor = min(d_s, d_f + sw["down"])
         at_cap = b["sequencing"].startswith("at the roster cap")
         preferred = cn.leg_preferred(
             compiled, b["counterparty"], legs[bi][tr.L_GIVE], legs[bi][tr.L_GET]
@@ -727,10 +736,13 @@ def find_spreads(
                 "coords": {"dS": round(d_s, 1), "dF": round(d_f, 1)},
                 "verdict": tr.verdict_of(d_s, d_f),
                 "floor": round(floor, 1),
-                "ceiling": round(ceil, 1),
+                "ceiling": round(max(d_s, d_f + sw["up"]), 1),
                 "sent": round(sent, 1),
-                "return_robust": round(100.0 * ret, 2),
+                "return_robust": (
+                    round(100.0 * floor / sent, 2) if sent > 0 else 0.0
+                ),
                 "return_view": round(100.0 * rv, 2),
+                "swing": tr.swing_dict(sw, d_s, d_f),
                 "favor": {
                     "buy": round(fb, 2),
                     "sell": round(fs, 2),
