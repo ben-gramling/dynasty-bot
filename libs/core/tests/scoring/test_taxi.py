@@ -43,7 +43,9 @@ class TestErratum9WealthDebit:
         da_them = vi2.a - vishan.a
         assert da_me == pytest.approx(shedeur.v - ward.v)
         assert da_them == pytest.approx(ward.v - shedeur.v)
-        assert da_me + da_them == pytest.approx(0.0)
+        # abs tolerance: wealth totals carry the 1.01's .86 fraction (v7.4), so
+        # the two big-number subtractions leave ~1e-11 of float residue
+        assert da_me + da_them == pytest.approx(0.0, abs=1e-6)
 
     def test_post_lock_departure_slot_is_dead(self, snapshot, params, me, ward):
         wk6 = replace(

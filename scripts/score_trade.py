@@ -416,8 +416,8 @@ def fmt_legline(card: dict) -> str:
 def fmt_asset(a: dict) -> str:
     tag = f"{a['name']} ({a['v']}"
     if a.get("v_me") is not None:
-        # v7 §1: market price first (it is what their calculator charges), then
-        # what your ledger books it at
+        # §1 v7.5: unreachable — one price per pick (the pessimistic tranche).
+        # Tripwire: a re-diverged lens is disclosed, never hidden.
         tag += f" market / {a['v_me']} yours"
     if a.get("unvalued"):
         tag += "; UNVALUED"

@@ -36,12 +36,11 @@ def _pv_inv(name: str, pos: str, v: float, i: int) -> ln.PlayerV:
 
 
 def test_face_transfer_conserved_per_leg(board, league):
-    """§11.1 as amended by v7: MARKET face still transfers exactly — each asset
-    carries the same `v` on both rosters — and each side's ΔF is exactly that
-    side's market face delta THROUGH ITS OWN LENS. The counterparty reads the
-    market lens, so `ΔF(them)` is still the negated market delta on every leg.
-    MY ΔF reads the v7 pick lens instead, so it equals the `v_me` delta and
-    negates their side only when no pick crosses (§11.1c)."""
+    """§11.1 as restored by v7.5: face transfers exactly on EVERY leg — each
+    asset carries the same `v` on both rosters, there is only one price vector
+    (`v_me == v` for every asset), so `ΔF(me) == −ΔF(them)` with no wedge and
+    no lens split. The pick-bearing legs are the load-bearing witnesses: under
+    v7 they were exactly where the two printed ΔFs did NOT negate."""
     canonical = {
         a.key: (a.v, a.v_me)
         for t in league.teams.values()
@@ -51,8 +50,9 @@ def test_face_transfer_conserved_per_leg(board, league):
     for card in board_legs(board):
         for a in card["give"] + card["get"]:
             v, v_me = canonical[a["key"]]
+            assert v == v_me, (card["id"], a["name"])  # v7.5: one price
             assert a["v"] == round(v), (card["id"], a["name"])
-            assert a.get("v_me", a["v"]) == round(v_me), (card["id"], a["name"])
+            assert "v_me" not in a, (card["id"], a["name"])  # tripwire silent
         # The card DISPLAYS integers; the coordinates use the real numbers, and
         # v7.4 made two of them fractional because KTC's own are (it derives
         # 2026 1.01/1.02 off the rookie ladder and passes the unrounded figure
@@ -61,21 +61,18 @@ def test_face_transfer_conserved_per_leg(board, league):
         # separately as the rounding of those same numbers.
         give, get = tr.card_packages(league, card)
         c = card["coords"]
-        # their side: market face, still exactly conserved (§11.1)
         assert c["them"]["dF"] == round(give.v_sum - get.v_sum, 1), card["id"]
-        # my side: the v7 lens — my own face delta, picks priced my way
         assert c["me"]["dF"] == round(get.v_me_sum - give.v_me_sum, 1), card["id"]
-        # the two negate iff the lenses agree, i.e. iff no FUTURE pick crossed
-        # (a current-year pick is one number on both lenses since v7.4)
-        lens_agrees = (give.v_sum, get.v_sum) == (give.v_me_sum, get.v_me_sum)
-        assert (c["me"]["dF"] == -c["them"]["dF"]) == lens_agrees, card["id"]
-        saw_pick_leg |= not lens_agrees
+        # v7.5: one price vector — the two sides negate on EVERY leg
+        assert (give.v_sum, get.v_sum) == (give.v_me_sum, get.v_me_sum), card["id"]
+        assert c["me"]["dF"] == -c["them"]["dF"], card["id"]
+        saw_pick_leg |= any(a.kind == "pick" for a in give.assets + get.assets)
         # and the display is exactly the rounding of what was priced
         assert sum(a["v"] for a in card["give"]) == sum(
             round(x.v) for x in give.assets
         )
         assert sum(a["v"] for a in card["get"]) == sum(round(x.v) for x in get.assets)
-    # the split is real on this fixture, not a vacuous branch
+    # conservation is exercised on pick-bearing legs, not just player swaps
     assert saw_pick_leg
 
 
@@ -157,18 +154,19 @@ def test_coordinate_levels_pinned(league, me):
     ΔS/ΔF on any trade are the changes in exactly these two numbers (asserted
     trade-by-trade in test_trades §11.8b(c)).
 
-    v7 gives the F level a LENS, and it is a required argument: at `market` the
-    picks come in at their tranche (127,094, what the league sees); at `me`
-    they come in at my price (131,145 — every future pick I hold books Early,
-    because I would be the one sending it). ΔF is computed in the `me` lens, so
-    that is the one the identity is asserted against."""
+    v7 gave the F level a LENS, still a required argument; v7.5 made the two
+    lenses one price (every future pick I hold books Early, because I would be
+    the one sending it — and that IS the price now, not an annotation on a
+    rank_L projection), so `market` and `me` agree at 131,861.86. ΔF is
+    computed in the `me` lens, so that is the one the identity is asserted
+    against."""
     s = ln.starter_sum(tr.starter_pool(me))
     assert s == 51832.0
-    assert me.picks_mv == 41869.86
+    assert me.picks_mv == 44688.86
     assert sum(p.p_me for p in me.picks) == 44688.86
     # everything the F coordinate sees: active + taxi at face plus the picks
     assert sum(p.v for p in tr.starter_pool(me)) == 87173.0
-    assert tr.total_face(me, lens="market") == 87173.0 + 41869.86 == 129042.86
+    assert tr.total_face(me, lens="market") == 87173.0 + 44688.86 == 131861.86
     assert tr.total_face(me, lens="me") == 87173.0 + 44688.86 == 131861.86
 
 
@@ -199,7 +197,7 @@ def test_lineup_perturbations_never_move_coords(snapshot, league):
     base = _coords_ex1(league)
     assert base == {
         "me": {"dS": -64.0, "dF": -786.0},
-        "them": {"dS": 1216.0, "dF": -1358.0},
+        "them": {"dS": 1216.0, "dF": 786.0},
     }
     for params in PERTURBED:
         league2 = md.build_league(snapshot, params)
@@ -260,9 +258,9 @@ def test_roster_counts_never_move_coords_but_face_is_a_coordinate(snapshot, para
         league, "jaketoppen", [mine[my_bench.name]], [jake["2028 R4 (own)"]]
     )
     assert card["coords"]["me"]["dS"] == 0.0  # he never started
-    # v7: the RHS is the pick's MY-lens price (Late 1,451 — jaketoppen owns it,
-    # so I would be receiving it), not its 1,759 market tranche
-    assert jake["2028 R4 (own)"].v == 1759.0
+    # v7.5: the pick's ONE price is Late 1,451 (jaketoppen owns it, so I would
+    # be receiving it) — the 1,759 flat-Mid market tranche is retired
+    assert jake["2028 R4 (own)"].v == jake["2028 R4 (own)"].v_me == 1451.0
     assert card["coords"]["me"]["dF"] == pytest.approx(
         jake["2028 R4 (own)"].v_me - my_bench.v, abs=0.05
     )

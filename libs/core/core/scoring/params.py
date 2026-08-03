@@ -72,12 +72,15 @@ class Params:
     # the floor objective) crossings — on the measured market query the 2M walk
     # returned best 13.18% and none of the exhaustive top-20, where the same
     # query crossed COMPLETELY at 10.3M (best 16.25%, exact=True, 34.5s).
-    # 16M covers both measured constrained spaces (10.3M / 14.8M) with headroom
-    # at ~576k crossings/s and unchanged 182MB peak RSS; unconstrained queries
-    # (space 4.6e9) stay truncated honest floors either way. The finder is the
-    # interactive CLI/skill path — it never runs on the collector Lambda, so
-    # this does not touch the §11.10 board budget (§9, v5.1).
-    finder_cross_budget: int = 16_000_000
+    # v7.5 raised 16M → 20M: pessimistic pick pricing broadened the §3 fair
+    # band, and the largest per-counterparty dashboard crossing measured
+    # 16,110,117 on the fixtures (jaketoppen — 16M truncated it by 0.7%, the
+    # only non-exact team on the board). 20M covers it with ~24% headroom at
+    # ~576k crossings/s (worst case ~35 s); unconstrained queries (space 4.6e9)
+    # stay truncated honest floors either way. The finder is the interactive
+    # CLI/skill path — it never runs on the collector Lambda, so this does not
+    # touch the §11.10 board budget (§9, v5.1).
+    finder_cross_budget: int = 20_000_000
     # §4a v6 the COMPLETE fair-band pool. `pool_favor_band` bounds the whole
     # enumeration to |leg favor| ≤ β — the band the desk actually trades in —
     # and in exchange the v3.4/v5 SAMPLING is retired: every gate-passer inside

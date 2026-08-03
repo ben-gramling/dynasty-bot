@@ -1,13 +1,19 @@
-"""§1 pick pricing, TWO LENSES since v7.
+"""§1/§3.2 pick pricing: ONE price per pick since v7.5, and never a forecast.
 
-v7.4: CURRENT-YEAR picks carry ONE number and it is KTC's own — the calculator
-publishes a price for the exact slot ("2026 Pick 1.01"), so `p == mv == p_me`
-and there is nothing for a lens to disagree about. (v7.0 used the rookie board's
-n-th-player value as a stand-in, on the mistaken belief that KTC published no
-per-pick price; that proxy missed in both directions.) FUTURE picks keep the two
-lenses, because that is where the slot is genuinely unknown: `mv` is the
-`rank_L`-banded tranche the league sees, `p_me` the pessimistic one — Early for a
-pick I own (I would be sending it), Late for one the counterparty owns."""
+v7.4: CURRENT-YEAR picks price at KTC's own number — the calculator publishes a
+price for the exact slot ("2026 Pick 1.01"), so `p == mv == p_me` and there is
+nothing to estimate. (v7.0 used the rookie board's n-th-player value as a
+stand-in, on the mistaken belief that KTC published no per-pick price; that
+proxy missed in both directions.)
+
+v7.5: FUTURE picks lose the projection entirely. Through v7.4 `mv` carried a
+forecast band — next-year from the origin team's `rank_L`, two years out flat
+Mid — and only my lens (`p_me`) was pessimistic. The user's ruling: NEVER
+estimate where a future pick lands within its round; ALWAYS assume the bad end
+in the direction the asset would travel — Early for a pick I own (I would be
+sending it), Late for one anyone else owns (I would be receiving it). That
+pessimistic tranche is now the ONLY price: the gate, the deep links, the board
+and ΔF all read the same number, and `p == mv == p_me` for every pick."""
 
 from __future__ import annotations
 
@@ -61,83 +67,78 @@ def test_the_generic_2026_tranche_is_no_longer_a_price(league, me):
         assert p.band == pk.band_of_slot(p.slot)
 
 
-def test_2027_band_projection(league):
-    """Band from ORIGIN owner's rank_L (9–12 E / 5–8 M / 1–4 L); p == mv here."""
+def test_rank_l_no_longer_prices_any_pick(league):
+    """§3.2 v7.5, pinned as a negative: the `rank_L` finish projection is
+    retired from pricing. My 2027 picks price Early although my rank_L is 5
+    (the old projection said Mid), and vishan's 2027 1st — the projected 1.01
+    off rank_L 12, Early 7,398 on the old market lens — prices Late 5,562 in
+    the hands of the team I would buy it from. `band_of_rank_l` itself is gone;
+    `league.rank_l` survives for standings only."""
+    assert league.rank_l["bengramling"] == 5  # the forecast still exists...
     me_team = league.teams["bengramling"]
-    assert league.rank_l["bengramling"] == 5  # → Mid
-    assert pick_of(me_team, 2027, 1).mv == 6118
-    assert pick_of(me_team, 2027, 2).mv == 4139
-    assert pick_of(me_team, 2027, 4).mv == 2036
+    assert pick_of(me_team, 2027, 1).mv == 7398  # ...and prices nothing
+    assert pick_of(me_team, 2027, 2).mv == 4524
+    assert pick_of(me_team, 2027, 4).mv == 2163
+    assert not hasattr(pk, "band_of_rank_l")
     jt = league.teams["jaketoppen"]
-    own_r1 = pick_of(jt, 2027, 1, origin_rid=2)
-    assert own_r1.mv == 6118 and own_r1.band == "Mid"  # jaketoppen rank_L 6
-    juk_2nd = pick_of(jt, 2027, 2, origin_rid=3)
-    assert juk_2nd.mv == 4524 and juk_2nd.band == "Early"  # Jukinski rank_L 11
     vis_r1 = pick_of(jt, 2027, 1, origin_rid=8)
-    assert vis_r1.mv == 7398 and vis_r1.band == "Early"  # vishan rank_L 12
+    assert vis_r1.mv == 5562 and vis_r1.band == "Late"  # vishan rank_L 12
     for t in league.teams.values():
         for p in t.picks:
             if p.year != league.current_year:
-                assert p.p == p.mv  # only current-year picks carry a separate board price
+                assert p.p == p.mv == p.p_me  # one price, every consumer
 
 
-def test_2028_flat_mid(me):
-    """Two years out prices flat Mid on the MARKET lens — never a monotonic
-    year premium. My lens takes Early on all four, because they are mine and
-    mine is what I would be sending."""
+def test_2028_prices_by_direction_not_flat_mid(me):
+    """Two years out used to price flat Mid on the market lens; v7.5 prices it
+    like every future year — mine Early, because mine is what I would send."""
     vals = sorted((p.round, p.mv) for p in me.picks if p.year == 2028)
-    assert vals == [(1, 5207), (2, 3579), (3, 2468), (4, 1759)]
-    assert sum(v for _, v in vals) == 13013
-    mine = sorted((p.round, p.p_me) for p in me.picks if p.year == 2028)
-    assert mine == [(1, 5654), (2, 3852), (3, 2618), (4, 1916)]
-    assert sum(v for _, v in mine) == 14040
+    assert vals == [(1, 5654), (2, 3852), (3, 2618), (4, 1916)]
+    assert sum(v for _, v in vals) == 14040
 
 
-def test_future_picks_price_by_trade_direction_not_by_rank_l(league):
-    """§1 v7, the rule the user asked for: future picks book Early when I own
-    them and Late when the counterparty does — regardless of what the origin
-    team's `rank_L` says the slot will be. The market band still tracks rank_L,
-    so the two lenses genuinely disagree in both directions."""
+def test_future_picks_price_by_trade_direction(league):
+    """§1 the v7.5 rule: future picks price Early when I own them and Late when
+    anyone else does — regardless of what the origin team's finish suggests,
+    and for EVERY consumer (the band and the price are one field now)."""
     tr_ = league.tranches
     for name, t in league.teams.items():
         mine = name == league.me
         for p in t.picks:
             if p.year == league.current_year:
                 continue
-            assert p.band_me == ("Early" if mine else "Late")
-            assert p.p_me == tr_[(p.year, p.band_me, p.round)]
-    # my own 2027 1st: market calls it Mid (rank_L 5); I book it Early
+            assert p.band == p.band_me == ("Early" if mine else "Late")
+            assert p.p == p.mv == p.p_me == tr_[(p.year, p.band, p.round)]
+    # my own 2027 1st books Early although rank_L 5 projected Mid (6,118)
     own27 = pick_of(league.teams["bengramling"], 2027, 1)
-    assert (own27.band, own27.mv) == ("Mid", 6118)
-    assert (own27.band_me, own27.p_me) == ("Early", 7398)
-    # the league's best pick — vishan's 2027 1st, held by jaketoppen. The market
-    # calls it Early off vishan's rank_L 12; if I acquire it I still book Late.
-    # This is the deliberate cost of the rule: real signal is discarded in the
-    # direction that would flatter me.
+    assert (own27.band, own27.mv) == ("Early", 7398)
+    # the league's best pick — vishan's 2027 1st, held by jaketoppen: the old
+    # market lens called it Early 7,398 off vishan's rank_L 12; if I acquire it
+    # I pay Late. This is the deliberate cost of the rule: real signal is
+    # discarded in the direction that would flatter me.
     best = pick_of(league.teams["jaketoppen"], 2027, 1, origin_rid=8)
-    assert (best.band, best.mv) == ("Early", 7398)
-    assert (best.band_me, best.p_me) == ("Late", 5562)
-    # my FUTURE inventory books above market and every opponent's below; the
-    # current-year picks are identical on both lenses and so cancel out of the
-    # comparison entirely (v7.4)
+    assert (best.band, best.mv) == ("Late", 5562)
+    # my FUTURE inventory prices above everyone's identical inventory: same
+    # (year, round) multiset as any full set, dearer band on every future pick
     me_t = league.teams["bengramling"]
-    assert sum(p.p_me for p in me_t.picks) == 44688.86 > me_t.picks_mv == 41869.86
+    assert me_t.picks_mv == sum(p.p_me for p in me_t.picks) == 44688.86
     for name, t in league.teams.items():
         cy = [p for p in t.picks if p.year == league.current_year]
         assert all(p.p_me == p.mv for p in cy)
         if name != league.me:
-            assert sum(p.p_me for p in t.picks) < t.picks_mv, name
+            future = [p for p in t.picks if p.year != league.current_year]
+            assert all(p.band == "Late" for p in future), name
 
 
 def test_future_assets(league):
-    """F at market face: F(trdouglas) = 58,233 · F(me) = 49,303. The league tab
-    ranks 12 teams against each other so it stays on the MARKET lens — but v7.4
-    moved that lens for current-year picks (KTC's numbered price replaced the
-    generic tranche), so these numbers moved with it."""
-    assert round(league.teams["trdouglas"].f) == 58233
-    assert round(league.teams["bengramling"].f) == 49303
+    """F: players at KTC face + picks at the §3.2 price. v7.5 moved every
+    future pick onto the pessimistic tranche, so the league tab's F column
+    moved with it: my picks read Early (dear), everyone else's Late (cheap).
+    F(trdouglas) = 56,322 · F(me) = 52,122."""
+    assert round(league.teams["trdouglas"].f) == 56322
+    assert round(league.teams["bengramling"].f) == 52122
     me_t = league.teams["bengramling"]
-    assert round(me_t.f - sum(p.v for p in me_t.taxi)) == 41870  # picks at market
+    assert round(me_t.f - sum(p.v for p in me_t.taxi)) == 44689
 
 
 def test_all_96_plus_48_picks_price(league):

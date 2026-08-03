@@ -14,8 +14,8 @@ What the score IS (§2, v4):
   `ΔS` = change in STARTER value (the max-Σv legal lineup at raw KTC solved
   over ACTIVE + TAXI — taxi is promote-anytime, §8; IR and empty slots are 0)
   and `ΔF` = change in TOTAL FACE owned (Σ v in − Σ v out, players and picks
-  alike; players at v, picks at v_me on my side / at tranche on theirs — §1
-  v7). Any single-number ledger is
+  alike; players at KTC v, picks at the §3.2 price — exact slot this year, the
+  pessimistic tranche beyond, v7.5). Any single-number ledger is
   `ΔW(δ) = ΔS + δ·(ΔF − ΔS)` for some stored-value preference δ ∈ [0, 1] — a
   time preference, not a measurable fact — so v4 reports the endpoints
   themselves and blends nothing.
@@ -25,20 +25,18 @@ What the score IS (§2, v4):
   guaranteed gain. RANKING (maximin): floor desc, ceiling desc, ids. A spread
   failing one coordinate is a PREFERENCE trade and carries the derived
   breakeven `δ* = ΔS / (ΔS − ΔF)` — labeled, never recommended.
-- Both coordinates are PER SIDE, and MY side reads them through MY lens. Every
-  asset carries two prices: `v`, the market face KTC every league-mate sees,
-  and `v_me`, the same number for players but a different one for picks (§1 v7
-  — exact board slot in the current year, Early when I own it / Late when they
-  do beyond that). `ΔF(me)` is `get.v_me_sum − give.v_me_sum`; `ΔF(them)` is
-  reported at market `v`, because pricing my picks dear and theirs cheap only
-  reads as caution from my seat.
-  BOTH lenses are single global price vectors, so ΔF is still exactly CONSERVED
-  across a leg's parties within either one, and exactly ADDITIVE across legs —
-  which is all any bound in this module uses. What v7 changes is only that the
-  two PRINTED numbers come from different lenses and therefore need not negate
-  (§11.1b): a presentation choice, not a lost invariant. `ΔS` never negated
-  anyway — deployment differs by roster, which is why both sides of a good
-  spread can genuinely gain.
+- Both coordinates are PER SIDE. §1 v7.5: `v` and `v_me` COINCIDE for every
+  asset — the v7 lens split collapsed when the pessimistic tranche became THE
+  price of a future pick (a pick I own prices Early, anyone else's Late; no
+  forecast band survives for the gate to read). The two fields remain (`v_me`
+  drives ΔF, `v` the gate) so the v7 plumbing is untouched, but they can no
+  longer disagree. The price vector is single and global, so ΔF is exactly
+  CONSERVED across a leg's parties and exactly ADDITIVE across legs — which is
+  all any bound in this module uses. It is NOT symmetric between seats: my
+  sends price dear and my receives cheap by construction, which reads as
+  caution only from my seat (§11.1b). `ΔS` never negated anyway — deployment
+  differs by roster, which is why both sides of a good spread can genuinely
+  gain.
 - A pair's coordinates are COMBINED (both legs applied together): ΔS via one
   combined starter re-solve — the legs interact through the lineup — and ΔF
   additive across legs. Leg cards carry their isolation coordinates, labeled;
@@ -117,10 +115,11 @@ class Asset:
     kind: str  # "player" | "pick"
     key: str
     name: str
-    v: float  # MARKET face: player KTC v; pick KTC tranche (§1) — the gate's input
-    # §1 v7 MY lens: identical to `v` for players; for picks the conservative
-    # price (exact board slot in the current year, Early when I own it / Late
-    # when the counterparty does). The ΔF coordinate's input, and ONLY that.
+    v: float  # player KTC v; pick §3.2 price (v7.5: pessimistic) — the gate's input
+    # §1 v7.5: identical to `v` for EVERY asset — the lens split collapsed when
+    # the pessimistic tranche became a future pick's only price. Still the ΔF
+    # coordinate's input, and only that; kept distinct so the v7 plumbing
+    # (conservation identity, card note) needs no rewiring.
     v_me: float
     pos: str | None
     unvalued: bool
@@ -262,7 +261,9 @@ def total_face(t: md.TeamCtx, *, lens: str) -> float:
     `ΔF == total_face(after) − total_face(before)` silently returns a plausible
     wrong number (on the counterparty's roster the my-lens answer comes back
     as `−ΔF(me)`, which looks exactly like conservation "proving" itself).
-    `"me"` reads `Pick.p_me`, `"market"` reads the tranche.
+    `"me"` reads `Pick.p_me`, `"market"` reads `mv` — since v7.5 the same
+    number (the pessimistic tranche is THE price); the switch survives so the
+    identity stays checkable per lens.
 
     The identity holds because `p_me` is minted once at snapshot pricing time
     and `model.apply_tx` carries it across unchanged — a pick I receive keeps
@@ -317,13 +318,10 @@ def coords_delta(
     `in_pkgs` arrive, all applied together. Per-side — ΔS is never negated for
     the counterparty.
 
-    §1 v7 — `mine` selects the FACE LENS, not the side. My own ΔF prices picks
-    my way (`Package.v_me_sum`); the counterparty's is reported at market face
-    (`v_sum`), because the pick lens is a statement about MY exposure to an
-    unknown draft slot and reads backwards from the other seat. Each lens is a
-    single global price vector, so ΔF conserves exactly across a leg's parties
-    within either one — it is the MIXED REPORTING that stops the two printed
-    numbers from negating, and it is reversible.
+    §1 v7 — `mine` selects the FACE LENS, not the side: `v_me_sum` for my seat,
+    `v_sum` for theirs. Since v7.5 the two coincide (the pessimistic tranche is
+    a future pick's only price), so the printed ΔFs negate again; the switch
+    survives unchanged in case the lenses ever re-diverge.
 
     No stored-value bookkeeping exists: what a starter loses to the bench (or
     the bench gains from a promotion) is already inside `ΔS`, and `ΔF` is the
@@ -595,10 +593,9 @@ def _asset_dict(a: Asset) -> dict:
     if a.unvalued:
         d["unvalued"] = True
     if a.v_me != a.v:
-        # §1 v7: the two lenses disagree — always a pick. `v` is what the
-        # counterparty's calculator charges; `v_me` is what I book it at.
-        # (This supersedes the old `concrete` annotation, which carried the same
-        # board number for current-year picks and is no longer emitted here.)
+        # §1 v7.5: unreachable — `v` and `v_me` coincide for every asset now
+        # that the pessimistic tranche is a future pick's only price. Kept as
+        # a tripwire: if the lenses ever re-diverge, the card discloses it.
         d["v_me"] = round(a.v_me)
         p = a.pick
         d["note"] = (

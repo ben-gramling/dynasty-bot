@@ -216,29 +216,23 @@ query string). The calculator holds at most **12 assets across both sides combin
 - **Players** — `PlayerV.ktc_id`. An unvalued player (`ktc_id` = the `lineup.BIG`
   sentinel) has no id; it is dropped from the link and **disclosed**, never silently
   omitted.
-- **Picks** — the generic RDP tranche id for `(year, Pick.band, round)`, derived from
-  the snapshot at runtime. Never hardcode the table: §7 warns the pick asset list
-  rolls forward during the season.
-- **A pick's band follows its ORIGIN team, not its holder.** `Pick.band` already
-  encodes this. Keying on `(year, round)` alone is a bug: on the 2026-07-26 snapshot
-  `millj` holds three 2027 R4s that resolve to *two different ids* —
-  `(own)` → 1711, `(from vishan)` → 1711, `(from ronakpatel32)` → **1712**.
-
-### Current-year picks: numbered entries exist, and we deliberately do not link them
-
-When `LEAGUEYEARPHASE=2` the site's `calcPicksRookies()` injects 48 numbered records
-into `playersArray` — `"2026 Pick 1.01"` with `playerID = parseInt(year+round+pick)`,
-i.e. **202611** — priced *above* the corresponding generic tranche. The counterparty's
-own autocomplete offers both.
-
-We link the **tranche**, because that is the value our gate priced the pick at
-(`Asset.v` for a pick is `Pick.mv`). But the gap is real and discoverable in one
-keystroke, so `Link.numbered` reports every affected pick and `Link.numbered_url`
-builds the numbered-id variant for comparison. Present the gap; never substitute one
-pricing for the other silently.
-
-We do **not** reimplement KTC's numbered-pick arithmetic. It was observed live as
-roughly `min(MAXPLAYERVAL-1, r0 + round(B*(r0-r1)/8))` (`B >= 3`, `r0`/`r1` the
-adjacent tranches) but is unverified and site-side mutable — a number we computed and
-labelled "what KTC shows" would be a fabrication. Open `numbered_url` to read the
-real figure.
+- **Picks, future years** — the generic RDP tranche id for `(year, Pick.band, round)`,
+  derived from the snapshot at runtime. Never hardcode the table: §7 warns the pick
+  asset list rolls forward during the season.
+- **A future pick's band follows its TRADE DIRECTION (v7.5), never a forecast.**
+  `Pick.band` encodes the §3.2 pessimism: a pick Ben owns links **Early** (he would be
+  the sender — the dear end of the round), anyone else's links **Late** (he would be
+  receiving — the cheap end). On the 2026-07-26 snapshot `millj`'s three 2027 R4s all
+  resolve to **1713** ("2027 Late 4th") while Ben's own 2027 R4 resolves to **1711**
+  (Early). Keying on `(year, round)` alone is still a bug — read the stored field.
+  (Through v7.4 the band followed the ORIGIN team's projected finish — `rank_L` next
+  year, flat Mid two out. That was an estimate of where the pick lands, and v7.5
+  retired it everywhere: gate, links, board.)
+- **Picks, current year (v7.4)** — KTC's NUMBERED entry. When `LEAGUEYEARPHASE=2` the
+  site's `calcPicksRookies()` injects 48 numbered records into `playersArray` —
+  `"2026 Pick 1.01"` with `playerID = parseInt(year+round+pick)`, i.e. **202611**.
+  `core/scoring/ktc_picks.py` ports that generator (48/48 exact against a live
+  capture), the gate prices the numbered value, and the link carries the numbered id —
+  so the page total equals `adj_give`/`adj_get`. (Through v7.3 we linked the tranche
+  and disclosed the numbered id as an alternative via `Link.numbered`/`numbered_url`;
+  v7.4 inverted that, and those fields are now permanently empty.)

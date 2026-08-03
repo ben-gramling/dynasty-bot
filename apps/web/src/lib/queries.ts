@@ -103,18 +103,19 @@ export interface PositionGroup {
 
 export interface PickDetail {
   label: string;
-  /** KTC tranche value — the number every league-mate sees. */
+  /**
+   * §1 v7.5 the ONE price: KTC's numbered value at the exact slot in the
+   * current year, and beyond it the pessimistic tranche — Early when Ben owns
+   * the pick (he would be the sender), Late when this owner is someone else.
+   * No forecast band exists any more.
+   */
   v: number;
   band?: string;
   band_reason?: string;
-  /**
-   * §1 v7 my-lens price: the exact rookie-board slot in the current year, and
-   * beyond it Early when I own the pick (I would be the sender) / Late when
-   * this owner is someone else. The league tab's wealth totals stay on `v`.
-   */
+  /** v7.5 tripwire fields: emitted only if the retired second lens ever
+   * re-diverges from `v`; never present today. */
   v_me?: number;
   band_me?: string;
-  /** Current-year picks: rookie-board slot-implied value (== `v_me` this year). */
   concrete?: number;
 }
 

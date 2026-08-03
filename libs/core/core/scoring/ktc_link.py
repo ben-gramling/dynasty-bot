@@ -16,10 +16,11 @@ Two facts drive the design:
   tranche for everything and disclosed the numbered id as an alternative — that
   was backwards, and it is exactly why our gate read 9,415/10,069 against a page
   showing 9,421/10,198.
-- **A pick's band follows its ORIGIN team, not its holder.** `Pick.band` already
-  encodes this (`picks.price_pick` bands off the origin's `rank_L` / draft slot). Read
-  the stored field; never key on `(year, round)` alone. One holder can own two same-
-  year same-round picks that resolve to DIFFERENT ids.
+- **A future pick's band follows its TRADE DIRECTION (v7.5), never a forecast.**
+  `Pick.band` encodes it: my picks link Early (I would send them — the dear end),
+  everyone else's link Late (I would receive them — the cheap end). A current-year
+  pick's band is its known slot. Read the stored field; never key on
+  `(year, round)` alone.
 """
 
 from __future__ import annotations
@@ -183,7 +184,8 @@ def ktc_id_of(a: Any, ids: Mapping[tuple[int, str, int], int]) -> int | None:
         slot = getattr(p, "slot", None)
         if slot is not None:
             return numbered_pick_id(int(p.year), int(p.round), int(slot))
-        # band from the stored field — it encodes the ORIGIN team, not the holder.
+        # band from the stored field — v7.5: the pessimistic trade-direction
+        # band (mine → Early, theirs → Late), which is what the gate priced.
         return ids.get((int(p.year), str(p.band), int(p.round)))
     return None
 

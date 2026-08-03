@@ -16,16 +16,16 @@ def _rank(values: dict[str, float], name: str) -> int:
 def _pick_detail(league: md.LeagueState, p) -> dict:
     d = {
         "label": p.label,
-        # §1 the market number: KTC's numbered price for a current-year pick
-        # (v7.4), the generic tranche for a future one
+        # §1 the one price (v7.5): KTC's numbered price for a current-year pick
+        # (v7.4), the pessimistic tranche for a future one — Early when I own
+        # it, Late when this owner is someone else; the rank_L projection is
+        # retired and no forecast band exists to show
         "v": round(p.mv),
         "band": p.band,
         "band_reason": p.band_reason,
     }
-    # §1 my-lens price, emitted ONLY when it differs from the market — i.e. only
-    # on FUTURE picks (Early when I own it, Late when this owner is someone
-    # else). v7.4 gave current-year picks a single KTC price, so there is
-    # nothing to show twice. The league tab's wealth totals stay on `v`.
+    # §1 v7.5: unreachable — `p_me` coincides with `mv` for every pick. Kept as
+    # a tripwire so a re-diverged lens would surface rather than hide.
     if p.p_me != p.mv:
         d["v_me"] = round(p.p_me)
         d["band_me"] = p.band_me

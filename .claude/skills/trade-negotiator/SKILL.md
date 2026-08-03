@@ -16,7 +16,9 @@ Division of labor (spec v5, `docs/scoring-system.md`):
   value — Σ raw KTC over the max-Σv legal starting lineup
   (QB/2RB/3WR/TE/2FLEX) solved over ACTIVE + TAXI (taxi counts,
   promote-anytime; IR never does) — and `ΔF` = change in TOTAL FACE owned
-  (players + picks at tranche). Any single number would need a stored-value
+  (players at KTC face; picks at their §3.2 one price — the exact numbered
+  slot this year, the pessimistic tranche beyond: Early when we send, Late
+  when we receive, NEVER a forecast, v7.5). Any single number would need a stored-value
   preference δ ∈ [0, 1], which is a time preference, not a fact — so the desk
   reports the endpoints themselves. What the desk must internalise:
   - **The VERDICT is objective.** A spread is objectively good ⟺ ΔS ≥ 0 AND
@@ -292,7 +294,7 @@ uv run python scripts/score_trade.py find \
   `--with TEAM` (TEAM on some leg). **Count honesty (v5.1) — the header says
   which of two, relay exactly that one.** The crossing never prunes (the sound
   key `ΔF − r·Σv sent` only decides what a truncation keeps), so a crossing
-  that finished inside the 16M budget is EXACT at any `--delta`: quote the
+  that finished inside the 20M budget is EXACT at any `--delta`: quote the
   counts as they stand, and an empty result means **none exists among the
   pooled legs** (the header prints "NONE EXIST among the pooled legs" — the
   pool keeps 2 package variants per (counterparty, give, count-signature) as a
@@ -308,8 +310,8 @@ uv run python scripts/score_trade.py find \
   queries usually finish exhaustively; numeric-δ walks order by a per-leg
   δ-score so truncation fronts what the view ranks. First run per snapshot
   builds the `.cache/` leg tables (~15s); warm re-queries with added
-  constraints are seconds. A query too wide to finish burns the whole 16M
-  budget (~45s) and still only reports floors — constrain it (favor window,
+  constraints are seconds. A query too wide to finish burns the whole 20M
+  budget (~55s) and still only reports floors — constrain it (favor window,
   `--legs`, `--with`) and it finishes exhaustively, usually faster.
 - `--alternatives`: single-tweak variants, gate-passers ranked maximin (floor
   desc, ceiling tie-break) — the counter-offer generator.
@@ -426,9 +428,11 @@ uv run python scripts/score_trade.py find \
 - Distinguish your two knowledge types explicitly: *priced* (engine arithmetic)
   vs *read* (posture/intel). "The math says +552; your intel says millj wants
   picks, which is why this shape clears."
-- Picks count at KTC tranche value inside `dF`, exactly like any player's
-  face; current-year picks show the rookie-board slot value as information
-  only. Unvalued players (Waller) add 0 to both coordinates and get flagged —
+- Picks carry ONE price inside `dF`, exactly like any player's face (v7.5):
+  KTC's numbered value at the known slot this year, and the pessimistic
+  tranche beyond — a future pick we send prices Early, one we receive prices
+  Late, and no forecast of where it lands exists anywhere (gate, links and
+  board all read the same number). Unvalued players (Waller) add 0 to both coordinates and get flagged —
   never treat the 0 as truth. A player who cannot crack our starting lineup
   moves only the face coordinate: say that out loud when a proposed buy has
   floor ~0, it is usually the whole explanation.

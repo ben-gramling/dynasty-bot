@@ -116,19 +116,20 @@ def test_s1_trade_resolves_exactly(league, ids, names):
     assert link.complete
     assert link.dropped == ()
     # v7.4: the 2026 1.01 links at KTC's NUMBERED id, because that is the price
-    # the gate now uses. A future pick still links its tranche — that IS its
-    # price, KTC publishes nothing finer.
-    assert link.one == (299, 202611, 1703)
-    assert link.two == (1770, 1447, 1883)
+    # the gate now uses. v7.5: a future pick links the tranche of its
+    # PESSIMISTIC band — mine Early (I send it), theirs Late (I receive it) —
+    # because that is what the gate priced.
+    assert link.one == (299, 202611, 1702)
+    assert link.two == (1770, 1447, 1884)
     assert names[link.one[0]] == "Chris Godwin"
     assert link.one[1] == kp.numbered_pick_id(2026, 1, 1)  # "2026 Pick 1.01"
-    assert names[link.one[2]] == "2027 Mid 1st"
+    assert names[link.one[2]] == "2027 Early 1st"
     assert [names[i] for i in link.two] == [
-        "Luther Burden", "Rashee Rice", "2028 Mid 1st",
+        "Luther Burden", "Rashee Rice", "2028 Late 1st",
     ]
     assert link.url == (
         "https://keeptradecut.com/trade-calculator"
-        "?var=5&pickVal=0&teamOne=299%7C202611%7C1703&teamTwo=1770%7C1447%7C1883"
+        "?var=5&pickVal=0&teamOne=299%7C202611%7C1702&teamTwo=1770%7C1447%7C1884"
         "&format=1&isStartup=0&tep=0"
     )
 
@@ -165,12 +166,12 @@ def test_link_side_totals_match_the_gate(league, ids, names):
     # raw (pre-adjustment) sums, as multisets of the engine's own face values
     assert one_sum == pytest.approx(sum(a.v for a in give))
     assert two_sum == pytest.approx(sum(a.v for a in get))
-    # v7.4 FLIPPED this leg's direction, which is the change in one number: the
-    # 1.01 went 6,243 (a generic "Early 1st") to 7,994.86 (KTC's own price for
-    # that exact slot), so we are now sending MORE raw face than we receive on a
-    # trade the old pricing read the other way round.
+    # v7.4 flipped this leg's direction (the 1.01 went 6,243 → 7,994.86, KTC's
+    # own price for the exact slot); v7.5 widens it from both ends — my 2027 R1
+    # sends Early (6,118 → 7,398) while NoahMoell's 2028 R1 arrives Late
+    # (5,207 → 4,768): 737.86 + 1,280 + 439 = 2,456.86 more raw face out than in.
     assert one_sum > two_sum
-    assert one_sum - two_sum == pytest.approx(737.86, abs=0.01)
+    assert one_sum - two_sum == pytest.approx(2456.86, abs=0.01)
 
 
 # --------------------------------------------------------- league-wide round trip
@@ -225,18 +226,20 @@ def test_every_rostered_asset_round_trips(league, ids, names):
 # --------------------------------------------------------------------- edge cases
 
 
-def test_band_follows_origin_not_holder(league, ids):
-    """millj holds three 2027 R4s; they do NOT all share an id. Keying on
-    (year, round) alone — ignoring the origin team's band — would break this."""
+def test_band_follows_direction_not_origin(league, ids):
+    """v7.5: millj holds three 2027 R4s of three different origins and they ALL
+    link "2027 Late 4th" — the holder is not me, so every one is a pick I would
+    RECEIVE, priced and linked at the cheap end. My own 2027 R4 links Early.
+    (Through v7.4 the id followed the ORIGIN team's rank_L, so vishan's pick in
+    millj's hands linked Early — a forecast on the counterparty's screen.)"""
     assets = tr.team_assets(league, league.teams["millj"])
     trio = {n: a for n, a in assets.items() if n.startswith("2027 R4")}
     assert len(trio) == 3, sorted(trio)
 
     resolved = {n: kl.ktc_id_of(a, ids) for n, a in trio.items()}
-    assert resolved["2027 R4 (own)"] == 1711
-    assert resolved["2027 R4 (from vishan)"] == 1711
-    assert resolved["2027 R4 (from ronakpatel32)"] == 1712
-    assert len(set(resolved.values())) == 2
+    assert set(resolved.values()) == {1713}  # 2027 Late 4th, all three
+    mine = tr.team_assets(league, league.teams[league.me])["2027 R4 (own)"]
+    assert kl.ktc_id_of(mine, ids) == 1711  # 2027 Early 4th
 
 
 def test_unvalued_player_is_dropped_and_disclosed(league, ids):
