@@ -30,6 +30,7 @@ wall clock without touching the heavily-pinned `find_spreads` itself.
 from __future__ import annotations
 
 import html
+import json
 import os
 from typing import Any, Mapping, Sequence
 
@@ -219,6 +220,158 @@ def hedge_payload(
     }
 
 
+def _leg_link(league: md.LeagueState, card: Mapping, ids: Mapping) -> dict:
+    """Calculator link for one arbitrary leg card (v8 offer/hedge pinning).
+    Best-effort exactly like `_spread_links`: KTC's 12-asset cap is disclosed
+    as `blocked`, never swallowed."""
+    give, get = tr.card_packages(league, card)
+    try:
+        return _link_dict(
+            kl.tc_link(give.assets, get.assets, ids, current_year=league.current_year)
+        )
+    except ValueError as exc:
+        return {"url": None, "numbered_url": None, "dropped": [], "numbered": [],
+                "blocked": str(exc)}
+
+
+def db_payload(
+    db,
+    team_results: Mapping[str, Mapping],
+    *,
+    sliders: Mapping | None,
+    focus: str | None = None,
+    offer: Mapping | None = None,
+    generated_at: str | None = None,
+    mongo_newer: bool = False,
+    data_age: str | None = None,
+    data_age_hours: float | None = None,
+) -> dict:
+    """The v8 hedge-DB board payload: `hedge_payload`'s exact shape, assembled
+    from per-counterparty `HedgeDB.search` payloads instead of live finder runs.
+
+    Everything renders against the STORED snapshot's league (`db.league`) —
+    the §12 "page cannot disagree" contract: market blocks, KTC links and leg
+    cards all come from the world the DB was priced from, never live Mongo.
+    `team_results` maps counterparty username -> its search payload; teams
+    render in sorted order with the `focus` team first. Spreads are sliced to
+    the display `top` in `sliders`; counts stay the search's full tallies.
+
+    Additions over `hedge_payload`, all additive so `render_html` keeps
+    working on either payload:
+
+    - per team: `bar_raised` (the §4a v6 warm bar rose above min_return, so
+      `matched` is a floor — rendered "≥ N");
+    - `db`: provenance {band, legs, content_fingerprint16, cached_counts,
+      bar_raised_any};
+    - `constraints_in_effect`: applied/shed/ignored with provenance, deduped
+      across the team searches (they compile identically per search);
+    - `focus` and, when given, `offer`: a raw `HedgeDB.offer` result pinned
+      onto the focused team's card, links attached per leg;
+    - `mongo_newer`: the live collect moved past the DB — its own red banner,
+      distinct from the snapshot-age axis.
+    """
+    league = db.league
+    query = {**_SLIDER_DEFAULTS, **(sliders or {})}
+    show = query.get("top")
+    ids = kl.rdp_ids(league)
+
+    names = sorted(team_results)
+    if focus is not None and focus in names:
+        names.remove(focus)
+        names.insert(0, focus)
+
+    applied: list[dict] = []
+    shed: list[dict] = []
+    ignored: list[dict] = []
+    seen: dict[str, set] = {"applied": set(), "shed": set(), "ignored": set()}
+
+    def _dedupe(kind: str, into: list, items) -> None:
+        for it in items or ():
+            key = json.dumps(it, sort_keys=True, default=str)
+            if key not in seen[kind]:
+                seen[kind].add(key)
+                into.append(it)
+
+    teams = []
+    cached = 0
+    bar_raised_any = False
+    for name in names:
+        res = team_results[name]
+        market = lg.market_map(league, league.teams[name])
+        spreads = []
+        for sp in res["spreads"][: show or None]:
+            side = "buy" if sp["buy"]["counterparty"] == name else "sell"
+            other = sp["sell" if side == "buy" else "buy"]["counterparty"]
+            spreads.append(
+                {
+                    **sp,
+                    "their_side": side,
+                    "partner": other,
+                    "links": _spread_links(league, sp, ids),
+                }
+            )
+        bar = bool(res.get("bar_raised"))
+        bar_raised_any |= bar
+        if (res.get("db") or {}).get("cached"):
+            cached += 1
+        _dedupe("applied", applied, res.get("applied_constraints"))
+        _dedupe("shed", shed, res.get("shed_constraints"))
+        _dedupe("ignored", ignored, res.get("ignored_intel"))
+        teams.append(
+            {
+                "name": name,
+                "market": market,
+                "spreads": spreads,
+                "counts": res["counts"],
+                "exact": res["exact"],
+                "constraints": res["applied_constraints"],
+                "bar_raised": bar,
+            }
+        )
+
+    payload = {
+        "me": league.me,
+        "generated_at": generated_at,
+        "data_age": data_age,
+        "data_age_hours": data_age_hours,
+        "sliders": query,
+        "teams": teams,
+        "totals": {
+            "teams": len(teams),
+            "with_hedges": sum(1 for t in teams if t["spreads"]),
+            "matched": sum(t["counts"]["matched"] for t in teams),
+            "all_exact": all(t["exact"] for t in teams),
+        },
+        "focus": focus,
+        "mongo_newer": bool(mongo_newer),
+        "db": {
+            "band": db.meta["band"],
+            "legs": db.meta["legs"],
+            "content_fingerprint16": db.meta["content_fingerprint"][:16],
+            "cached_counts": {"cached": cached, "fresh": len(teams) - cached},
+            "bar_raised_any": bar_raised_any,
+        },
+        "constraints_in_effect": {
+            "applied": applied,
+            "shed": shed,
+            "ignored_intel": ignored,
+        },
+    }
+    if offer is not None:
+        payload["offer"] = {
+            "card": offer["offer"],
+            "link": _leg_link(league, offer["offer"], ids),
+            "hedges": [
+                {**h, "links": {"hedge": _leg_link(league, h["hedge"], ids)}}
+                for h in (offer.get("hedges") or [])[: show or None]
+            ],
+            "note": offer.get("note"),
+            "counts": offer.get("counts"),
+            "exact": offer.get("exact", True),
+        }
+    return payload
+
+
 # ---------------------------------------------------------------------- HTML
 
 # The `apps/web` design contract (docs/web-design.md) verbatim: Chicago-flag
@@ -358,6 +511,35 @@ table.assets td.num{text-align:right;font-family:ui-monospace,Menlo,monospace;
 .spread-link a{color:var(--sky-deep)}
 footer{max-width:1200px;margin:0 auto;padding:0 20px 40px;font-size:12px;color:var(--ink-muted)}
 footer p{margin:.5em 0}
+/* v8 hedge-DB board additions: constraints disclosure, offer pin. The pass
+   hue is the ONE sanctioned exception to "positives are ink": a pinned offer's
+   gate verdict is the page's single loudest fact (spec §5), so PASS/FAIL get
+   verdict colors — on the verdict word only, never on a numeral. */
+:root{--pass:#1E7F45}
+@media (prefers-color-scheme:dark){:root{--pass:#43B97F}}
+:root[data-theme="dark"]{--pass:#43B97F}
+:root[data-theme="light"]{--pass:#1E7F45}
+details.constraints{background:var(--surface);border:1px solid var(--line);border-radius:8px;
+  box-shadow:var(--shadow);margin-bottom:14px;font-size:13px}
+details.constraints>summary{list-style:none;cursor:pointer;padding:11px 16px;font-weight:600}
+details.constraints>summary::-webkit-details-marker{display:none}
+details.constraints>summary:hover{background:var(--chip)}
+.constraints-body{padding:0 16px 12px}
+.constraints-body h3{font-size:14px;margin:10px 0 4px}
+.constraints-body ul{margin:4px 0;padding-left:18px}
+.constraints-body li{margin:2px 0}
+.offer{border-bottom:1px solid var(--line);padding:13px 16px;background:var(--chip)}
+.offer-head{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:baseline;margin-bottom:8px}
+.offer-head h3{font-size:18px}
+.verdict{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:13px;
+  font-weight:700;border:1px solid currentColor;border-radius:4px;padding:2px 8px}
+.verdict-pass{color:var(--pass)}
+.verdict-fail{color:var(--star)}
+.offer .leg{background:var(--surface)}
+.offer details.hedge{background:var(--surface);border:1px solid var(--line);
+  border-radius:6px;margin-top:8px}
+.offer-hedges-label{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;
+  color:var(--ink-muted);margin-top:12px}
 """
 
 _STAR = "✶"  # six-pointed star (U+2736) — the identity marker, never a bullet
@@ -389,7 +571,7 @@ def _chip(key: str, v: float | None, *, signed: bool = True, dp: int = 0,
     )
 
 
-def _favor_chip(f: float | None) -> str:
+def _favor_chip(f: float | None, label: str = "favor") -> str:
     """Favor is a signed SKEW toward the counterparty, not a ledger entry — a
     NEGATIVE favor is good for me. Rendering it in the ledger's negative-red
     would say the opposite, so it gets a flat chip and the direction in words.
@@ -401,7 +583,7 @@ def _favor_chip(f: float | None) -> str:
     else:
         val = f"{abs(f):.1f} " + ("to them" if f > 0 else "to you")
     return (
-        '<span class="chip chip-flat"><span class="chip-k">favor</span>'
+        f'<span class="chip chip-flat"><span class="chip-k">{_esc(label)}</span>'
         f'<span class="chip-v">{_esc(val)}</span></span>'
     )
 
@@ -532,11 +714,176 @@ def _hedge(sp: Mapping, rank: int) -> str:
     return f'<details class="hedge">{summary}{audit}</details>'
 
 
-def _team_card(team: Mapping) -> str:
+def _what_text(w: Mapping) -> str:
+    """Tolerant OBJECT text for a serialized constraint `what` dict — covers
+    the §4 vocabulary including v8 any-of and scoped pick classes, and falls
+    back to the raw dict rather than ever raising over display."""
+    if not isinstance(w, Mapping):
+        return str(w)
+    if "any" in w:
+        return " | ".join(_what_text(a) for a in w["any"])
+    if w.get("class") == "pick" and ("year" in w or "round" in w):
+        bits = [str(w["year"]) if w.get("year") else "",
+                f"R{w['round']}" if w.get("round") else ""]
+        return (" ".join(b for b in bits if b) + " picks").strip()
+    if "class" in w:
+        return {"pick": "picks", "player": "players"}.get(w["class"], str(w["class"]))
+    if "pos" in w:
+        return f"pos:{w['pos']}"
+    if "asset" in w:
+        return f'"{w["asset"]}"'
+    return str(dict(w))
+
+
+def _constraint_line(c: Mapping) -> str:
+    tail = f' with {c["with"]}' if c.get("with") else ""
+    return (
+        f'{c.get("mode", "?")} {c.get("who", "?")} {c.get("side", "?")} '
+        f'{_what_text(c.get("what") or {})}{tail}'
+    )
+
+
+def _constraints_block(ce: Mapping) -> str:
+    """The v8 "constraints in effect" disclosure: every applied constraint with
+    its provenance, everything shed by precedence (silent replacement made
+    visible), and intel that could not be parsed — reported, never guessed."""
+    applied = ce.get("applied") or []
+    shed = ce.get("shed") or []
+    ignored = ce.get("ignored_intel") or []
+    summary = (
+        f"Constraints in effect — {len(applied)} applied · {len(shed)} shed · "
+        f"{len(ignored)} intel ignored"
+    )
+    parts: list[str] = []
+    if applied:
+        parts.append(
+            "<h3>Applied (§4 precedence query &gt; intel &gt; posture, per team &amp; side)</h3><ul>"
+            + "".join(
+                f'<li><span class="mono">{_esc(_constraint_line(c))}</span>'
+                f' — {_esc(c.get("origin") or c.get("source") or "")}</li>'
+                for c in applied
+            )
+            + "</ul>"
+        )
+    else:
+        parts.append("<p>No constraints applied — an unconstrained search.</p>")
+    if shed:
+        parts.append(
+            "<h3>Shed — overridden by your query (or by later intel; §4 precedence)</h3><ul>"
+            + "".join(
+                f'<li><span class="mono">{_esc(_constraint_line(s.get("constraint") or {}))}</span>'
+                f' — {_esc(s.get("why") or "")}</li>'
+                for s in shed
+            )
+            + "</ul>"
+        )
+    if ignored:
+        parts.append(
+            "<h3>Intel ignored (unparseable/NOTE — reported, never guessed)</h3><ul>"
+            + "".join(
+                f'<li><span class="mono">{_esc(d.get("kind"))} [{_esc(d.get("team"))}] '
+                f'{_esc(repr(d.get("subject")))}</span>: {_esc(item.get("reason") or "")}</li>'
+                for item in ignored
+                for d in (item.get("doc") or {},)
+            )
+            + "</ul>"
+        )
+    return (
+        f'<details class="constraints"><summary>{_esc(summary)}</summary>'
+        f'<div class="constraints-body">{"".join(parts)}</div></details>'
+    )
+
+
+def _offer_hedge(h: Mapping, rank: int) -> str:
+    """One offer-mode hedge as the familiar disclosure row: pair chips in the
+    summary (coords/favor are the offer and this hedge applied TOGETHER), the
+    hedge leg's full card in the audit."""
+    c = h["coords"]
+    fav = h.get("favor") or {}
+    summary = (
+        f'<summary><span class="rank mono">{rank:02d}</span>'
+        + _chip("floor", h["floor"], lead=True)
+        + _chip("ceiling", h["ceiling"])
+        + _chip("return", h["return_robust"], dp=2, pct=True)
+        + _chip("starters", c["dS"])
+        + _chip("face", c["dF"])
+        + _favor_chip(fav.get("offer"), label="offer favor")
+        + _favor_chip(fav.get("hedge"), label="hedge favor")
+        + f'<span class="sent">on <span class="mono">{_num(h["sent"])}</span> sent</span>'
+        + '<span class="caret" aria-hidden="true">'
+        '<svg width="10" height="10" viewBox="0 0 10 10">'
+        '<path d="M3 1l4 4-4 4" fill="none" stroke="currentColor" '
+        'stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>'
+        '</svg></span></summary>'
+    )
+    hc = h["hedge"]
+    links = h.get("links") or {}
+    hedge_side = "sell" if h.get("offer_side") == "buy" else "buy"
+    audit = (
+        '<div class="audit">'
+        + _leg_block(hc, role=f"Hedge leg ({hedge_side} side)", is_theirs=False,
+                     link=links.get("hedge"))
+        + "</div>"
+        + f'<p class="note">Pair figures are the offer and this hedge applied '
+        f'together — your offer is the {_esc(h.get("offer_side"))} side. '
+        f'{_esc(hc["sequencing"])}.</p>'
+    )
+    return f'<details class="hedge offer-hedge">{summary}{audit}</details>'
+
+
+def _offer_block(offer: Mapping) -> str:
+    """The pinned offer at the top of the focused team's section (v8 §5): the
+    REAL gate verdict loud — PASS in the pass hue, FAIL in red with its
+    reasons — then the offer's own leg card, then its exact hedge set."""
+    card = offer["card"]
+    verdict = str(card["gate"].get("verdict") or "")
+    ok = verdict.startswith("PASS")
+    vcls = "verdict-pass" if ok else "verdict-fail"
+    head = (
+        '<div class="offer-head"><h3>Pinned offer — with '
+        f'{_esc(card["counterparty"])}</h3>'
+        f'<span class="verdict {vcls}">GATE {_esc(verdict)}</span></div>'
+    )
+    body = (
+        '<div class="audit">'
+        + _leg_block(card, role="The offer", is_theirs=True, link=offer.get("link"))
+        + "</div>"
+    )
+    note = (
+        f'<p class="note">{_esc(offer["note"])}</p>' if offer.get("note") else ""
+    )
+    hedges = offer.get("hedges") or []
+    if hedges:
+        label = (
+            "Exact hedges — pair coordinates, both legs applied together"
+            if ok
+            else "Exact hedges — if you took it anyway (this offer FAILS the gate)"
+        )
+        hedge_html = (
+            f'<div class="offer-hedges-label">{_esc(label)}</div>'
+            + "".join(_offer_hedge(h, i) for i, h in enumerate(hedges, 1))
+        )
+    elif offer.get("note"):
+        hedge_html = ""
+    else:
+        hedge_html = (
+            '<p class="note">No stored hedge clears the sliders against this '
+            "offer.</p>"
+        )
+    return f'<div class="offer">{head}{body}{note}{hedge_html}</div>'
+
+
+def _team_card(team: Mapping, offer: Mapping | None = None) -> str:
     m = team["market"]
     holes = ", ".join(f'{h["pos"]} (their rank {h["rank"]})' for h in m["holes"])
     counts = team["counts"]
-    tally = _num(counts["matched"]) + ("" if team["exact"] else "+")
+    # v8 count honesty: a raised warm bar makes `matched` a verified floor even
+    # when the walk completed, so it reads "≥ N"; a budget-truncated walk keeps
+    # the v5.1 trailing "+"
+    if team.get("bar_raised"):
+        tally = "≥ " + _num(counts["matched"])
+    else:
+        tally = _num(counts["matched"]) + ("" if team["exact"] else "+")
     head = (
         f'<div class="card-head"><h2>{_esc(team["name"])}</h2>'
         f'<span class="posture">{_esc(m["posture"])}</span>'
@@ -565,7 +912,8 @@ def _team_card(team: Mapping) -> str:
         )
     else:
         body = "".join(_hedge(sp, i) for i, sp in enumerate(team["spreads"], 1))
-    return f'<section class="card">{head}{body}</section>'
+    pin = _offer_block(offer) if offer is not None else ""
+    return f'<section class="card">{head}{pin}{body}</section>'
 
 
 def render_html(payload: Mapping) -> str:
@@ -597,6 +945,43 @@ def render_html(payload: Mapping) -> str:
             f'<span class="chip chip-flat"><span class="chip-k">data</span>'
             f'<span class="chip-v">{_esc(payload["data_age"])}</span></span>'
         )
+    # v8: DB provenance under the wordmark — the reader should know the board
+    # is a view over a complete leg database, not a fresh budgeted search
+    prov = ""
+    dbp = payload.get("db")
+    if dbp:
+        cc = dbp.get("cached_counts") or {}
+        served = (
+            f' · {cc["cached"]}/{cc["cached"] + cc["fresh"]} searches served from cache'
+            if cc
+            else ""
+        )
+        prov = (
+            f'<div class="sub">complete ±{dbp["band"]:g} leg database · '
+            f'{dbp["legs"]:,} legs · exact per-team searches · '
+            f'db <span class="mono">{_esc(dbp["content_fingerprint16"])}</span>'
+            f"{served}</div>"
+        )
+    # v8 two-axis freshness, axis 2: the live collect moved past the DB's
+    # content fingerprint — a rebuild question, distinct from snapshot age
+    newer = ""
+    if payload.get("mongo_newer"):
+        newer = (
+            '<div class="stale"><b>The collector has newer data than this '
+            "board's database.</b> Every value below was priced from the older "
+            "snapshot the DB was built on. Rebuild — <span class='mono'>"
+            "score_trade.py hedgedb build</span> — before you quote any of it."
+            "</div>"
+        )
+    cons = (
+        _constraints_block(payload["constraints_in_effect"])
+        if payload.get("constraints_in_effect") is not None
+        else ""
+    )
+    offer = payload.get("offer")
+    pin_team = payload.get("focus") or (
+        offer["card"]["counterparty"] if offer else None
+    )
     stale = ""
     hrs = payload.get("data_age_hours")
     if hrs is None:
@@ -613,7 +998,13 @@ def render_html(payload: Mapping) -> str:
             "your counterparty sees. Run <span class=\'mono\'>just collect</span> and "
             "regenerate before you quote any of it.</div>"
         )
-    cards = stale + "".join(_team_card(x) for x in payload["teams"])
+    cards = newer + stale + cons + "".join(
+        _team_card(
+            x,
+            offer=offer if (offer is not None and x["name"] == pin_team) else None,
+        )
+        for x in payload["teams"]
+    )
     honesty = (
         "Every counterparty's crossing ran to completion, so the hedge tallies are "
         "exact counts over the pooled legs."
@@ -629,6 +1020,7 @@ def render_html(payload: Mapping) -> str:
     <div class="stars">{_STAR}{_STAR}{_STAR}{_STAR}</div>
     <h1>Hedge board</h1>
     <div class="sub">{_esc(payload["me"])} · best spreads per counterparty</div>
+    {prov}
   </div>
   <div class="mast-meta">{''.join(meta_bits)}</div>
 </div></header>

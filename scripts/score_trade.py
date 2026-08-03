@@ -27,6 +27,10 @@ Usage (from the repo root, .env required):
       [--alternatives] [--hedge] [--json]
   uv run python scripts/score_trade.py pairs --min 5 --favor-min -5 [--json]
   uv run python scripts/score_trade.py dashboard --out hedge-board.html
+  uv run python scripts/score_trade.py hedgedb build [--workers N] [--no-bake] [--allow-stale]
+  uv run python scripts/score_trade.py hedgedb board [--focus TEAM] [filters...] [--out FILE]
+  uv run python scripts/score_trade.py hedgedb offer --opponent X --give "A, B" --get "C" [filters...]
+  uv run python scripts/score_trade.py hedgedb status
   uv run python scripts/score_trade.py find \
       --require "ronak receives picks" --require "joey receives pos:RB" \
       --exclude "* receives Stefon Diggs" \
@@ -91,6 +95,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -111,6 +116,7 @@ from core.scoring import trades as tr  # noqa: E402
 
 MAX_SWEETENER_V = 3500.0  # alternatives: largest add-on asset considered
 SWAP_BAND_V = 1500.0  # alternatives: |v delta| for like-for-like swaps
+STALE_HOURS = dash._STALE_HOURS  # one staleness threshold everywhere (6h)
 
 
 def build_snapshot_from_store(db) -> tuple[Snapshot, dict]:
@@ -753,6 +759,437 @@ def run_dashboard(args, db, league: md.LeagueState, fresh: dict) -> None:
     print(out)
 
 
+# --------------------------------------------------- the hedge database (v8 §12)
+
+
+def _say(msg: str) -> None:
+    print(msg, file=sys.stderr)
+
+
+def read_intel(db) -> list[dict]:
+    """Active market-intel docs with the skill's note→subject shim — the same
+    shim `find` applies (the compiler re-checks `active` itself; filtering here
+    just keeps revoked docs out of the counts and the bake)."""
+    intel = [
+        d for d in db["market-intel"].find({}).sort("_id", 1) if d.get("active", True)
+    ]
+    for doc in intel:  # skill protocol stores the subject text as `note`
+        if "subject" not in doc and doc.get("note") is not None:
+            doc["subject"] = doc["note"]
+    return intel
+
+
+def parse_delta(raw: str):
+    if raw == "robust":
+        return "robust"
+    try:
+        d = float(raw)
+    except ValueError:
+        sys.exit(f"--delta {raw!r}: must be 'robust' or a number in [0, 1]")
+    if not 0.0 <= d <= 1.0:
+        sys.exit(f"--delta {d:g}: must lie in [0, 1]")
+    return d
+
+
+def match_opp(opp_names, tok: str, where: str) -> str:
+    """Resolve a counterparty token against the DB's own opponent list —
+    case-insensitive exact, else unique substring; ambiguity lists candidates."""
+    m = [n for n in opp_names if n.lower() == tok.lower()] or [
+        n for n in opp_names if tok.lower() in n.lower()
+    ]
+    if len(m) > 1:
+        sys.exit(
+            f"{where}: ambiguous team token {tok!r} (matches {sorted(m)}) — "
+            f"counterparties: {sorted(opp_names)}"
+        )
+    if not m:
+        sys.exit(
+            f"{where}: unknown team token {tok!r} — counterparties: {sorted(opp_names)}"
+        )
+    return m[0]
+
+
+def parse_favor_for(specs, opp_names) -> dict | None:
+    """Repeatable --favor-for TEAM=MIN:MAX (either bound omittable: 'TEAM=-3:'
+    floors only, 'TEAM=:2' caps only), in the engine's counterparty-positive
+    units."""
+    out: dict[str, dict] = {}
+    for spec in specs:
+        where = f'--favor-for "{spec}"'
+        team_tok, eq, window = spec.partition("=")
+        if not eq or not team_tok.strip():
+            sys.exit(f"{where}: expected TEAM=MIN:MAX (either bound omittable)")
+        team = match_opp(opp_names, team_tok.strip(), where)
+        lo_s, colon, hi_s = window.partition(":")
+        if not colon:
+            sys.exit(
+                f"{where}: expected MIN:MAX after '=' (either bound omittable: "
+                "'-3:' floors only, ':2' caps only)"
+            )
+        try:
+            lo = float(lo_s) if lo_s.strip() else None
+            hi = float(hi_s) if hi_s.strip() else None
+        except ValueError:
+            sys.exit(f"{where}: bounds must be numbers, got {window!r}")
+        if lo is None and hi is None:
+            sys.exit(f"{where}: at least one bound is required")
+        out[team] = {"min": lo, "max": hi}
+    return out or None
+
+
+def open_hedgedb(snapshot):
+    from core.scoring import hedgedb as hd
+
+    try:
+        return hd.HedgeDB.open_for(snapshot)
+    except FileNotFoundError:
+        sys.exit(
+            "no hedge DB matches the current Mongo content — run "
+            "`uv run python scripts/score_trade.py hedgedb build` first "
+            "(the data changed since the last build, or none was ever built)"
+        )
+    except ImportError as e:
+        sys.exit(str(e))
+
+
+def hedgedb_query(args, hddb, league) -> dict:
+    """The full §4 filter state as a hedgedb query dict. `top` is pinned to the
+    DB's stored search depth so the default board hits the baked cache; the
+    display slice is the CLI's --top."""
+    constraints = (
+        [parse_constraint(league, "require", s) for s in args.require]
+        + [parse_constraint(league, "exclude", s) for s in args.exclude]
+        + [parse_constraint(league, "prefer", s) for s in args.prefer]
+    )
+    return {
+        "constraints": constraints,
+        "use_intel": not args.no_intel,
+        "use_posture": not args.no_posture,
+        "delta": parse_delta(args.delta),
+        "min_return": args.min_return,
+        "favor_min": args.favor_min,
+        "favor_max": args.favor_max,
+        "favor_for": parse_favor_for(args.favor_for, hddb.opp_names),
+        "shape": args.shape,
+        "top": int(hddb.meta.get("store_top", 50)),
+    }
+
+
+def db_data_age(hddb, fresh) -> tuple[str | None, float | None]:
+    """The snapshot-age axis: the collect the DB was PRICED from (stamped into
+    meta.json at build), falling back to the live runs collection for DBs built
+    before the stamp existed."""
+    ts = None
+    lc = hddb.meta.get("last_collect")
+    if lc:
+        try:
+            ts = datetime.fromisoformat(lc)
+        except ValueError:
+            ts = None
+    if ts is None:
+        ts = fresh.get("last_collect")
+    if ts is None:
+        return None, None
+    hours = (
+        datetime.now(timezone.utc) - ts.replace(tzinfo=timezone.utc)
+    ).total_seconds() / 3600
+    return f"{hours:.1f}h old", hours
+
+
+def hedgedb_board_payload(args, db, snapshot, fresh, hddb, *, focus=None, offer_result=None):
+    """One `db.search` per counterparty (cache hits after the bake unless the
+    filter state changed) assembled into the v8 board payload."""
+    from core.scoring import hedgedb as hd
+
+    league = hddb.league
+    intel = [] if args.no_intel else read_intel(db)
+    query = hedgedb_query(args, hddb, league)
+    results: dict[str, dict] = {}
+    for opp in sorted(hddb.opp_names):
+        t0 = perf_counter()
+        try:
+            res = hddb.search({**query, "with_team": opp}, intel=intel)
+        except ValueError as e:
+            sys.exit(str(e))
+        dt = perf_counter() - t0
+        tag = "cache" if res["db"]["cached"] else f"walk {dt:.1f}s"
+        _say(
+            f"  {opp}: {tag} · matched {res['counts']['matched']:,}"
+            + ("" if res["exact"] else " (budget-truncated)")
+        )
+        results[opp] = res
+    age, age_hours = db_data_age(hddb, fresh)
+    mongo_newer = hd.content_fingerprint(snapshot) != hddb.meta["content_fingerprint"]
+    if mongo_newer:
+        _say(
+            "WARNING: the collector has newer data than this DB — the board "
+            "will say so in red; run `hedgedb build` before quoting"
+        )
+    sliders = {
+        "delta": query["delta"],
+        "min_return": args.min_return,
+        "favor_min": args.favor_min,
+        "favor_max": args.favor_max,
+        "favor_for": query["favor_for"],
+        "shape": args.shape,
+        "top": args.top,
+        "use_intel": not args.no_intel,
+        "use_posture": not args.no_posture,
+    }
+    return dash.db_payload(
+        hddb,
+        results,
+        sliders=sliders,
+        focus=focus,
+        offer=offer_result,
+        generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        mongo_newer=mongo_newer,
+        data_age=age,
+        data_age_hours=age_hours,
+    )
+
+
+def run_hedgedb_build(args, db, snapshot, fresh) -> None:
+    """`hedgedb build`: enumerate + persist the complete band pool from the
+    live Mongo snapshot, stamp the freshness axis, bake the default board."""
+    try:
+        from core.scoring import hedgedb as hd
+    except ImportError as e:  # pragma: no cover - environment-dependent
+        sys.exit(str(e))
+    last = fresh.get("last_collect")
+    if last is None:
+        if not args.allow_stale:
+            sys.exit(
+                "no successful collect on record — run `just collect` first, or "
+                "pass --allow-stale to build from whatever Mongo holds"
+            )
+    else:
+        age_h = (
+            datetime.now(timezone.utc) - last.replace(tzinfo=timezone.utc)
+        ).total_seconds() / 3600
+        if age_h >= STALE_HOURS and not args.allow_stale:
+            sys.exit(
+                f"last ok collect is {age_h:.1f}h old (>= {STALE_HOURS:g}h) — the DB "
+                "persists priced values, so build it from fresh data: run "
+                "`just collect` first, or pass --allow-stale to build anyway"
+            )
+    intel = read_intel(db)
+    workers = (
+        args.workers if args.workers and args.workers > 0
+        else max(1, (os.cpu_count() or 2) - 2)
+    )
+    t0 = perf_counter()
+    try:
+        hddb = hd.build(snapshot, Params(), bake=False, progress=_say)
+    except ImportError as e:
+        sys.exit(str(e))
+    # stamp the freshness axis (read-modify-write: the build wrote the rest)
+    meta_path = hddb.path / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta["last_collect"] = last.isoformat() if last else None
+    meta_path.write_text(json.dumps(meta, indent=2))
+    hddb.meta["last_collect"] = meta["last_collect"]
+    if not args.no_bake:
+        _say(f"baking the default board on {workers} worker(s) …")
+        _ = hddb.league  # materialize BEFORE the fork so children inherit it COW
+        hddb.bake_default_board(intel=intel, workers=workers, progress=_say)
+    _say(
+        f"hedge DB ready in {perf_counter() - t0:.0f}s: {hddb.path} "
+        f"({hddb.meta['legs']:,} legs, band ±{hddb.meta['band']:g})"
+    )
+    print(hddb.path)
+
+
+def run_hedgedb_board(args, db, snapshot, fresh) -> None:
+    """`hedgedb board`: the per-counterparty board rendered FROM THE DB — the
+    stored snapshot's league, cached exact searches, live Mongo touched only
+    for intel and the freshness banners."""
+    hddb = open_hedgedb(snapshot)
+    focus = match_opp(hddb.opp_names, args.focus, "--focus") if args.focus else None
+    _say(
+        f"hedge board from the DB at {hddb.path} — cached filter states are "
+        "instant, novel ones walk once and cache"
+    )
+    payload = hedgedb_board_payload(args, db, snapshot, fresh, hddb, focus=focus)
+    if args.json:
+        print(json.dumps(payload, indent=1, default=str))
+        return
+    out = Path(args.out)
+    out.write_text(dash.render_html(payload), encoding="utf-8")
+    t = payload["totals"]
+    _say(
+        f"Wrote {out} — {t['with_hedges']}/{t['teams']} counterparties have a "
+        f"hedge clearing the sliders, {t['matched']:,} matched in total"
+        + ("" if t["all_exact"] else " (some searches budget-truncated — counts are floors)")
+    )
+    print(out)
+
+
+def run_hedgedb_offer(args, db, snapshot, fresh) -> None:
+    """`hedgedb offer`: score the proposal with the REAL gate (any assets —
+    cornerstones, taxi, >3 pieces all scoreable), cross it against the stored
+    legs of every other counterparty, then regenerate THE board file with the
+    opponent focused and the offer pinned (same canonical --out path, so the
+    published artifact URL stays stable)."""
+    hddb = open_hedgedb(snapshot)
+    league = hddb.league
+    match = [n for n in league.teams if n.lower() == args.opponent.lower()] or [
+        n for n in league.teams if args.opponent.lower() in n.lower()
+    ]
+    if len(match) != 1 or match[0] == league.me:
+        sys.exit(
+            f"Opponent {args.opponent!r} not found/ambiguous. Teams: "
+            f"{sorted(set(league.teams) - {league.me})}"
+        )
+    opp_name = match[0]
+    me_assets = tr.team_assets(league, league.teams[league.me])
+    opp_assets = tr.team_assets(league, league.teams[opp_name])
+    give = [resolve(me_assets, q, league.me) for q in args.give.split(",") if q.strip()]
+    get = [resolve(opp_assets, q, opp_name) for q in args.get.split(",") if q.strip()]
+    intel = [] if args.no_intel else read_intel(db)
+    query = hedgedb_query(args, hddb, league)
+    try:
+        res = hddb.offer(
+            opp_name,
+            [a.name for a in give],
+            [a.name for a in get],
+            query=query,
+            intel=intel,
+        )
+    except ValueError as e:
+        sys.exit(str(e))
+
+    if args.json:
+        print(json.dumps(res, indent=1, default=str))
+    else:
+        card = res["offer"]
+        verdict = card["gate"]["verdict"]
+        print(f"OFFER — with {opp_name}: GATE {verdict}")
+        print()
+        print(fmt_card(card))
+        if res.get("note"):
+            print(f"\n{res['note']}")
+        counts = res.get("counts")
+        if counts:
+            honesty = (
+                "EXACT — the crossing completed over every eligible stored leg"
+                if res.get("exact", True)
+                else f"VERIFIED FLOORS — search budget "
+                f"{league.params.hedgedb_search_budget:,} hit"
+            )
+            print(
+                f"\nHedge search [{honesty}]: {counts['candidates']:,} stored "
+                f"complement legs · crossings {counts['crossings']:,} · valid "
+                f"{counts['valid']:,} · matched {counts['matched']:,} · "
+                f"returned {counts['returned']}"
+            )
+        hedges = res["hedges"]
+        if hedges:
+            label = (
+                "Hedges (pair coordinates are EXACT combined — both legs applied "
+                "together; ranked maximin):"
+                if verdict == "PASS"
+                else "Hedges — IF YOU TOOK IT ANYWAY (this offer FAILS the gate; "
+                "the hedges below assume you executed it regardless):"
+            )
+            print(f"\n{label}")
+            for h in hedges[: args.top]:
+                hc = h["hedge"]
+                print()
+                print(fmt_card(
+                    hc,
+                    header=(
+                        f"{h['id']} — with {hc['counterparty']}: PAIR guaranteed "
+                        f"{h['floor']:+g} · up to {h['ceiling']:+g} (pair floor return "
+                        f"{h['return_robust']:g}% on {h['sent']:g} Σv you send) · "
+                        f"favor offer {h['favor']['offer']:+g} / hedge "
+                        f"{h['favor']['hedge']:+g} · your offer is the "
+                        f"{h['offer_side']} side"
+                    ),
+                ))
+        elif not res.get("note"):
+            print(
+                "\nNo stored hedge clears the sliders against this offer — loosen "
+                "a slider or drop a constraint (the counts above show where "
+                "candidates died)."
+            )
+
+    _say("\nregenerating the hedge board (opponent focused, offer pinned) …")
+    payload = hedgedb_board_payload(
+        args, db, snapshot, fresh, hddb, focus=opp_name, offer_result=res
+    )
+    out = Path(args.out)
+    out.write_text(dash.render_html(payload), encoding="utf-8")
+    _say(f"Wrote {out}")
+    if not args.json:
+        print(out)
+
+
+def run_hedgedb_status(args, db, snapshot, fresh) -> None:
+    """`hedgedb status`: where the DB is, what it holds, and whether the live
+    Mongo content still matches it. Reads meta.json directly (no numpy needed)."""
+    from core.scoring import hedgedb as hd
+
+    live_cf = hd.content_fingerprint(snapshot)
+    target = hd.db_dir(snapshot, Params())
+    root = target.parent
+    path = target if (target / "meta.json").exists() else None
+    if path is None and root.exists():
+        cands = sorted(
+            (p.parent for p in root.glob("*/meta.json")),
+            key=lambda p: (p / "meta.json").stat().st_mtime,
+            reverse=True,
+        )
+        path = cands[0] if cands else None
+    if path is None:
+        sys.exit(
+            "no hedge DB built — run `uv run python scripts/score_trade.py hedgedb build`"
+        )
+    meta = json.loads((path / "meta.json").read_text())
+    searches_dir = path / "searches"
+    n_cached = (
+        sum(1 for _ in searches_dir.glob("*.json")) if searches_dir.exists() else 0
+    )
+    lc = meta.get("last_collect")
+    age = ""
+    if lc:
+        try:
+            h = (
+                datetime.now(timezone.utc)
+                - datetime.fromisoformat(lc).replace(tzinfo=timezone.utc)
+            ).total_seconds() / 3600
+            age = f" ({h:.1f}h ago)"
+        except ValueError:
+            pass
+    current = meta["content_fingerprint"] == live_cf
+    print(f"hedge DB: {path}")
+    print(
+        f"  legs: {meta['legs']:,} · band ±{meta['band']:g} · "
+        f"packages {meta.get('packages', 0):,} · assets {meta.get('assets', 0):,}"
+    )
+    print(f"  content fingerprint: {meta['content_fingerprint'][:16]}")
+    print(f"  snapshot last collect: {lc or 'never stamped'}{age}")
+    print(
+        "  live Mongo: "
+        + (
+            "MATCHES this DB — boards render current"
+            if current
+            else f"MOVED PAST this DB (live {live_cf[:16]}) — run `hedgedb build` "
+            "before you quote anything"
+        )
+    )
+    print(f"  cached searches: {n_cached} in {searches_dir}")
+
+
+def run_hedgedb(args, db, snapshot, fresh) -> None:
+    {
+        "build": run_hedgedb_build,
+        "board": run_hedgedb_board,
+        "offer": run_hedgedb_offer,
+        "status": run_hedgedb_status,
+    }[args.hd_cmd](args, db, snapshot, fresh)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -880,14 +1317,129 @@ def main() -> None:
     dh.add_argument("--no-intel", action="store_true")
     dh.add_argument("--no-posture", action="store_true")
     dh.add_argument("--json", action="store_true", help="print the payload instead of HTML")
+
+    hb = sub.add_parser(
+        "hedgedb",
+        help="§12 v8 the hedge database: complete legs, exact cached searches — "
+        "build | board | offer | status",
+        description="The v8 hedge database: `build` persists the COMPLETE "
+        "fair-band leg pool from the live Mongo snapshot and bakes the default "
+        "per-counterparty board; `board` renders the hedge board from the DB "
+        "(cache hits unless the filter state is new); `offer` scores an "
+        "arbitrary proposal with the REAL gate, crosses it against the stored "
+        "legs of every other counterparty, and regenerates the board with the "
+        "offer pinned; `status` reports fingerprints and freshness.",
+    )
+    hsub = hb.add_subparsers(dest="hd_cmd", required=True)
+    hbuild = hsub.add_parser(
+        "build",
+        help="build (or reopen, if the content fingerprint matches) the DB from "
+        "the live Mongo snapshot, then bake the default board",
+    )
+    hbuild.add_argument(
+        "--workers", type=int, default=0,
+        help="bake parallelism (fork); 0 = cpu_count - 2",
+    )
+    hbuild.add_argument(
+        "--no-bake", action="store_true",
+        help="skip baking the default per-counterparty board searches",
+    )
+    hbuild.add_argument(
+        "--allow-stale", action="store_true",
+        help=f"build even if the last ok collect is older than {STALE_HOURS:g}h "
+        "(the DB persists priced values — fresh data is the point)",
+    )
+
+    def add_hd_filters(p) -> None:
+        """The full §4 filter flag set — board and offer take it IDENTICALLY
+        (the skill re-passes the complete filter state on every invocation)."""
+        for mode, hint in (
+            ("require", "every leg involving WHO must match (hard)"),
+            ("exclude", "no leg may match (hard)"),
+            ("prefer", "matching spreads are starred (soft; never reorders)"),
+        ):
+            p.add_argument(
+                f"--{mode}", action="append", default=[], dest=mode,
+                metavar='"WHO receives|sends OBJECT [with TEAM]"', help=hint,
+            )
+        p.add_argument("--no-intel", action="store_true",
+                       help="drop the market-intel constraints (§4 source 2)")
+        p.add_argument("--no-posture", action="store_true",
+                       help="drop the posture defaults (§4 source 1)")
+        p.add_argument(
+            "--delta", default="robust",
+            help="'robust' (default — the guaranteed floor) or a number in [0, 1]",
+        )
+        p.add_argument("--min-return", dest="min_return", type=float, default=1.0,
+                       help="floor on return, percent (default 1)")
+        p.add_argument("--favor-min", dest="favor_min", type=float, default=-5.0,
+                       help="floor on pair favor min (default -5; DB build band ±5)")
+        p.add_argument("--favor-max", dest="favor_max", type=float, default=5.0,
+                       help="ceiling on either leg's favor (default +5)")
+        p.add_argument(
+            "--favor-for", action="append", default=[], dest="favor_for",
+            metavar="TEAM=MIN:MAX",
+            help="per-team favor window in counterparty-positive units, "
+            "repeatable; either bound omittable ('TEAM=-3:' floors only, "
+            "'TEAM=:2' caps only); TEAM resolves by unique substring",
+        )
+        p.add_argument(
+            "--shape", choices=["starter>team", "team>starter"], default=None,
+            help="shape constraint: starter>team means dS > dF, team>starter the reverse",
+        )
+        p.add_argument(
+            "--top", type=int, default=5,
+            help="hedges SHOWN per team (the search itself stores the top 50)",
+        )
+        p.add_argument(
+            "--out", default="hedge-board.html",
+            help="board HTML path — ONE canonical path shared by board and "
+            "offer, so the published artifact URL stays stable",
+        )
+        p.add_argument("--json", action="store_true",
+                       help="print the payload/result as JSON")
+
+    hboard = hsub.add_parser(
+        "board",
+        help="render the hedge board from the DB — cache hits after the bake "
+        "unless the filter state changed",
+    )
+    add_hd_filters(hboard)
+    hboard.add_argument("--focus", default=None, metavar="TEAM",
+                        help="that team's card first (unique substring)")
+    hoffer = hsub.add_parser(
+        "offer",
+        help="score a proposal (REAL gate — any assets) and cross it against "
+        "the stored legs; regenerates the board with the offer pinned",
+    )
+    hoffer.add_argument("--opponent", required=True)
+    hoffer.add_argument("--give", required=True,
+                        help="comma-separated asset names you send")
+    hoffer.add_argument("--get", required=True,
+                        help="comma-separated asset names you receive")
+    add_hd_filters(hoffer)
+    hsub.add_parser(
+        "status",
+        help="DB path, size, band, fingerprints, freshness vs live Mongo, "
+        "cached-search inventory",
+    )
+
     args = ap.parse_args()
 
     db = get_db()
     snapshot, fresh = build_snapshot_from_store(db)
-    league = md.build_league(snapshot, Params())
     if fresh["last_collect"]:
         age_h = (datetime.now(timezone.utc) - fresh["last_collect"].replace(tzinfo=timezone.utc)).total_seconds() / 3600
         print(f"[data age: {age_h:.1f}h since last successful collect]\n", file=sys.stderr)
+
+    if args.cmd == "hedgedb":
+        # the hedgedb paths never build the LIVE league: boards and offers
+        # price everything from the DB's STORED snapshot (§12 "the page cannot
+        # disagree"), and `build` constructs its own league from what it stores
+        run_hedgedb(args, db, snapshot, fresh)
+        return
+
+    league = md.build_league(snapshot, Params())
 
     if args.cmd == "dashboard":
         run_dashboard(args, db, league, fresh)
