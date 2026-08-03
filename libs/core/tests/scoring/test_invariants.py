@@ -508,9 +508,10 @@ def test_pairs_v4_contract(board, params, league):
     DISTINCT counterparties sharing no assets, netting for my side EXACTLY
     0 players AND 0 picks (plus the carried Δ(active roster) ≤ 0). The pair's
     coordinates are the EXACT COMBINED ones — recomputed here from the
-    embedded cards — its verdict/floor/ceiling derive from them, and its
-    return_pct is the guaranteed floor over face Σv sent. Pairs are unique by
-    their asset multisets."""
+    embedded cards — its verdict/floor/ceiling derive from them (floor and
+    ceiling folding the §2 v8.2 pick-band swing), and its return_pct is the
+    NEUTRAL flat-Mid floor over face Σv sent (the walk's ranking key —
+    §11.17). Pairs are unique by their asset multisets."""
     pairs = board["pairs"]
     # v5 union storage: ≤ 3 heaps × quota × the five favor buckets
     assert 0 < len(pairs) <= 3 * params.pairs_per_band * (len(params.favor_band_edges) + 1)
@@ -548,7 +549,10 @@ def test_pairs_v4_contract(board, params, league):
         assert got["verdict"] == pair["verdict"] is True
         assert got["floor"] == pair["floor"]
         assert got["ceiling"] == pair["ceiling"]
-        assert got["return_pct"] == pair["return_pct"]
+        assert got["swing"] == pair["swing"]
+        # §11.17: the stored return_pct is the NEUTRAL flat-Mid maximin key
+        # the walk ranked on; the band-extended guarantee lives in floor/swing
+        assert got["return_mid_pct"] == pair["return_pct"]
         # `sent` is Σ MARKET face actually sent, unrounded; the cards display
         # rounded ints, so compare against the packages rather than the display
         # (v7.4: KTC's 2026 1.01/1.02 carry a fraction and we keep it).

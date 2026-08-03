@@ -997,7 +997,15 @@ class HedgeDB:
             fb, fs = float(self._cols["favor"][bi]), float(self._cols["favor"][si])
             fmin = fb if fb < fs else fs
             d_s, d_f = p["dS"], p["dF"]
-            floor = d_s if d_s < d_f else d_f
+            # §2 v8.2: the REPORTED interval folds the future-pick band swing;
+            # retention, order and the stored scalars stay flat Mid (§11.17)
+            sw = tr.pick_swing([
+                (self.package(int(self._cols["give_pid"][bi])),
+                 self.package(int(self._cols["get_pid"][bi]))),
+                (self.package(int(self._cols["give_pid"][si])),
+                 self.package(int(self._cols["get_pid"][si]))),
+            ])
+            floor = min(d_s, d_f + sw["down"])
             at_cap = b["sequencing"].startswith("at the roster cap")
             preferred = cn.leg_preferred(
                 compiled, b["counterparty"],
@@ -1016,10 +1024,13 @@ class HedgeDB:
                     "coords": {"dS": round(d_s, 1), "dF": round(d_f, 1)},
                     "verdict": tr.verdict_of(d_s, d_f),
                     "floor": round(floor, 1),
-                    "ceiling": round(p["ceiling"], 1),
+                    "ceiling": round(max(d_s, d_f + sw["up"]), 1),
                     "sent": round(p["sent"], 1),
-                    "return_robust": round(100.0 * p["ret"], 2),
+                    "return_robust": (
+                        round(100.0 * floor / p["sent"], 2) if p["sent"] else 0.0
+                    ),
                     "return_view": round(100.0 * p["rv"], 2),
+                    "swing": tr.swing_dict(sw, d_s, d_f),
                     "favor": {
                         "buy": round(fb, 2),
                         "sell": round(fs, 2),
@@ -1326,7 +1337,11 @@ class HedgeDB:
             )
             hcard["gate"]["verdict"] = "PASS"
             hcard["id"] = f"H{n}"
-            floor = d_s if d_s < d_f else d_f
+            # §2 v8.2: PAIR swing — the offer's packages and this hedge's
+            # together (one (year, origin) netting across all four sides);
+            # crossing, retention and order ran on flat Mid (§11.17)
+            sw = tr.pick_swing([(give, get), (give_h, get_h)])
+            floor = min(d_s, d_f + sw["down"])
             entry = {
                 "id": f"H{n}",
                 "hedge": hcard,
@@ -1334,10 +1349,13 @@ class HedgeDB:
                 "coords": {"dS": round(d_s, 1), "dF": round(d_f, 1)},
                 "verdict": tr.verdict_of(d_s, d_f),
                 "floor": round(floor, 1),
-                "ceiling": round(ceil, 1),
+                "ceiling": round(max(d_s, d_f + sw["up"]), 1),
                 "sent": round(sent, 1),
-                "return_robust": round(100.0 * ret, 2),
+                "return_robust": (
+                    round(100.0 * floor / sent, 2) if sent else 0.0
+                ),
                 "return_view": round(100.0 * rv, 2),
+                "swing": tr.swing_dict(sw, d_s, d_f),
                 "favor": {
                     "offer": round(favor_off, 2),
                     "hedge": round(fl, 2),

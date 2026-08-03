@@ -232,7 +232,10 @@ def test_offer_hedges_are_exact_complements(db):
         assert card["net_players"]["me"] == -offer_np
         assert card["net_picks"]["me"] == -offer_nk
         assert h["verdict"] is True
-        assert h["return_robust"] >= _SLIDERS["min_return"] - 1e-9
+        # §11.17: the crossing's bar binds the NEUTRAL view return; the shown
+        # robust return folds the pick-band swing and may sit below the bar
+        assert h["return_view"] >= _SLIDERS["min_return"] - 1e-9
+        assert h["return_robust"] <= h["return_view"] + 1e-9
         assert h["favor"]["min"] >= _SLIDERS["favor_min"]
 
 
@@ -266,13 +269,16 @@ def test_offer_hedges_group_by_counterparty(db):
     assert sorted(h["id"] for h in flat) == sorted(
         h["id"] for hs in by.values() for h in hs
     )
-    keys = [(-h["return_view"], -h["ceiling"]) for h in flat]
+    # §11.17: order runs on the NEUTRAL figures — view return, then the
+    # neutral ceiling recovered from coords (the shown ceiling folds the swing)
+    nceil = lambda h: max(h["coords"]["dS"], h["coords"]["dF"])
+    keys = [(-h["return_view"], -nceil(h)) for h in flat]
     assert keys == sorted(keys)  # global maximin order
     for name, hs in by.items():
         assert len(hs) <= 10  # per-team top-K
         assert len(hs) <= mb[name]
-        assert [(-h["return_view"], -h["ceiling"]) for h in hs] == sorted(
-            (-h["return_view"], -h["ceiling"]) for h in hs
+        assert [(-h["return_view"], -nceil(h)) for h in hs] == sorted(
+            (-h["return_view"], -nceil(h)) for h in hs
         )  # per-team maximin order
         for h in hs:
             assert h["hedge"]["counterparty"] == name

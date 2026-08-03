@@ -7,7 +7,10 @@ coordinates per side — ΔS (change in starter value: the max-Σv legal lineup 
 raw KTC over active + taxi) and ΔF (change in total face owned: players at KTC
 face; picks at ONE price — KTC's exact numbered slot this year, the flat Mid
 tranche beyond, the slot never estimated, v7.6) — with the derived verdict (objectively good ⟺ both ≥ 0, one
-strict), the guaranteed interval [floor, ceiling] = [min, max], and, on
+strict), the guaranteed interval [floor, ceiling] (§2 v8.2: min/max with every
+future pick additionally worst/best-cased inside KTC's published Early/Late
+band, netted per origin-year — a REPORT; prices, gate and rankings stay flat
+Mid, §11.17), and, on
 preference trades, the breakeven δ* = ΔS/(ΔS − ΔF) (§2). Plus the exact
 KTC-calculator fairness gate (§3), posture shape (§4) and sequencing (§5).
 Powers the trade-negotiator skill.
@@ -47,8 +50,9 @@ return (v4: guaranteed floor ÷ face Σv sent), `--favor-min` floors the pair's
 counterparty favorability min(f_buy, f_sell) — each leg's signed
 KTC-calculator skew in KTC's own variance units (|f| <= 5 is literally their
 calculator's FAIR window; it replaces the retired v3.4.1 per-leg market-return
-cap). The list always sorts maximin: floor-based return desc, ceiling as
-tie-break. `--target N` survives as an alias for `--min N`; omit --favor-min
+cap). The list always sorts maximin on the NEUTRAL flat-Mid figures:
+floor-based return desc, ceiling as tie-break (§11.17 — the displayed
+floor/ceiling fold the v8.2 pick-band swing and are not the ordering keys). `--target N` survives as an alias for `--min N`; omit --favor-min
 for no floor. Bucket counts are EXACT tallies when the collection walk ran to
 completion under the v5.1 sound crossing bound (it crosses legs on
 ΔF − r·Σv sent, which is exactly additive and bounds every pair's guaranteed
@@ -322,9 +326,11 @@ def alternatives(
         except Exception:  # unresolvable/degenerate variant — skip
             continue
         if card["gate"]["verdict"] == "PASS":
-            # maximin: floor desc, ceiling desc as tie-break (§2 v4)
+            # maximin: floor desc, ceiling desc as tie-break (§2 v4) — on the
+            # NEUTRAL coords (§11.17: the card's shown floor folds the v8.2
+            # pick-band swing and must never rank or select variants)
             c = card["coords"]["me"]
-            passers.append((card["floor"]["me"], max(c["dS"], c["dF"]), label, card))
+            passers.append((min(c["dS"], c["dF"]), max(c["dS"], c["dF"]), label, card))
     passers.sort(key=lambda x: (-x[0], -x[1], x[2]))
     return {
         "variants_scored": len(variants),
@@ -382,12 +388,22 @@ def fmt_coords(coords: dict) -> str:
     return f"starters {coords['dS']:+.0f} · face {coords['dF']:+.0f}"
 
 
-def fmt_verdict(coords: dict, verdict: bool, breakeven: float | None) -> str:
+def fmt_verdict(
+    coords: dict,
+    verdict: bool,
+    breakeven: float | None,
+    lo: float | None = None,
+    hi: float | None = None,
+) -> str:
     """The §2 v4 verdict line: objectively good (with the guaranteed
     interval), a preference trade (with its breakeven δ* and direction), or
-    bad for every rational preference."""
-    lo = min(coords["dS"], coords["dF"])
-    hi = max(coords["dS"], coords["dF"])
+    bad for every rational preference. `lo`/`hi` accept the §2 v8.2
+    band-extended interval (future picks worst/best inside KTC's published
+    tranches); absent, the plain maximin interval on the coords."""
+    if lo is None:
+        lo = min(coords["dS"], coords["dF"])
+    if hi is None:
+        hi = max(coords["dS"], coords["dF"])
     if verdict:
         if lo == hi:
             return f"OBJECTIVELY GOOD — gain exactly {lo:+.0f} at every rational preference"
@@ -434,11 +450,16 @@ def fmt_card(card: dict, header: str = "") -> str:
     g = card["gate"]
     p = card["posture"]
     coords = card["coords"]
+    # §2 v8.2: the card's floors fold the future-pick band swing; hand the
+    # matching extended interval to the verdict lines (them = my mirror)
+    sw = card.get("swing") or {"down": 0.0, "up": 0.0, "by_origin": []}
+    hi_me = max(coords["me"]["dS"], coords["me"]["dF"] + sw["up"])
+    hi_them = max(coords["them"]["dS"], coords["them"]["dF"] - sw["down"])
     lines = [
         header
         or (
             f"Trade with {card['counterparty']} — "
-            f"you: {fmt_verdict(coords['me'], card['verdict']['me'], card['breakeven']['me'])}"
+            f"you: {fmt_verdict(coords['me'], card['verdict']['me'], card['breakeven']['me'], card['floor']['me'], hi_me)}"
         ),
         f"  You send: {', '.join(fmt_asset(a) for a in card['give'])}",
         f"  You get:  {', '.join(fmt_asset(a) for a in card['get'])}",
@@ -446,13 +467,29 @@ def fmt_card(card: dict, header: str = "") -> str:
         f"{card['counterparty']} {fmt_coords(coords['them'])}"
         + ("  (this leg alone)" if card.get("coords_basis") == "isolation" else ""),
         f"  Their side: "
-        f"{fmt_verdict(coords['them'], card['verdict']['them'], card['breakeven']['them'])}"
+        f"{fmt_verdict(coords['them'], card['verdict']['them'], card['breakeven']['them'], card['floor']['them'], hi_them)}"
         "  (your dF prices picks conservatively — v7 §1; theirs is market face)",
         f"  Floor-based return: {card['return_pct']:g}% of the "
         f"{sum(a['v'] for a in card['give'])} face you send"
         if card.get("return_pct") is not None
         else "  Floor-based return: n/a",
     ]
+    if sw["down"] or sw["up"]:
+        origins = "; ".join(
+            f"{o['year']} picks from {o['origin']}: {o['if_strong']:+g} if they "
+            f"finish strong, {o['if_weak']:+g} if they crater"
+            for o in sw["by_origin"]
+        )
+        survives = (
+            "verdict survives the whole band"
+            if sw.get("verdict_worst")
+            else "at the band's worst edge this is no longer objectively good"
+        )
+        lines.append(
+            f"  Future-pick band (§2 v8.2): face could resolve {sw['down']:+g} to "
+            f"{sw['up']:+g} off Mid within KTC's published Early/Late tranches — "
+            f"the floor above folds the worst case ({survives}). {origins}"
+        )
     lines += [
         f"  Gate: {g['verdict']}  ·  KTC-calculator totals {g['adj_give']:.0f} you / "
         f"{g['adj_get']:.0f} them  ·  gap {g['gap']:.0f} "
@@ -680,6 +717,18 @@ def run_find(args, db, league: md.LeagueState) -> None:
         print(f"  favor: buy {f['buy']:+g} ({favor_tag(f['buy'])}) · "
               f"sell {f['sell']:+g} ({favor_tag(f['sell'])}) · "
               f"pair min {f['min']:+g} (the least-happy counterparty)")
+        swp = sp.get("swing")
+        if swp and (swp["down"] or swp["up"]):
+            origins = "; ".join(
+                f"{o['year']} picks from {o['origin']}: {o['if_strong']:+g} if "
+                f"they finish strong, {o['if_weak']:+g} if they crater"
+                for o in swp["by_origin"]
+            )
+            survives = ("verdict survives the whole band" if swp.get("verdict_worst")
+                        else "at the band's worst edge no longer objectively good")
+            print(f"  pick band (§2 v8.2): face {swp['down']:+g}/{swp['up']:+g} "
+                  f"within KTC's Early/Late tranches — folded into the "
+                  f"floor/ceiling above ({survives}). {origins}")
         for tag, card in (("BUY ", sp["buy"]), ("SELL", sp["sell"])):
             give = " + ".join(fmt_asset(a) for a in card["give"])
             get = " + ".join(fmt_asset(a) for a in card["get"])
@@ -1128,12 +1177,17 @@ def run_hedgedb_offer(args, db, snapshot, fresh) -> None:
                     hc = h["hedge"]
                     gv = " + ".join(a["name"] for a in hc["give"])
                     gt = " + ".join(a["name"] for a in hc["get"])
+                    hsw = h.get("swing") or {}
+                    band = (
+                        f" · folds pick band {hsw['down']:+g}/{hsw['up']:+g}"
+                        if hsw.get("down") or hsw.get("up") else ""
+                    )
                     print(
                         f"    {h['id']}: send {gv} → get {gt} · PAIR guaranteed "
                         f"{h['floor']:+g} · up to {h['ceiling']:+g} · floor return "
                         f"{h['return_robust']:g}% on {h['sent']:g} Σv · favor "
                         f"offer {h['favor']['offer']:+g} / hedge "
-                        f"{h['favor']['hedge']:+g}"
+                        f"{h['favor']['hedge']:+g}{band}"
                     )
             print(
                 "\nFull cards, per-leg gates and KTC links are on the "
@@ -1503,8 +1557,14 @@ def main() -> None:
             if p["return_pct"] >= lo
             and (fmin is None or p["favor"]["min"] >= fmin)
         ]
-        # maximin (§2 v4): floor-based return desc, ceiling desc as tie-break
-        hits.sort(key=lambda p: (-p["return_pct"], -p.get("ceiling", 0.0)))
+        # maximin (§2 v4): floor-based return desc, ceiling desc as tie-break —
+        # both NEUTRAL (§11.17): return_pct is stored neutral, and the tie-break
+        # recovers the neutral ceiling from coords because the doc's shown
+        # ceiling folds the v8.2 pick-band swing and is not an ordering key
+        hits.sort(key=lambda p: (
+            -p["return_pct"],
+            -max(p["coords"]["dS"], p["coords"]["dF"]),
+        ))
         buckets = board.get("bands", [])
         if args.json:
             print(json.dumps(
@@ -1601,10 +1661,17 @@ def main() -> None:
                 if fav
                 else ""
             )
+            psw = p.get("swing") or {}
+            band = (
+                f"  (folds pick band {psw['down']:+g}/{psw['up']:+g} — worst "
+                "within KTC's published tranches)"
+                if psw.get("down") or psw.get("up") else ""
+            )
             print(
                 f"\n{p['id']}  total return {p['return_pct']:g}%  guaranteed "
                 f"{p['floor']:+g} · up to {p['ceiling']:+g}"
                 f"{tail}{legs_str}  [0 players / 0 picks net · {p['fit_summary']}]"
+                f"{band}"
             )
             print(f"  BUY  {b['counterparty']:<15} {fmt_legline(b)}")
             print(f"  SELL {s['counterparty']:<15} {fmt_legline(s)}")
@@ -1699,9 +1766,17 @@ def main() -> None:
                     if h["net_players"]["me"] < 0
                     else "agreement-first on both legs"
                 )
+                # §2 v8.2: hand the pair's band-folded interval to the verdict
+                # line so it matches the extended floor return printed beside it
                 pair_verdict = fmt_verdict(
                     {"dS": pair["dS"], "dF": pair["dF"]},
                     pair["verdict"], pair["breakeven"],
+                    pair["floor"], pair["ceiling"],
+                )
+                psw = pair["swing"]
+                band = (
+                    f" · pick band {psw['down']:+g}/{psw['up']:+g} folded"
+                    if psw["down"] or psw["up"] else ""
                 )
                 print()
                 print(fmt_card(
@@ -1709,11 +1784,12 @@ def main() -> None:
                     header=f"Hedge — with {h['counterparty']}: PAIR {pair_verdict} "
                     f"({fmt_coords(pair)}) · pair floor return {pair['return_pct']:g}% on "
                     f"{pair['sent']:.0f} Σv you send (this leg's floor alone "
-                    f"{h['floor']['me']:+.0f}) · {order}",
+                    f"{h['floor']['me']:+.0f}){band} · {order}",
                 ))
     if alts:
         print(f"\nAlternatives ({alts['variants_scored']} single-tweak variants scored; "
-              f"gate-passers ranked maximin — guaranteed floor desc, ceiling tie-break):")
+              f"gate-passers ranked maximin on the flat-Mid coords — §11.17: the "
+              f"shown floors fold the pick band but never rank):")
         if not alts["gate_passers"]:
             print("  none pass the gate")
         for v in alts["gate_passers"]:

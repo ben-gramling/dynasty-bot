@@ -21,10 +21,15 @@ What the score IS (§2, v4):
   themselves and blends nothing.
 - VERDICT (objective): a spread is better for EVERY rational preference iff
   `ΔS ≥ 0 AND ΔF ≥ 0`, at least one strict. MAGNITUDE: the interval
-  `[floor, ceiling] = [min(ΔS, ΔF), max(ΔS, ΔF)]` — the floor is the
-  guaranteed gain. RANKING (maximin): floor desc, ceiling desc, ids. A spread
-  failing one coordinate is a PREFERENCE trade and carries the derived
-  breakeven `δ* = ΔS / (ΔS − ΔF)` — labeled, never recommended.
+  `[floor, ceiling]` — §2 v8.2: `[min(ΔS, ΔF + down), max(ΔS, ΔF + up)]`
+  with `(down, up)` the pick-band swing (`pick_swing`: future picks
+  worst/best-cased inside KTC's published Early/Late tranches, netted per
+  origin-year; zero when no future pick crosses) — the floor is the
+  guaranteed gain within KTC's published band. RANKING (maximin): NEUTRAL
+  flat-Mid floor desc, ceiling desc, ids — the swing is a report and never
+  an ordering key (§11.17). A spread failing one coordinate is a PREFERENCE
+  trade and carries the derived breakeven `δ* = ΔS / (ΔS − ΔF)` — labeled,
+  never recommended.
 - Both coordinates are PER SIDE. §1 v7.5: `v` and `v_me` COINCIDE for every
   asset — the v7 lens split collapsed when the one §3.2 price became a future
   pick's only number (v7.6: flat Mid — no forecast band survives for the gate
@@ -96,7 +101,7 @@ from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from heapq import heappush, heappushpop
 from itertools import combinations
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from core.scoring import ktc_adjust as ka
 from core.scoring import ktc_fast as kf
@@ -335,6 +340,60 @@ def coords_delta(
     return index.coords_delta(out4, in4, d_face)
 
 
+def pick_swing(legs: Sequence[tuple[Package, Package]]) -> dict:
+    """§2 v8.2: how far MY side's ΔF can move off the flat-Mid convention if
+    every unknown future slot resolves inside KTC's PUBLISHED Early/Mid/Late
+    band — `down` ≤ 0 the worst case (my sends land Early, my gets Late),
+    `up` ≥ 0 the mirror best. Netted by (year, origin): one origin team's
+    finish decides the slot of ALL its picks that year, so same-group picks on
+    opposite sides cancel exactly, and each independent group is worst-cased
+    over {Early, Mid, Late} (Mid = 0, so a group that cannot hurt me
+    contributes nothing to `down`). Current-year picks have a known slot and
+    no swing (`mv_hi == mv_lo`).
+
+    FIREWALL (§11.17): this is a REPORT. Prices, the gate, the verdict, the
+    stored pools and every ranking/selection key stay on flat Mid — the swing
+    only widens the disclosed interval. Feeding it to any of those re-creates
+    v7.5's seat-asymmetric pessimism and its measured frontier collapse."""
+    groups: dict[tuple[int, int], list] = {}
+    for give, get in legs:
+        for sign, pkg in ((-1.0, give), (1.0, get)):
+            for a in pkg.assets:
+                p = a.pick
+                if p is None or p.mv_hi == p.mv_lo:
+                    continue
+                g = groups.setdefault(
+                    (p.year, p.origin_rid), [0.0, 0.0, p.origin_name]
+                )
+                g[0] += sign * (p.mv_hi - p.mv)  # origin finishes weak: Early
+                g[1] += sign * (p.mv_lo - p.mv)  # origin finishes strong: Late
+    down = sum(min(e, l, 0.0) for e, l, _ in groups.values())
+    up = sum(max(e, l, 0.0) for e, l, _ in groups.values())
+    by_origin = [
+        {"year": y, "origin": name,
+         "if_weak": round(e, 1), "if_strong": round(l, 1)}
+        for (y, _rid), (e, l, name) in groups.items()
+    ]
+    by_origin.sort(
+        key=lambda d: (-max(abs(d["if_weak"]), abs(d["if_strong"])),
+                       d["year"], d["origin"])
+    )
+    return {"down": down, "up": up, "by_origin": by_origin}
+
+
+def swing_dict(sw: Mapping, d_s: float, d_f: float) -> dict:
+    """The serialized swing block every card/spread carries (§2 v8.2):
+    rounded scenario bounds, the per-origin audit lines, and whether the §2
+    verdict SURVIVES the band's worst edge — a disclosure recomputed with
+    `verdict_of`, never the verdict itself."""
+    return {
+        "down": round(sw["down"], 1),
+        "up": round(sw["up"], 1),
+        "by_origin": sw["by_origin"],
+        "verdict_worst": verdict_of(d_s, d_f + sw["down"]),
+    }
+
+
 def combined_coords(
     league: md.LeagueState, legs: Sequence[tuple[Package, Package]]
 ) -> dict:
@@ -343,24 +402,34 @@ def combined_coords(
     ΔS is one combined re-solve (the legs interact through the starting
     lineup — never the sum of the legs' isolation ΔSs); ΔF is additive.
     `return_pct` is the §5 v4 floor-based return: guaranteed floor ÷ Σ face v
-    I send across both legs."""
+    I send across both legs. §2 v8.2: `floor`/`ceiling` fold the future-pick
+    band swing (worst/best inside KTC's published tranches — `pick_swing`);
+    the verdict, `dS`/`dF` and every ranking stay on flat Mid."""
     me_t = league.teams[league.me]
     d_s, d_f = coords_delta(
         team_index(me_t), [g for g, _ in legs], [t for _, t in legs]
     )
     sent = sum(g.v_sum for g, _ in legs)
-    floor = min(d_s, d_f)
+    sw = pick_swing(legs)
+    floor = min(d_s, d_f + sw["down"])
     return {
         "dS": round(d_s, 1),
         "dF": round(d_f, 1),
         "verdict": verdict_of(d_s, d_f),
         "floor": round(floor, 1),
-        "ceiling": round(max(d_s, d_f), 1),
+        "ceiling": round(max(d_s, d_f + sw["up"]), 1),
         "breakeven": (
             round(b, 4) if (b := breakeven_of(d_s, d_f)) is not None else None
         ),
         "sent": round(sent, 1),
         "return_pct": round(100.0 * floor / sent, 2) if sent > 0 else None,
+        # §11.8b(e): the NEUTRAL flat-Mid maximin return — the key every
+        # stored ranking/selection runs on (the walk's `ret`); `return_pct`
+        # above is the band-extended guarantee (§2 v8.2 report)
+        "return_mid_pct": (
+            round(100.0 * min(d_s, d_f) / sent, 2) if sent > 0 else None
+        ),
+        "swing": swing_dict(sw, d_s, d_f),
     }
 
 
@@ -622,7 +691,12 @@ def build_card(
     opp_t = league.teams[opp_name]
     ds_me, df_me = coords_delta(team_index(me_t), [give], [get])
     ds_them, df_them = coords_delta(team_index(opp_t), [get], [give], mine=False)
-    floor_me, floor_them = min(ds_me, df_me), min(ds_them, df_them)
+    # §2 v8.2: the guaranteed floors fold the future-pick band swing. The
+    # swing is computed from MY seat; theirs is its exact mirror (one price
+    # vector, opposite signs), so their worst case is my best: −up.
+    sw = pick_swing([(give, get)])
+    floor_me = min(ds_me, df_me + sw["down"])
+    floor_them = min(ds_them, df_them - sw["up"])
     gate = gate_info(league, give, get)
     verdicts = leg if leg is not None else legality(league, me_t, opp_t, give, get)
     gate["legal"] = verdicts["legal"]
@@ -684,9 +758,12 @@ def build_card(
             "me": verdict_of(ds_me, df_me),
             "them": verdict_of(ds_them, df_them),
         },
-        # §2 v4 guaranteed floor min(ΔS, ΔF) — the worst case over every
-        # rational preference
+        # §2 v4+v8.2 guaranteed floor — the worst case over every rational
+        # preference AND every in-band slot outcome for future picks
+        # (min(ΔS, ΔF + swing.down); theirs mirrored)
         "floor": {"me": round(floor_me, 1), "them": round(floor_them, 1)},
+        # §2 v8.2 the band-swing disclosure (my seat) — report, never a price
+        "swing": swing_dict(sw, ds_me, df_me),
         # §2 v4 breakeven δ* — only on preference trades (verdict false, one
         # coordinate positive); null everywhere else
         "breakeven": {
@@ -2292,9 +2369,10 @@ def trade_board(league: md.LeagueState) -> dict:
                 "id": f"P{n}",
                 "buy": b,
                 "sell": s,
-                # §5 v4 robust floor-based TOTAL return: guaranteed floor ÷
-                # Σ face v I send across both legs — the floor dial's robust
-                # key and the primary sort key
+                # §5 v4 robust floor-based TOTAL return on the NEUTRAL
+                # flat-Mid floor — the floor dial's robust key and the primary
+                # sort key (§11.17: the band swing never enters a ranking key;
+                # the doc's `floor`/`ceiling` below carry the extended report)
                 "return_pct": round(100.0 * ret, 2),
                 "favor": {
                     "buy": fav_b,
@@ -2309,6 +2387,7 @@ def trade_board(league: md.LeagueState) -> dict:
                 "verdict": combined["verdict"],
                 "floor": combined["floor"],
                 "ceiling": combined["ceiling"],
+                "swing": combined["swing"],
                 "sent": combined["sent"],
                 "net_roster": b["net_roster"]["me"] + s["net_roster"]["me"],
                 "net_players": np_pair,  # exactly 0 by construction (§5 v3.2)

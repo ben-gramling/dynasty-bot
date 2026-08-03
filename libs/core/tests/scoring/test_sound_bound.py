@@ -304,8 +304,15 @@ def test_finder_matched_set_equals_brute_force_crossing_11_13a(
     for s in r["spreads"]:
         got = brute[_ident_spread(s)]
         assert s["coords"] == {"dS": round(got["dS"], 1), "dF": round(got["dF"], 1)}
-        assert s["floor"] == round(got["floor"], 1)
-        assert s["return_robust"] == round(100.0 * got["ret"], 2)
+        # §11.17: the walk's figures are the brute force's NEUTRAL ones —
+        # return_view carries them; the shown floor/robust return fold the §2
+        # v8.2 pick-band swing and can only sit at or below the neutral key
+        assert s["return_view"] == round(100.0 * got["ret"], 2)
+        assert s["floor"] == pytest.approx(
+            min(got["dS"], got["dF"] + s["swing"]["down"]), abs=0.11
+        )
+        assert s["floor"] <= round(got["floor"], 1)
+        assert s["return_robust"] <= s["return_view"] + 1e-9
     # the exactness claim discriminates: starve the budget and it flips
     starved = md.build_league(league.snapshot, Params(finder_cross_budget=50))
     r2 = fd.find_spreads(starved, query, cache_dir=cache_dir)
@@ -428,9 +435,16 @@ def test_complementary_pair_the_old_prune_dropped_11_13c(
     ranked = [_ident_spread(sp) for sp in found["spreads"]]
     assert ranked.index(want) == 167
     hit = found["spreads"][167]
-    assert hit["return_robust"] == 10.25
+    # §11.17: the ranking/selection return is the NEUTRAL one (return_view);
+    # the shown robust return follows the §2 v8.2 band-folded floor
+    assert hit["return_view"] == 10.25
+    assert hit["return_robust"] == 8.84
     assert hit["coords"] == {"dS": 2629.0, "dF": 2708.1}
-    assert hit["floor"] == 2629.0 and hit["verdict"] is True
+    assert min(hit["coords"]["dS"], hit["coords"]["dF"]) == 2629.0
+    assert hit["floor"] == pytest.approx(
+        min(2629.0, 2708.1 + hit["swing"]["down"]), abs=0.11
+    )
+    assert hit["verdict"] is True
 
 
 # ------------------------------------------------- (d) nothing may vanish
