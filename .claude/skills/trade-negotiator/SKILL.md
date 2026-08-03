@@ -199,8 +199,11 @@ filter fast, board always.
    end-to-end). One card per team — posture, holes, picks, FAAB — over their
    best count-neutral hedges with both legs' packages, per-leg gate numbers,
    KTC deep links, sequencing. Publish with the **Artifact tool**; keep ONE
-   file path all session — board and offer regenerations reuse it, so the
-   user's link stays live.
+   board file path all session — board regenerations reuse it, so the
+   user's link stays live. (v8.1: the PINNED-OFFER page is a SECOND,
+   separate artifact at its own stable path — `<scratch>/hedge-offer.html`
+   — created only when a received offer is accept-worthy; offer mode never
+   rewrites the board. See the pinned-offer-mode section.)
 
    - The page renders from the DB's STORED snapshot, never live Mongo — its
      cards can never disagree with its coordinates. TWO red banners exist:
@@ -260,6 +263,60 @@ budget with `exact: false` and "≥ N" counts. Say which one happened (the
 payload's `exact`/`bar_raised` say it); never present a saturated search as
 proof of absence.
 
+## Pinned offer mode (v8.1) — the received-offer workflow
+
+When the user brings an offer to score ("Colin offered me Henderson and two
+2027 2nds for Jeanty and my 2027 R4"), scoring it is step one of a WORKFLOW,
+not a one-shot answer. One command runs the whole first step —
+`hedgedb offer --opponent X --give ... --get ...` scores the trade exactly
+as given AND writes the pinned-offer page — and OFFERED intel gets logged
+with both sides, as always.
+
+1. **Verdict first, always.** Report: the gate verdict on the RECEIVED
+   basis (a remaining FAIL names the rule and means you'd overpay on their
+   own calculator, or the roster is illegal; "PASS (received basis —
+   waived: …)" books — quote the waived list as their generosity), OUR
+   verdict and interval ("objectively good, guaranteed +X up to +Y" /
+   preference trade with its δ* and direction / bad at every preference),
+   THEIR own coords and verdict, posture fit. Close with a recommendation:
+   **ACCEPT** (and hedge), **COUNTER** (fix the failing rule via
+   `score --alternatives`, shapes consistent with X's revealed wants), or
+   **DECLINE**.
+2. **Accept ⇒ enter pinned offer mode.** The offer becomes the pinned trade
+   we plan to execute, and the session's goal narrows to finding its hedge.
+   Publish the offer page as its OWN artifact — separate from the board's,
+   ONE offer path for the whole mode (`--out <scratch>/hedge-offer.html`,
+   scratch like the board — never the repo root) so its link stays live.
+   The page: the offer pinned atop with the gate verdict loud, then
+   one card per REMAINING counterparty (the offerer has no card — their
+   trade is the pin) with its EXACT hedge set against this offer. Pair
+   figures are both legs applied together; per-team matched tallies are
+   exact when the crossing completed — a team at zero is a PROVEN answer,
+   brief it as fact; teams sort by best pair floor return; every row
+   carries the hedge leg's gate numbers plus hedge-leg and whole-pair KTC
+   links. In JSON, `by_team` / `counts.matched_by_team` are the same view.
+3. **The narrowing loop.** Work the per-counterparty buckets down with the
+   user exactly like the board loop: every narrowing utterance maps to
+   intel (persistent) and/or flags (session-scoped) — *"Drew doesn't want
+   Stefon Diggs"* → DONT_WANT intel (subject `Stefon Diggs`, team
+   `DrewR87`) or ad-hoc `--exclude "DrewR87 receives Stefon Diggs"` — then
+   re-run `hedgedb offer` with the SAME `--opponent/--give/--get` plus the
+   COMPLETE current flag set, and republish the same artifact. Regens are
+   cheap by design: no per-team searches, one crossing each (offer
+   crossings don't cache — relay the page's own exact/floors line every
+   time). Iterate until one hedge stands.
+4. **Exit.** A hedge chosen ⇒ quote the PAIR verdict and interval
+   ("guaranteed +X, up to +Y on Z sent"), each leg's favor tag, and the
+   sequencing (§5: the pair nets exactly 0 players / 0 picks; sell-side
+   executes first at the cap) — then it's execution, and the mode retires.
+   So does a dead pin (the user declines after all, or X pulls the offer):
+   say which happened. After any executed leg the world changed: `just
+   collect` + `hedgedb build` before the next board or offer.
+
+Offers we would NOT accept never enter the mode — counter or decline with
+numbers. The engine still computes their "if you took it anyway" hedges;
+mention them only if the user is tempted anyway.
+
 ## Tools
 
 ```
@@ -293,11 +350,20 @@ uv run python scripts/score_trade.py find \
   that team's LEG favor (counterparty-positive units; omit either bound).
   Band limits: the DB serves |favor| ≤ 5 only — outside needs a rebuild at a
   wider band, and the tools raise rather than silently emptying.
+  `offer` writes the PINNED-OFFER page (v8.1) to its OWN default `--out`,
+  `hedge-offer.html` — hedges per counterparty (`by_team` +
+  `counts.matched_by_team` in `--json`), the board file untouched; `--top`
+  is the per-team display slice on both pages.
 - `find`/`score`/`pairs` remain the OFF-DATABASE tools: preference trades,
   δ-view exploration below the board's floor, `--legs`-style structural
   queries, and one-off scoring (`score` still runs the old `--hedge` with
-  its ≤2-asset heuristic — prefer `hedgedb offer`, which has no such cap and
-  proves absence when a complement signature is empty).
+  its ≤2-asset heuristic — for RECEIVED offers prefer `hedgedb offer`,
+  which has no such cap, proves absence when a complement signature is
+  empty, and applies the correct received basis. For legs WE draft the
+  verdict must come from `score` — strict basis; `hedgedb offer` would
+  waive violations as if they had proposed it and would write the offer
+  page — though its wider crossing may still be borrowed as a hedge
+  SEARCH, its verdict line ignored).
 
 - `pairs --min FLOOR --favor-min F`: the STORED board behind the dials (same
   engine code path as the nightly run) — prints the favor-bucket inventory,
@@ -419,30 +485,26 @@ uv run python scripts/score_trade.py find \
 - **"X wants/is hunting Y"** → log intel (+ posture override if directional),
   then design 2-3 gate-passing offers shaped to Y from our inventory, scored,
   best-first, each with the anchor ask (+8%) as the opening number.
-- **"X offered me A for B"** → log OFFERED with both sides; then
-  `hedgedb offer --opponent X --give ... --get ...` (v8): it scores the trade
-  exactly as given (REAL gate verdict — a FAIL names the rule: band, fleece
-  ratio, legality), crosses it against the stored legs of every other
-  counterparty for its exact hedge set (no asset-count cap — a +1P/+1K offer
-  needs 3-asset gives by arithmetic and the DB holds them), and regenerates
-  the board with X focused first and the offer pinned. Republish the SAME
-  artifact path. Report: gate verdict first, our verdict/interval, THEIR
-  coords, then the hedges — or the proven absence: an empty complement
-  signature is a THEOREM about the fair band ("no fair gate-clean 3-for-1
-  onto our side exists league-wide"), quote it as one. A count-neutral offer
-  says so and stands alone. Offers re-verdict on the RECEIVED basis
-  (v8.0.2): "PASS (received basis — waived: …)" means the only gate
-  violations run in YOUR favor — the trade books, quote the waived list as
-  their generosity; a remaining FAIL means you'd overpay on their own
-  calculator (or the roster is illegal) and still shows hedges labeled "if
-  you took it anyway" — the counter usually lives there: fix the failing
-  rule via `score --alternatives`, keeping shapes consistent with X's
-  revealed wants; present accept / counter / decline with numbers.
+- **"X offered me A for B" / "score this trade" (the trade is a RECEIVED
+  offer)** → the §Pinned-offer-mode workflow above, start to finish: log
+  OFFERED with both sides, run `hedgedb offer`, verdict first, and enter
+  pinned offer mode only on ACCEPT. The engine facts that shape the read:
+  the crossing has no asset-count cap (a +1P/+1K offer needs 3-asset gives
+  by arithmetic and the DB holds them); an empty complement signature is a
+  THEOREM about the fair band ("no fair gate-clean 3-for-1 onto our side
+  exists league-wide") — quote it as one; a count-neutral offer says so and
+  stands alone. Offers re-verdict on the RECEIVED basis (v8.0.2): "PASS
+  (received basis — waived: …)" means the only gate violations run in YOUR
+  favor — the trade books, quote the waived list as their generosity; a
+  remaining FAIL means you'd overpay on their own calculator (or the roster
+  is illegal), and the counter usually lives in `score --alternatives`.
   **Generous offers hedge too (v8.0.1):** the favor window binds only the
   HEDGE legs — an offer's own favor, however lopsided toward us, never
   filters the hedge search (they already made it; politeness filters exist
   for legs WE propose). Each hedge still discloses favor.offer/min.
-- **"Score this trade"** → run it; report OUR verdict first (objectively
+- **"Score this trade" (a trade WE are drafting — not an offer received)**
+  → `score` (strict gate basis — no received-basis waivers on legs we
+  originate); report OUR verdict first (objectively
   good with the guaranteed interval "between +X and +Y" / preference trade
   with its δ* and direction / bad at every preference), our coordinates
   (`starters +X · face +Y`), THEIR own verdict and coordinates (dF negates,

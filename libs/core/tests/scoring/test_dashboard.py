@@ -374,17 +374,15 @@ def test_constraints_in_effect_block(hdb, db_results):
     assert "ad-hoc query constraint" in page2
 
 
-def test_offer_pins_on_the_focused_team(hdb, db_results):
-    """A real `HedgeDB.offer` (built from a pool leg's own packages, so it is
-    gate-clean by construction) pins onto the focused team's card: verdict
-    loud, then its hedges as disclosure rows with calculator links."""
+def test_pinned_offer_page(hdb):
+    """v8.1: a real `HedgeDB.offer` (built from a pool leg's own packages, so
+    it is gate-clean by construction) renders as its OWN page — the offer
+    pinned at the top, then one card per REMAINING counterparty with its
+    hedge set (the offerer absent), every row carrying a hedge-leg link and
+    a whole-pair link, best team first."""
     buckets = hdb.buckets()
-    names = set(db_results)
     sig = (1, -1) if (1, -1) in buckets else sorted(buckets)[0]
-    li = next(
-        int(i) for i in buckets[sig]
-        if hdb.opp_names[int(hdb._cols["opp"][i])] in names
-    )
+    li = int(buckets[sig][0])
     give = hdb.package(int(hdb._cols["give_pid"][li]))
     get = hdb.package(int(hdb._cols["get_pid"][li]))
     opp = hdb.opp_names[int(hdb._cols["opp"][li])]
@@ -393,21 +391,62 @@ def test_offer_pins_on_the_focused_team(hdb, db_results):
         query=_DB_QUERY, intel=(),
     )
     assert res["hedges"], "a (1,-1) pool leg must cross at the 1% floor"
-    p = _db_payload(hdb, db_results, focus=opp, offer=res)
-    assert p["teams"][0]["name"] == opp
-    o = p["offer"]
-    assert o["card"]["counterparty"] == opp
-    assert o["hedges"] and all("links" in h for h in o["hedges"])
-    assert len(o["hedges"]) <= _DB_SLIDERS["top"]  # display slice
+    p = dash.offer_payload(
+        hdb, res, sliders=_DB_SLIDERS, generated_at="2026-08-03 12:00 UTC",
+        data_age="0.1h old", data_age_hours=0.1,
+    )
+    assert p["mode"] == "offer"
+    assert p["offer"]["card"]["counterparty"] == opp
+    names = [t["name"] for t in p["teams"]]
+    assert opp not in names and hdb.league.me not in names
+    assert set(names) == {n for n in hdb.opp_names if n != opp}
+    assert names == list(res["by_team"])  # best team first, empties trailing
+    mb = res["counts"]["matched_by_team"]
+    for t in p["teams"]:
+        assert len(t["hedges"]) <= _DB_SLIDERS["top"]  # display slice
+        assert t["counts"]["matched"] == mb[t["name"]]
+        for h in t["hedges"]:
+            assert h["hedge"]["counterparty"] == t["name"]
+            assert set(h["links"]) == {"hedge", "pair"}
     page = dash.render_html(p)
     assert "Pinned offer" in page
     assert "GATE PASS" in page  # a pool leg passed the real gate at build time
-    assert page.count('<details class="hedge offer-hedge">') == len(o["hedges"])
-    for h in o["hedges"]:
-        assert h["hedge"]["counterparty"] != opp
-    # the pin sits at the top of the focused section, before any ordinary row
-    if '<details class="hedge">' in page:
-        assert page.index("Pinned offer") < page.index('<details class="hedge">')
+    shown = sum(len(t["hedges"]) for t in p["teams"])
+    assert page.count('<details class="hedge offer-hedge">') == shown
+    assert page.count('<details class="hedge">') == 0  # no board rows here
+    assert "Hedge board" not in page  # its own page, not a board with a pin
+    assert page.index("Pinned offer") < page.index(
+        '<details class="hedge offer-hedge">'
+    )
+    nonempty = [t for t in p["teams"] if t["hedges"]]
+    assert nonempty and nonempty[0]["hedges"][0]["id"] == "H1"
+
+
+def test_pinned_offer_page_count_neutral(hdb):
+    """v8.1: an offer that never crossed (count-neutral) has no team cards —
+    the pin and its disclosure note ARE the page."""
+    import core.scoring.trades as tr
+
+    league = hdb.league
+    me = league.teams[league.me]
+    opp = sorted(n for n in league.teams if n != league.me)[0]
+    mine = [a for a in tr.team_assets(league, me).values() if a.kind == "player"]
+    theirs = [
+        a for a in tr.team_assets(league, league.teams[opp]).values()
+        if a.kind == "player"
+    ]
+    res = hdb.offer(opp, [mine[0].name], [theirs[0].name], query=_DB_QUERY, intel=())
+    p = dash.offer_payload(
+        hdb, res, sliders=_DB_SLIDERS, generated_at="2026-08-03 12:00 UTC",
+        data_age="0.1h old", data_age_hours=0.1,
+    )
+    assert p["teams"] == [] and p["totals"]["teams"] == 0
+    page = dash.render_html(p)
+    assert "count-neutral" in page
+    assert page.count('<details class="hedge offer-hedge">') == 0
+    # count honesty: no crossing ran, so the footer must not claim one
+    assert "crossing visited every eligible" not in page
+    assert "No hedge crossing ran" in page
 
 
 def test_db_provenance_line_and_bar_raised_tally(hdb, db_results):

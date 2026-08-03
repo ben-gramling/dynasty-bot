@@ -181,8 +181,11 @@ anything shed by precedence — silent replacement is visible.
 from (red > 6 h) AND a red "Mongo has a newer collect — rebuild before you
 quote" banner when live data moved past the DB. Never auto-rebuilds.
 
-**One canonical out path** shared by board and offer (offer regenerates THE
-board file) so the published artifact URL stays stable all session.
+**One canonical out path PER VIEW** (v8.1): the board keeps
+`hedge-board.html`; offer mode writes its own page at `hedge-offer.html`
+and never touches the board file — each published artifact URL stays
+stable all session. (Pre-v8.1 the offer regenerated THE board file with
+the offer pinned onto the focused card; that pin is gone.)
 
 ## 5. Offer mode (`hedgedb offer --opponent X --give "..." --get "..."`)
 
@@ -216,8 +219,24 @@ board file) so the published artifact URL stays stable all session.
    waives. Verdict reads "PASS (received basis — waived: …)"; the original
    verdict + waived list stay on the card (`gate.origin_verdict`,
    `gate.waived`). `score` keeps the strict basis for trades we draft.
-5. Board regenerated: counterparty focused first, offer card pinned with the
-   gate verdict loud.
+5. **The pinned-offer page (v8.1)** — its own dashboard, never a board
+   regen: the offer pinned at the top of the PAGE with the gate verdict
+   loud, then one card per REMAINING counterparty carrying its exact hedge
+   set against this offer (the offerer has no card — their trade is the
+   pin). The engine keeps the top-K PER COUNTERPARTY (`by_team`; the flat
+   maximin list rides alongside — the union of per-team top-Ks contains
+   everything the old global heap kept, though rounded-key ties at the old
+   cutoff may order differently) plus the crossing's full per-team tallies
+   (`counts.matched_by_team`), so each card's count honesty is exact
+   whenever the crossing completed and a team at zero is a proven answer.
+   Teams order best-pair-floor-return-first (first appearance in the flat
+   maximin list: rounded view-return, ceiling tie-break — a numeric
+   `--delta` ranks by its labeled view), hedge-less teams trail
+   alphabetically. Rows are pair disclosures — hedge-leg card, its own
+   gate, a hedge-leg KTC link and a whole-pair link (same what-if caveats
+   as the board's spread link). Built from the offer result alone — no
+   per-team searches — so a filter-tweak regen costs one crossing. The
+   board file is untouched (its own canonical path, §4).
 
 ## 6. Change map
 

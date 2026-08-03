@@ -48,3 +48,6 @@ playwright-report/
 
 # Misc
 *.log
+
+# Generated hedge pages (board/offer default --out; the skill uses scratch paths)
+/hedge-*.html

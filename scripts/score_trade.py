@@ -896,11 +896,40 @@ def db_data_age(hddb, fresh) -> tuple[str | None, float | None]:
     return f"{hours:.1f}h old", hours
 
 
-def hedgedb_board_payload(args, db, snapshot, fresh, hddb, *, focus=None, offer_result=None):
-    """One `db.search` per counterparty (cache hits after the bake unless the
-    filter state changed) assembled into the v8 board payload."""
+def hd_sliders(args, query) -> dict:
+    """The display-slider echo both hedge-DB pages carry (the search itself
+    runs at the DB's stored depth; `--top` is the display slice)."""
+    return {
+        "delta": query["delta"],
+        "min_return": args.min_return,
+        "favor_min": args.favor_min,
+        "favor_max": args.favor_max,
+        "favor_for": query["favor_for"],
+        "shape": args.shape,
+        "top": args.top,
+        "use_intel": not args.no_intel,
+        "use_posture": not args.no_posture,
+    }
+
+
+def hd_freshness(snapshot, fresh, hddb):
+    """The two freshness axes every hedge-DB page shows: snapshot age, and
+    whether the live collect moved past the DB's content fingerprint."""
     from core.scoring import hedgedb as hd
 
+    age, age_hours = db_data_age(hddb, fresh)
+    mongo_newer = hd.content_fingerprint(snapshot) != hddb.meta["content_fingerprint"]
+    if mongo_newer:
+        _say(
+            "WARNING: the collector has newer data than this DB — the page "
+            "will say so in red; run `hedgedb build` before quoting"
+        )
+    return age, age_hours, mongo_newer
+
+
+def hedgedb_board_payload(args, db, snapshot, fresh, hddb, *, focus=None):
+    """One `db.search` per counterparty (cache hits after the bake unless the
+    filter state changed) assembled into the v8 board payload."""
     league = hddb.league
     intel = [] if args.no_intel else read_intel(db)
     query = hedgedb_query(args, hddb, league)
@@ -918,30 +947,12 @@ def hedgedb_board_payload(args, db, snapshot, fresh, hddb, *, focus=None, offer_
             + ("" if res["exact"] else " (budget-truncated)")
         )
         results[opp] = res
-    age, age_hours = db_data_age(hddb, fresh)
-    mongo_newer = hd.content_fingerprint(snapshot) != hddb.meta["content_fingerprint"]
-    if mongo_newer:
-        _say(
-            "WARNING: the collector has newer data than this DB — the board "
-            "will say so in red; run `hedgedb build` before quoting"
-        )
-    sliders = {
-        "delta": query["delta"],
-        "min_return": args.min_return,
-        "favor_min": args.favor_min,
-        "favor_max": args.favor_max,
-        "favor_for": query["favor_for"],
-        "shape": args.shape,
-        "top": args.top,
-        "use_intel": not args.no_intel,
-        "use_posture": not args.no_posture,
-    }
+    age, age_hours, mongo_newer = hd_freshness(snapshot, fresh, hddb)
     return dash.db_payload(
         hddb,
         results,
-        sliders=sliders,
+        sliders=hd_sliders(args, query),
         focus=focus,
-        offer=offer_result,
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         mongo_newer=mongo_newer,
         data_age=age,
@@ -1026,11 +1037,14 @@ def run_hedgedb_board(args, db, snapshot, fresh) -> None:
 
 
 def run_hedgedb_offer(args, db, snapshot, fresh) -> None:
-    """`hedgedb offer`: score the proposal with the REAL gate (any assets —
-    cornerstones, taxi, >3 pieces all scoreable), cross it against the stored
-    legs of every other counterparty, then regenerate THE board file with the
-    opponent focused and the offer pinned (same canonical --out path, so the
-    published artifact URL stays stable)."""
+    """`hedgedb offer` (v8.1 pinned-offer mode): score the proposal with the
+    REAL gate (any assets — cornerstones, taxi, >3 pieces all scoreable),
+    cross it against the stored legs of every other counterparty, and write
+    the PINNED-OFFER page — the offer atop one card per remaining
+    counterparty with its exact hedge set. Its own canonical --out path
+    (hedge-offer.html); the board file is never touched, so both published
+    artifact URLs stay stable. No per-team searches run: the page is a view
+    over the one crossing, so regenerating per filter tweak is fast."""
     hddb = open_hedgedb(snapshot)
     league = hddb.league
     match = [n for n in league.teams if n.lower() == args.opponent.lower()] or [
@@ -1086,27 +1100,45 @@ def run_hedgedb_offer(args, db, snapshot, fresh) -> None:
         hedges = res["hedges"]
         if hedges:
             label = (
-                "Hedges (pair coordinates are EXACT combined — both legs applied "
-                "together; ranked maximin):"
-                if verdict == "PASS"
-                else "Hedges — IF YOU TOOK IT ANYWAY (this offer FAILS the gate; "
-                "the hedges below assume you executed it regardless):"
+                "Hedges by counterparty (pair figures are EXACT combined — the "
+                "offer and the hedge applied together; ranked maximin, best "
+                f"team first; your offer is the {hedges[0]['offer_side']} side):"
+                if verdict.startswith("PASS")
+                else "Hedges by counterparty — IF YOU TOOK IT ANYWAY (this offer "
+                "FAILS the gate; every hedge below assumes you executed it "
+                f"regardless; your offer is the {hedges[0]['offer_side']} side):"
             )
             print(f"\n{label}")
-            for h in hedges[: args.top]:
-                hc = h["hedge"]
-                print()
-                print(fmt_card(
-                    hc,
-                    header=(
-                        f"{h['id']} — with {hc['counterparty']}: PAIR guaranteed "
-                        f"{h['floor']:+g} · up to {h['ceiling']:+g} (pair floor return "
-                        f"{h['return_robust']:g}% on {h['sent']:g} Σv you send) · "
-                        f"favor offer {h['favor']['offer']:+g} / hedge "
-                        f"{h['favor']['hedge']:+g} · your offer is the "
-                        f"{h['offer_side']} side"
-                    ),
-                ))
+            exact = res.get("exact", True)
+            mb = (res.get("counts") or {}).get("matched_by_team") or {}
+            for name, hs in (res.get("by_team") or {}).items():
+                if not hs:
+                    print(
+                        f"\n  {name}: "
+                        + (
+                            "none exist among its stored legs"
+                            if exact
+                            else "none found within budget"
+                        )
+                    )
+                    continue
+                tally = f"{mb.get(name, 0):,}" + ("" if exact else "+")
+                print(f"\n  {name} — {tally} matched, best {len(hs[:args.top])}:")
+                for h in hs[: args.top]:
+                    hc = h["hedge"]
+                    gv = " + ".join(a["name"] for a in hc["give"])
+                    gt = " + ".join(a["name"] for a in hc["get"])
+                    print(
+                        f"    {h['id']}: send {gv} → get {gt} · PAIR guaranteed "
+                        f"{h['floor']:+g} · up to {h['ceiling']:+g} · floor return "
+                        f"{h['return_robust']:g}% on {h['sent']:g} Σv · favor "
+                        f"offer {h['favor']['offer']:+g} / hedge "
+                        f"{h['favor']['hedge']:+g}"
+                    )
+            print(
+                "\nFull cards, per-leg gates and KTC links are on the "
+                "pinned-offer page."
+            )
         elif not res.get("note"):
             print(
                 "\nNo stored hedge clears the sliders against this offer — loosen "
@@ -1114,9 +1146,16 @@ def run_hedgedb_offer(args, db, snapshot, fresh) -> None:
                 "candidates died)."
             )
 
-    _say("\nregenerating the hedge board (opponent focused, offer pinned) …")
-    payload = hedgedb_board_payload(
-        args, db, snapshot, fresh, hddb, focus=opp_name, offer_result=res
+    _say("\nwriting the pinned-offer page (the offer atop per-counterparty hedge sets) …")
+    age, age_hours, mongo_newer = hd_freshness(snapshot, fresh, hddb)
+    payload = dash.offer_payload(
+        hddb,
+        res,
+        sliders=hd_sliders(args, query),
+        generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        mongo_newer=mongo_newer,
+        data_age=age,
+        data_age_hours=age_hours,
     )
     out = Path(args.out)
     out.write_text(dash.render_html(payload), encoding="utf-8")
@@ -1327,8 +1366,9 @@ def main() -> None:
         "per-counterparty board; `board` renders the hedge board from the DB "
         "(cache hits unless the filter state is new); `offer` scores an "
         "arbitrary proposal with the REAL gate, crosses it against the stored "
-        "legs of every other counterparty, and regenerates the board with the "
-        "offer pinned; `status` reports fingerprints and freshness.",
+        "legs of every other counterparty, and writes the pinned-offer page — "
+        "the offer atop each remaining counterparty's exact hedge set (v8.1); "
+        "`status` reports fingerprints and freshness.",
     )
     hsub = hb.add_subparsers(dest="hd_cmd", required=True)
     hbuild = hsub.add_parser(
@@ -1393,8 +1433,9 @@ def main() -> None:
         )
         p.add_argument(
             "--out", default="hedge-board.html",
-            help="board HTML path — ONE canonical path shared by board and "
-            "offer, so the published artifact URL stays stable",
+            help="output HTML path — ONE canonical path PER VIEW (board: "
+            "hedge-board.html; offer: hedge-offer.html), so each published "
+            "artifact URL stays stable",
         )
         p.add_argument("--json", action="store_true",
                        help="print the payload/result as JSON")
@@ -1409,8 +1450,9 @@ def main() -> None:
                         help="that team's card first (unique substring)")
     hoffer = hsub.add_parser(
         "offer",
-        help="score a proposal (REAL gate — any assets) and cross it against "
-        "the stored legs; regenerates the board with the offer pinned",
+        help="score a proposal (REAL gate — any assets) and write the "
+        "pinned-offer page: the offer atop exact hedges per counterparty "
+        "(v8.1) — the board file is never touched",
     )
     hoffer.add_argument("--opponent", required=True)
     hoffer.add_argument("--give", required=True,
@@ -1418,6 +1460,7 @@ def main() -> None:
     hoffer.add_argument("--get", required=True,
                         help="comma-separated asset names you receive")
     add_hd_filters(hoffer)
+    hoffer.set_defaults(out="hedge-offer.html")
     hsub.add_parser(
         "status",
         help="DB path, size, band, fingerprints, freshness vs live Mongo, "

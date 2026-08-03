@@ -22,7 +22,9 @@ Every possible hedge, however, is a pair of LEGS, and the legs are small. So:
   cache exactly when they should.
 - `HedgeDB.offer` scores an arbitrary proposal via `tr.propose` (real gate,
   outside-the-pool assets welcome) and crosses it against the stored legs of
-  every other counterparty for its exact hedge set.
+  every other counterparty for its exact hedge set — kept top-K PER
+  COUNTERPARTY (v8.1 `by_team`, the pinned-offer page's unit) with the flat
+  maximin list alongside.
 
 Boards render from the STORED snapshot's league — never from live Mongo — so
 cards, KTC links and coordinates can never disagree with each other, whatever
@@ -1100,7 +1102,14 @@ class HedgeDB:
         and cross it against the stored legs of every OTHER counterparty for
         its exact hedge set. The ≤2-assets-out heuristic of the old
         `score --hedge` is gone: the store holds every 1..3-asset package, and
-        e.g. a (+1 player, +1 pick) offer NEEDS 3-asset gives by arithmetic."""
+        e.g. a (+1 player, +1 pick) offer NEEDS 3-asset gives by arithmetic.
+
+        v8.1 (pinned-offer mode): hedges come back BOTH ways — `hedges`, the
+        flat global maximin list (a superset of the old single-heap top-K;
+        rounded-key ties straddling the old cutoff may order differently),
+        and `by_team`, the same entries grouped per counterparty (top-K
+        each, best team first, hedge-less teams last), with
+        `counts.matched_by_team` the crossing's full per-team tallies."""
         league = self.league
         card = tr.propose_by_names(league, opp_name, give_names, get_names)
         give, get = tr.card_packages(league, card)
@@ -1151,7 +1160,17 @@ class HedgeDB:
 
         np_off = get.n_players - give.n_players
         nk_off = get.n_picks - give.n_picks
-        result: dict = {"offer": card, "hedges": [], "counts": None, "exact": True}
+        result: dict = {
+            "offer": card,
+            "hedges": [],
+            # v8.1 pinned-offer mode: hedges grouped per counterparty, every
+            # non-offerer team present (empty list = no qualifying hedge) —
+            # the early returns below (count-neutral, empty bucket) keep this
+            # alphabetical shape; a real crossing reorders best-team-first
+            "by_team": {n: [] for n in sorted(self.opp_names) if n != opp_name},
+            "counts": None,
+            "exact": True,
+        }
         if np_off == 0 and nk_off == 0:
             result["note"] = (
                 "already count-neutral (0 players / 0 picks net) — nothing to "
@@ -1215,7 +1234,14 @@ class HedgeDB:
 
         from heapq import heappush, heappushpop
 
-        heap: list[tuple] = []
+        # v8.1: one heap PER COUNTERPARTY, not one global heap — the pinned-
+        # offer page shows every team's best hedges. The walk never early-
+        # exits on heap fullness, so per-team keeping costs nothing extra;
+        # the union of per-team top-Ks contains everything the old global
+        # heap kept (retention is by unrounded tuple; the display sort's
+        # rounded keys may order ties at the old cutoff differently).
+        heaps: dict[int, list[tuple]] = {}
+        matched_by: dict[int, int] = {}
         visits = valid = matched = 0
         complete = True
         budget = league.params.hedgedb_search_budget
@@ -1274,15 +1300,22 @@ class HedgeDB:
             if rv < min_ret - 1e-12:
                 continue
             matched += 1
+            oi = int(opp_arr[si])
+            matched_by[oi] = matched_by.get(oi, 0) + 1
             e = (rv, ceil, -si, d_s, d_f, ret, sent, fl)
-            if len(heap) < top:
-                heappush(heap, e)
-            elif e > heap[0]:
-                heappushpop(heap, e)
+            hp = heaps.setdefault(oi, [])
+            if len(hp) < top:
+                heappush(hp, e)
+            elif e > hp[0]:
+                heappushpop(hp, e)
 
         self._flush_legality()
-        kept = sorted(heap, key=lambda e: (-round(100.0 * e[0], 2), -round(e[1], 1), -e[2]))
+        kept = sorted(
+            (e for hp in heaps.values() for e in hp),
+            key=lambda e: (-round(100.0 * e[0], 2), -round(e[1], 1), -e[2]),
+        )
         hedges = []
+        by_team: dict[str, list[dict]] = {}
         for n, e in enumerate(kept, 1):
             rv, ceil, nsi, d_s, d_f, ret, sent, fl = e
             si = -nsi
@@ -1294,31 +1327,39 @@ class HedgeDB:
             hcard["gate"]["verdict"] = "PASS"
             hcard["id"] = f"H{n}"
             floor = d_s if d_s < d_f else d_f
-            hedges.append(
-                {
-                    "id": f"H{n}",
-                    "hedge": hcard,
-                    "offer_side": "buy" if offer_canon else "sell",
-                    "coords": {"dS": round(d_s, 1), "dF": round(d_f, 1)},
-                    "verdict": tr.verdict_of(d_s, d_f),
-                    "floor": round(floor, 1),
-                    "ceiling": round(ceil, 1),
-                    "sent": round(sent, 1),
-                    "return_robust": round(100.0 * ret, 2),
-                    "return_view": round(100.0 * rv, 2),
-                    "favor": {
-                        "offer": round(favor_off, 2),
-                        "hedge": round(fl, 2),
-                        "min": round(min(favor_off, fl), 2),
-                    },
-                }
-            )
+            entry = {
+                "id": f"H{n}",
+                "hedge": hcard,
+                "offer_side": "buy" if offer_canon else "sell",
+                "coords": {"dS": round(d_s, 1), "dF": round(d_f, 1)},
+                "verdict": tr.verdict_of(d_s, d_f),
+                "floor": round(floor, 1),
+                "ceiling": round(ceil, 1),
+                "sent": round(sent, 1),
+                "return_robust": round(100.0 * ret, 2),
+                "return_view": round(100.0 * rv, 2),
+                "favor": {
+                    "offer": round(favor_off, 2),
+                    "hedge": round(fl, 2),
+                    "min": round(min(favor_off, fl), 2),
+                },
+            }
+            hedges.append(entry)
+            by_team.setdefault(hcard["counterparty"], []).append(entry)
+        # v8.1 team order: first appearance in the global maximin list = best
+        # pair floor return first; hedge-less teams trail alphabetically
+        for name in sorted(self.opp_names):
+            if name != opp_name:
+                by_team.setdefault(name, [])
+        matched_by_name = {self.opp_names[oi]: c for oi, c in matched_by.items()}
         result["hedges"] = hedges
+        result["by_team"] = by_team
         result["counts"] = {
             "candidates": len(cand),
             "crossings": visits,
             "valid": valid,
             "matched": matched,
+            "matched_by_team": {n: matched_by_name.get(n, 0) for n in by_team},
             "returned": len(hedges),
         }
         result["exact"] = complete
