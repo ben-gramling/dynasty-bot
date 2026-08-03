@@ -8,9 +8,21 @@ dependencies = [
     "python-dotenv",
 ]
 
+# §12 v8: numpy is the hedge database's columnar engine and stays OUT of the
+# base dependencies on purpose — the Lambda layer installs core's full runtime
+# closure and must not grow a ~40MB manylinux numpy for a CLI-only feature.
+# hedgedb raises a clear "install core[hedgedb]" error on ImportError.
+[project.optional-dependencies]
+hedgedb = [
+    "numpy>=2",
+]
+
 [dependency-groups]
 dev = [
     "pytest",
+    # local dev always has the hedgedb extra available (`just sync` installs
+    # dev groups); the collector artifact build resolves [project] deps only
+    "numpy>=2",
 ]
 
 [build-system]

@@ -79,7 +79,7 @@ def test_zero_gap_short_circuits():
 
 
 def test_consolidation_does_not_cancel_headline():
-    """§3.1 / §12 v3.4 headline: at EQUAL raw totals the concentrated side is
+    """§3.1 / §13 v3.4 headline: at EQUAL raw totals the concentrated side is
     credited +3,377 — the reason the fitted `c` coefficients were retired
     ("Value adjustments dont cancel out")."""
     r = ktc_adjustment([8000, 2000], [5000, 5000], top_value=TOP_VALUE)

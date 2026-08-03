@@ -139,6 +139,18 @@ class Params:
     # walk cutoff, so it still certifies nothing; `pool_favor_band` plus a
     # per-cell exact top-K is the real fix and is blocked on the leg layout.
     pair_collect_budget: int = 4_000_000  # pair visits for the stored-pair collection walk
+    # §12 v8 the hedge database (core.scoring.hedgedb — CLI-only, never the
+    # collector). The DB stores the COMPLETE |favor| <= hedgedb_band leg pool
+    # columnar and serves exact seeded-walk searches over it; measured on the
+    # live snapshot the band-5 pool is 13,490,657 legs and its >= 1%-floor
+    # crossing region is ~2.5e12 pairs — which is why the DB stores legs, not
+    # pairs. `hedgedb_store_top` is the stored search depth per counterparty
+    # (the board shows 5); `hedgedb_search_budget` guards a single search's
+    # walk — saturation is disclosed per search, never expected for filtered
+    # queries.
+    hedgedb_band: float = 5.0
+    hedgedb_store_top: int = 50
+    hedgedb_search_budget: int = 40_000_000
     top_league_wide: int = 10  # unpaired sell/neutral legs kept as `recommendations` (isolation floor desc)
     watch_max: int = 5  # unpaired buys surfaced as watch-list notes
 
